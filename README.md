@@ -63,9 +63,12 @@ Unicode bar (full blocks `█` plus one shade block `░▒▓` for the fraction
 deliberately no eighth-block glyphs like `▁`, whose different vertical
 metrics rag the bottom edge in many fonts) scaled to the largest row so the
 mix is visible at a glance. When output is a terminal the bars
-are heat-colored by share (red-orange for small, green for large — set
+are colored (a per-glyph true-color gradient, blue for input tokens into
+orange for output — set
 `NO_COLOR` to opt out; piped or `--json` output stays plain), and every bar
-is padded with a space on either side.
+is padded with a space on either side. The color itself is a gradient: blue
+across the row's input-token portion blending into orange across its output
+portion, so the transition point marks the in/out split.
 
 The two reports (session mode and `--from-unsloth`) describe the *same*
 traffic from two angles — never add them together. In `reconcile`, a

@@ -15,8 +15,10 @@ per matching model, bare `--model` = rows for every model), left-aligned
 tables everywhere, COST dropped from displayed reports (still stored and in
 `--json`). Share increment: per-model `--total` tables end with `SHARE`
 (row total as % of the overall total across displayed rows) and a `BAR` of
-smooth Unicode blocks (█ full + ▁▂▃▄▅▆▇ eighth fractions, scaled to the
-largest row), padded one space either side and heat-colored truecolor by
+smooth Unicode blocks (█ full + one ░▒▓ shade fraction, scaled to the
+largest row; deliberately NOT eighth glyphs U+2581..2587 — their vertical
+metrics differ from █ and ragged the bar bottoms), padded one space either
+side and heat-colored truecolor by
 share relative to the biggest share (`paint_bars`, table-only; tty-gated
 via `_color_enabled` — plain when piped or under `NO_COLOR`);
 bare `--model` (no value, no `--total`)

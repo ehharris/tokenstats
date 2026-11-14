@@ -86,6 +86,16 @@ python3 -m unittest test_tokenstat -v                  # tests (~0.05s, no deps)
 
 ## Known gotchas / deferred work (from five review rounds)
 
+- **Not a bug (investigated 2026-11-14):** "bare `tokenstat.py` looks stale
+  but `--total --model` is fresh" — all report modes run identical implicit
+  ingestion; verified store == OpenCode source right after a bare run. The
+  impression is display: in session mode only the *live* session's row ever
+  changes (finished rows are immutable by invariant 1) and it sits last in
+  the oldest-first table, while per-model totals aggregate everything so any
+  activity visibly grows a number. OpenCode also writes `session_v2` totals
+  only at message completion, so live numbers trail Studio's UI counter by
+  one response — invisible in aggregates, exposed per-session. Possible UX
+  fix if ever wanted: sort/show most-recently-active sessions first.
 - `SHARE` is computed over the **displayed rows**, so with `--since`/
   `--until`/threshold filters it means "% of the filtered total", not
   "% of all time". The grand-total row renders 100.0% and a full bar.

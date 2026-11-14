@@ -419,19 +419,35 @@ def add_shares(rows, bar_width=30):
     return out
 
 
-# Heat gradient for colored bars: red-orange (smallest) -> yellow -> green.
-BAR_GRADIENT = ((235, 100, 60), (230, 200, 80), (85, 215, 110))
+# Bars are a left-to-right color gradient: input tokens blue fading into
+# output-token orange, with the transition centered where the input share of
+# the row's total ends.
+TOKEN_IN_RGB = (80, 168, 255)
+TOKEN_OUT_RGB = (255, 136, 90)
 
 
-def _gradient_rgb(t):
-    """Piecewise-linear RGB along BAR_GRADIENT for t in [0, 1]."""
-    t = min(max(t, 0.0), 1.0)
-    span = len(BAR_GRADIENT) - 1
-    pos = t * span
-    lo = min(int(pos), span - 1)
-    frac = pos - lo
-    a, b = BAR_GRADIENT[lo], BAR_GRADIENT[lo + 1]
-    return tuple(round(a[i] + (b[i] - a[i]) * frac) for i in range(3))
+def _token_rgb(t):
+    """Linear blend from TOKEN_IN_RGB (t=0) to TOKEN_OUT_RGB (t=1)."""
+    return tuple(round(a + (b - a) * t)
+                 for a, b in zip(TOKEN_IN_RGB, TOKEN_OUT_RGB))
+
+
+def _paint_gradient(bar, frac_in):
+    """Per-glyph true-color sweep; the IN->OUT midpoint lands at frac_in."""
+    n = len(bar)
+    parts = []
+    for i, ch in enumerate(bar):
+        if frac_in <= 0:
+            t = 1.0
+        elif frac_in >= 1:
+            t = 0.0
+        else:
+            p = i / (n - 1) if n > 1 else 0.5
+            t = 0.5 * p / frac_in if p <= frac_in \
+                else 0.5 + 0.5 * (p - frac_in) / (1 - frac_in)
+        r, g, b = _token_rgb(t)
+        parts.append(f"\x1b[38;2;{r};{g};{b}m{ch}")
+    return "".join(parts) + "\x1b[0m"
 
 
 def _color_enabled(out, environ):
@@ -441,17 +457,14 @@ def _color_enabled(out, environ):
 
 def paint_bars(rows, color):
     """Copy of `rows` with BAR cells padded by one space either side; when
-    color is true, nonzero bars are wrapped in an ANSI true-color escape
-    keyed to the row's share relative to the largest share. Table-only."""
-    biggest_share = max((r["share"] for r in rows), default=0.0)
+    color is true, nonzero bars get a per-glyph blue->orange gradient whose
+    transition marks the row's input/output split. Table-only."""
     out = []
     for r in rows:
-        padded = f" {r['bar']} "
+        bar = r["bar"]
         if color and r["total"]:
-            t = r["share"] / biggest_share if biggest_share else 0.0
-            rgb = _gradient_rgb(t)
-            padded = f"\x1b[38;2;{rgb[0]};{rgb[1]};{rgb[2]}m{padded}\x1b[0m"
-        out.append({**r, "bar": padded})
+            bar = _paint_gradient(bar, r["tokens_input"] / r["total"])
+        out.append({**r, "bar": f" {bar} "})
     return out
 
 

@@ -972,38 +972,57 @@ class PaintBarsTests(unittest.TestCase):
         self.assertEqual(out[1]["bar"], "  ")
 
     def test_original_rows_not_mutated(self):
-        rows = [{"model": "a", "total": 1, "share": 100.0, "bar": "█"}]
+        rows = [{"model": "a", "total": 1, "share": 100.0, "bar": "█",
+                 "tokens_input": 1, "tokens_output": 0}]
         paint_bars(rows, color=True)
         self.assertEqual(rows[0]["bar"], "█")
 
     def test_color_truecolor_wraps_padded_bar(self):
-        rows = [{"model": "a", "total": 10, "share": 100.0, "bar": "██"},
-                {"model": "b", "total": 1, "share": 10.0, "bar": "▁"}]
+        rows = [{"model": "a", "total": 10, "share": 100.0, "bar": "██",
+                 "tokens_input": 5, "tokens_output": 5}]
         out = paint_bars(rows, color=True)
-        for r in out:
-            self.assertTrue(r["bar"].startswith("\x1b[38;2;"))
-            self.assertTrue(r["bar"].endswith("\x1b[0m"))
+        r = out[0]
+        self.assertTrue(r["bar"].startswith(" \x1b[38;2;"))  # padding stays plain
+        self.assertTrue(r["bar"].endswith("\x1b[0m "))
         # stripping the SGR sequences leaves the padded plain bar
         import re
         stripped = [re.sub(r"\x1b\[[0-9;]*m", "", r["bar"]) for r in out]
-        self.assertEqual(stripped, [" ██ ", " ▁ "])
+        self.assertEqual(stripped, [" ██ "])
 
-    def test_bigger_share_gets_greener_color(self):
-        rows = [{"model": "big", "total": 10, "share": 90.0, "bar": "█"},
-                {"model": "small", "total": 1, "share": 10.0, "bar": "▁"}]
-        out = paint_bars(rows, color=True)
+    def test_gradient_endpoints_are_in_and_out_colors(self):
+        from tokenstat import TOKEN_IN_RGB, TOKEN_OUT_RGB
+        rows = [{"model": "a", "total": 10, "share": 100.0, "bar": "█" * 10,
+                 "tokens_input": 5, "tokens_output": 5}]
+        bar = paint_bars(rows, color=True)[0]["bar"]
 
-        def rgb(bar):
+        def rgbs(bar):
             import re
-            m = re.match(r"\x1b\[38;2;(\d+);(\d+);(\d+)m", bar)
-            return tuple(int(g) for g in m.groups())
+            return [tuple(int(g) for g in m) for m in
+                    re.findall(r"\x1b\[38;2;(\d+);(\d+);(\d+)m", bar)]
 
-        big, small = rgb(out[0]["bar"]), rgb(out[1]["bar"])
-        self.assertGreater(big[1], small[1])   # more green for the big share
-        self.assertLess(big[2], small[2] + 120)  # less blue than the red end
+        colors = rgbs(bar)
+        self.assertEqual(len(colors), 10)         # every glyph its own color
+        self.assertEqual(colors[0], TOKEN_IN_RGB)   # left end: pure input hue
+        self.assertEqual(colors[-1], TOKEN_OUT_RGB)  # right end: pure output hue
+
+    def test_gradient_transition_sits_at_in_out_ratio(self):
+        def blue_count(tin, tout):
+            rows = [{"model": "a", "total": tin + tout, "share": 100.0,
+                     "bar": "█" * 20, "tokens_input": tin,
+                     "tokens_output": tout}]
+            bar = paint_bars(rows, color=True)[0]["bar"]
+            import re
+            rgbs = [tuple(int(g) for g in m) for m in
+                    re.findall(r"\x1b\[38;2;(\d+);(\d+);(\d+)m", bar)]
+            return sum(1 for (r_, g_, b_) in rgbs if b_ > r_)  # bluish glyphs
+
+        self.assertGreater(blue_count(180, 20), blue_count(20, 180))
+        self.assertEqual(blue_count(200, 0), 20)   # all input: all blue
+        self.assertEqual(blue_count(0, 200), 0)    # all output: no blue
 
     def test_zero_total_row_not_colored(self):
-        rows = [{"model": "z", "total": 0, "share": 0.0, "bar": ""}]
+        rows = [{"model": "z", "total": 0, "share": 0.0, "bar": "",
+                 "tokens_input": 0, "tokens_output": 0}]
         out = paint_bars(rows, color=True)
         self.assertNotIn("\x1b", out[0]["bar"])
 

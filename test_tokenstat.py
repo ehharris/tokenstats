@@ -9,9 +9,9 @@ import sqlite3
 import unittest
 
 from tokenstat import (add_shares, daily_events, daily_totals, ensure_schema,
-                       import_unsloth, main, parse_date, parse_model,
-                       query_events, query_sessions, reconcile, record,
-                       render_table, total_events, total_totals)
+                       import_unsloth, main, paint_bars, parse_date,
+                       parse_model, query_events, query_sessions, reconcile,
+                       record, render_table, total_events, total_totals)
 
 LEMONADE_JSON = '{"id":"gpt-oss-120b","providerID":"lemonade"}'
 UNSLOTH_MODEL_ID = "unsloth/Qwen3.8-Flash-Next-GGUF"
@@ -951,6 +951,103 @@ class CliShareTests(unittest.TestCase):
                 self.assertEqual(code, 0)
                 self.assertNotIn("SHARE", out)
                 self.assertNotIn("BAR", out)
+
+
+class PaintBarsTests(unittest.TestCase):
+    """paint_bars: display-only padding + heat-gradient color for BAR cells."""
+
+    def test_padding_both_sides_without_color(self):
+        rows = [{"model": "a", "total": 10, "share": 100.0, "bar": "█" * 5},
+                {"model": "b", "total": 0, "share": 0.0, "bar": ""}]
+        out = paint_bars(rows, color=False)
+        self.assertEqual(out[0]["bar"], " ████ " .replace("████", "█" * 5))
+        self.assertEqual(out[1]["bar"], "  ")
+
+    def test_original_rows_not_mutated(self):
+        rows = [{"model": "a", "total": 1, "share": 100.0, "bar": "█"}]
+        paint_bars(rows, color=True)
+        self.assertEqual(rows[0]["bar"], "█")
+
+    def test_color_truecolor_wraps_padded_bar(self):
+        rows = [{"model": "a", "total": 10, "share": 100.0, "bar": "██"},
+                {"model": "b", "total": 1, "share": 10.0, "bar": "▁"}]
+        out = paint_bars(rows, color=True)
+        for r in out:
+            self.assertTrue(r["bar"].startswith("\x1b[38;2;"))
+            self.assertTrue(r["bar"].endswith("\x1b[0m"))
+        # stripping the SGR sequences leaves the padded plain bar
+        import re
+        stripped = [re.sub(r"\x1b\[[0-9;]*m", "", r["bar"]) for r in out]
+        self.assertEqual(stripped, [" ██ ", " ▁ "])
+
+    def test_bigger_share_gets_greener_color(self):
+        rows = [{"model": "big", "total": 10, "share": 90.0, "bar": "█"},
+                {"model": "small", "total": 1, "share": 10.0, "bar": "▁"}]
+        out = paint_bars(rows, color=True)
+
+        def rgb(bar):
+            import re
+            m = re.match(r"\x1b\[38;2;(\d+);(\d+);(\d+)m", bar)
+            return tuple(int(g) for g in m.groups())
+
+        big, small = rgb(out[0]["bar"]), rgb(out[1]["bar"])
+        self.assertGreater(big[1], small[1])   # more green for the big share
+        self.assertLess(big[2], small[2] + 120)  # less blue than the red end
+
+    def test_zero_total_row_not_colored(self):
+        rows = [{"model": "z", "total": 0, "share": 0.0, "bar": ""}]
+        out = paint_bars(rows, color=True)
+        self.assertNotIn("\x1b", out[0]["bar"])
+
+
+class ColorEnabledTests(unittest.TestCase):
+    def test_color_requires_tty_and_no_no_color(self):
+        from tokenstat import _color_enabled
+
+        class Tty:
+            def isatty(self): return True
+
+        class Pipe:
+            def isatty(self): return False
+
+        self.assertTrue(_color_enabled(Tty(), {}))
+        self.assertFalse(_color_enabled(Tty(), {"NO_COLOR": "1"}))
+        self.assertFalse(_color_enabled(Pipe(), {}))
+
+
+class CliColorTests(unittest.TestCase):
+    """Piped (non-tty) CLI output stays plain text but keeps bar padding."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = os.path.join(self.tmp.name, "usage.db")
+        qwen_lemonade = '{"id":"qwen-mini","providerID":"lemonade"}'
+        self.src = os.path.join(self.tmp.name, "src.db")
+        make_file_db(self.src, [
+            src_row(sid="s1", tin=9000, tout=1000),
+            src_row(sid="s2", model=qwen_lemonade, tin=4500, tout=500),
+        ])
+        self.no_udb = os.path.join(self.tmp.name, "no-studio.db")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_main(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(argv)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_piped_output_plain_but_padded(self):
+        code, out, _ = self.run_main(
+            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+             "--total", "--model"])
+        self.assertEqual(code, 0)
+        self.assertNotIn("\x1b", out)
+        unsloth_line = next(ln for ln in out.splitlines() if "unsloth" in ln)
+        # SHARE value then a space-gap before the bar starts
+        self.assertRegex(unsloth_line, r"\d+\.\d%   [█▁▂▃▄▅▆▇ ]+$")
 
 
 if __name__ == "__main__":

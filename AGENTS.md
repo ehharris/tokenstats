@@ -16,7 +16,10 @@ tables everywhere, COST dropped from displayed reports (still stored and in
 `--json`). Share increment: per-model `--total` tables end with `SHARE`
 (row total as % of the overall total across displayed rows) and a `BAR` of
 smooth Unicode blocks (█ full + ▁▂▃▄▅▆▇ eighth fractions, scaled to the
-largest row); bare `--model` (no value, no `--total`)
+largest row), padded one space either side and heat-colored truecolor by
+share relative to the biggest share (`paint_bars`, table-only; tty-gated
+via `_color_enabled` — plain when piped or under `NO_COLOR`);
+bare `--model` (no value, no `--total`)
 is now a shortcut for `--total --model` instead of an error — with `--daily`
 it still means "all models" and renders the daily table; `reconcile --model`
 unchanged. `--json` `--total` rows carry a float `share` field (no bar).

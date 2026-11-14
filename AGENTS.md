@@ -77,9 +77,11 @@ python3 -m unittest test_tokenstat -v                  # tests (~0.05s, no deps)
 
 ## NOT DONE (decisions left to the human)
 
-- **Hourly cron is NOT installed.** The exact line is in README.md
-  ("Keeping history complete"). Until it is, history only stays current when
-  tokenstat is run manually. Ask before touching crontab.
+- ~~Hourly cron~~ **INSTALLED 2026-11-13** for user `elih` (`crontab -l`):
+  hourly `record` + `import-unsloth`, output appended to `record.log`
+  (gitignored). Verified end-to-end under cron's minimal environment
+  (`env -i HOME=... PATH=/usr/bin:/bin`). Cron daemon is systemd-enabled,
+  so it survives reboots. If history ever looks stale, check `record.log`.
 - No git remote; no PR workflow. If one is wanted, follow the parent
   workspace's GitHub App auth notes in `/home/elih/messinaround/AGENTS.md`
   (that setup is for the openmw repo — this repo has no bot access yet).

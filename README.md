@@ -37,10 +37,13 @@ python3 tokenstat.py --daily --model unsloth
 python3 tokenstat.py --total
 python3 tokenstat.py --total --model unsloth
 
-# Per-model totals across ALL models (--model with no value):
+# Per-model totals across ALL models (--model with no value; the bare
+# --model is also a shortcut that implies --total):
 python3 tokenstat.py --total --model
+python3 tokenstat.py --model
 
-# Machine-readable (combine with --daily for daily aggregates):
+# Machine-readable (combine with --daily for daily aggregates; --total rows
+# also carry a `share` field, the row's percent of the overall total):
 python3 tokenstat.py --json | jq '.[].total'
 
 # Snapshot without querying:
@@ -53,6 +56,10 @@ python3 tokenstat.py --from-unsloth --daily
 # Lost-history view: what Unsloth recorded that OpenCode no longer can:
 python3 tokenstat.py reconcile
 ```
+
+Per-model `--total` reports end with two extra columns: `SHARE`, the row's
+percent of the overall total across the displayed rows, and `BAR`, a text
+bar scaled to the largest row so the mix is visible at a glance.
 
 The two reports (session mode and `--from-unsloth`) describe the *same*
 traffic from two angles — never add them together. In `reconcile`, a

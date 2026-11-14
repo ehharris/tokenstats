@@ -375,6 +375,25 @@ TOTAL_COLUMNS = [
     ("IN", "tokens_input", "int"), ("OUT", "tokens_output", "int"),
     ("TOTAL", "total", "int"),
 ]
+SHARE_COLUMNS = TOTAL_COLUMNS + [
+    ("SHARE", "share_str", "text"), ("BAR", "bar", "text"),
+]
+
+
+def add_shares(rows, bar_width=30):
+    """Copy of `rows` with per-row share of the overall (summed) total plus a
+    `bar` scaled to the largest row. Pure display enrichment; inputs untouched."""
+    overall = sum(r["total"] for r in rows)
+    biggest = max((r["total"] for r in rows), default=0)
+    out = []
+    for r in rows:
+        share = 100.0 * r["total"] / overall if overall else 0.0
+        n = round(bar_width * r["total"] / biggest) if biggest else 0
+        if r["total"] and not n:
+            n = 1  # a nonzero row never renders as an empty bar
+        out.append({**r, "share": share, "share_str": f"{share:.1f}%",
+                    "bar": "#" * n})
+    return out
 
 
 def render_table(rows, columns=None):
@@ -476,7 +495,7 @@ def main(argv):
                              " compare both sources per model (default: report)")
     parser.add_argument("--model", nargs="?", const=MODEL_ANY,
                         help="substring match on provider/model (omit the "
-                             "value with --total: totals for every model)")
+                             "value: totals for every model)")
     parser.add_argument("--since", type=parse_date, metavar="YYYY-MM-DD",
                         help="first day of usage (inclusive)")
     parser.add_argument("--until", type=parse_date, metavar="YYYY-MM-DD",
@@ -549,9 +568,10 @@ def main(argv):
             "unsloth", args.unsloth_db, verbose=False)
 
     model_any = args.model is MODEL_ANY
-    if model_any and not args.total:
-        parser.error("--model requires a value, except with --total where "
-                     "it may be omitted to list totals for every model")
+    # Bare --model is a shortcut for `--total --model`: totals per model.
+    # (With --daily it just means "all models", as before; reconcile keeps
+    # its own flag handling.)
+    want_total = args.total or (model_any and not args.daily)
     model = None if model_any else args.model
 
     if args.command == "reconcile":
@@ -566,9 +586,9 @@ def main(argv):
                          f" {', '.join(unsupported)}")
         rows = reconcile(dest, model=model)
         columns = RECON_COLUMNS
-    elif args.total and args.daily:
+    elif want_total and args.daily:
         parser.error("--total cannot be combined with --daily")
-    elif args.total:
+    elif want_total:
         rows = (total_events(dest, model=model, since_ms=args.since,
                              until_ms=args.until, min_in=args.min_in,
                              min_out=args.min_out, by_model=model_any)
@@ -576,7 +596,8 @@ def main(argv):
                 total_totals(dest, model=model, since_ms=args.since,
                              until_ms=args.until, min_in=args.min_in,
                              min_out=args.min_out, by_model=model_any))
-        columns = TOTAL_COLUMNS
+        rows = add_shares(rows)
+        columns = SHARE_COLUMNS
     elif args.from_unsloth:
         rows = (daily_events(dest, model=model, since_ms=args.since,
                              until_ms=args.until, min_in=args.min_in,
@@ -594,7 +615,10 @@ def main(argv):
                                min_out=args.min_out))
         columns = DAILY_COLUMNS if args.daily else SESSION_COLUMNS
     if args.as_json:
-        print(json.dumps(rows, indent=2))
+        # share travels in JSON; the bar is table-only decoration
+        print(json.dumps([{k: v for k, v in r.items()
+                           if k not in ("bar", "share_str")}
+                          for r in rows], indent=2))
     else:
         print(render_table(rows, columns), end="")
     return 0

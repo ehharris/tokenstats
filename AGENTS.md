@@ -14,8 +14,9 @@ aggregate view (session and `--from-unsloth` paths; `--model PATTERN` = rows
 per matching model, bare `--model` = rows for every model), left-aligned
 tables everywhere, COST dropped from displayed reports (still stored and in
 `--json`). Share increment: per-model `--total` tables end with `SHARE`
-(row total as % of the overall total across displayed rows) and a `BAR`
-text bar scaled to the largest row; bare `--model` (no value, no `--total`)
+(row total as % of the overall total across displayed rows) and a `BAR` of
+smooth Unicode blocks (█ full + ▁▂▃▄▅▆▇ eighth fractions, scaled to the
+largest row); bare `--model` (no value, no `--total`)
 is now a shortcut for `--total --model` instead of an error — with `--daily`
 it still means "all models" and renders the daily table; `reconcile --model`
 unchanged. `--json` `--total` rows carry a float `share` field (no bar).

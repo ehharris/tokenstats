@@ -58,8 +58,9 @@ python3 tokenstat.py reconcile
 ```
 
 Per-model `--total` reports end with two extra columns: `SHARE`, the row's
-percent of the overall total across the displayed rows, and `BAR`, a text
-bar scaled to the largest row so the mix is visible at a glance.
+percent of the overall total across the displayed rows, and `BAR`, a smooth
+Unicode bar (full blocks plus eighth-block fractions) scaled to the largest
+row so the mix is visible at a glance.
 
 The two reports (session mode and `--from-unsloth`) describe the *same*
 traffic from two angles — never add them together. In `reconcile`, a

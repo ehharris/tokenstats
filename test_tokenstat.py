@@ -664,5 +664,71 @@ class TotalEventsTests(unittest.TestCase):
         self.assertEqual(total_events(self.dest, model="nope"), [])
 
 
+class CliTotalTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = os.path.join(self.tmp.name, "usage.db")
+        qwen_lemonade = '{"id":"qwen-mini","providerID":"lemonade"}'
+        self.src = os.path.join(self.tmp.name, "src.db")
+        make_file_db(self.src, [
+            src_row(sid="s1"),                        # unsloth-studio model
+            src_row(sid="s2", model=qwen_lemonade),   # lemonade qwen-mini
+        ])
+        self.no_udb = os.path.join(self.tmp.name, "no-studio.db")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_main(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(argv)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_total_flag_renders_grand_row(self):
+        code, out, _ = self.run_main(
+            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+             "--total"])
+        self.assertEqual(code, 0)
+        self.assertIn("(all)", out)
+        self.assertIn("TOTAL", out)
+
+    def test_total_flag_per_model_rows(self):
+        code, out, _ = self.run_main(
+            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+             "--total", "--model", "qwen"])
+        self.assertEqual(code, 0)
+        self.assertIn("lemonade/qwen-mini", out)
+        self.assertIn(f"unsloth-studio/{UNSLOTH_MODEL_ID}", out)
+        self.assertNotIn("(all)", out)
+
+    def test_total_json_shape(self):
+        code, out, _ = self.run_main(
+            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+             "--total", "--json"])
+        self.assertEqual(code, 0)
+        rows = json.loads(out)
+        self.assertIsInstance(rows, list)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(
+            set(rows[0]), {"model", "sessions", "tokens_input",
+                           "tokens_output", "total", "cost"})
+
+    def test_total_rejects_daily(self):
+        with self.assertRaises(SystemExit) as cm:
+            with contextlib.redirect_stderr(io.StringIO()):
+                main(["--db", self.db, "--src", self.src,
+                      "--unsloth-db", self.no_udb, "--total", "--daily"])
+        self.assertEqual(cm.exception.code, 2)
+
+    def test_reconcile_rejects_total(self):
+        with self.assertRaises(SystemExit) as cm:
+            with contextlib.redirect_stderr(io.StringIO()):
+                main(["reconcile", "--db", self.db, "--src", self.src,
+                      "--unsloth-db", self.no_udb, "--total"])
+        self.assertEqual(cm.exception.code, 2)
+
+
 if __name__ == "__main__":
     unittest.main()

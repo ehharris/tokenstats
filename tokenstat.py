@@ -370,6 +370,11 @@ DAILY_COLUMNS = [
     ("IN", "tokens_input", "int"), ("OUT", "tokens_output", "int"),
     ("TOTAL", "total", "int"), ("COST", "cost", "cost"),
 ]
+TOTAL_COLUMNS = [
+    ("MODEL", "model", "text"), ("SESSIONS", "sessions", "int"),
+    ("IN", "tokens_input", "int"), ("OUT", "tokens_output", "int"),
+    ("TOTAL", "total", "int"), ("COST", "cost", "cost"),
+]
 
 
 def render_table(rows, columns=None):
@@ -484,6 +489,9 @@ def main(argv):
                         help="minimum tokens out")
     parser.add_argument("--daily", action="store_true",
                         help="totals per day instead of per session")
+    parser.add_argument("--total", action="store_true",
+                        help="grand total (with --model: per-model totals) "
+                             "instead of per-session rows")
     parser.add_argument("--json", action="store_true", dest="as_json",
                         help="emit JSON instead of a table")
     parser.add_argument("--db", default=DEFAULT_DB,
@@ -547,12 +555,23 @@ def main(argv):
             ("--since", args.since), ("--until", args.until),
             ("--min-in", args.min_in), ("--min-out", args.min_out))
             if val is not None] + (["--daily"] if args.daily else []) \
-            + (["--from-unsloth"] if args.from_unsloth else [])
+            + (["--from-unsloth"] if args.from_unsloth else []) \
+            + (["--total"] if args.total else [])
         if unsupported:
             parser.error("reconcile supports only --model; unsupported:"
                          f" {', '.join(unsupported)}")
         rows = reconcile(dest, model=args.model)
         columns = RECON_COLUMNS
+    elif args.total and args.daily:
+        parser.error("--total cannot be combined with --daily")
+    elif args.total:
+        rows = (total_events(dest, model=args.model, since_ms=args.since,
+                             until_ms=args.until, min_in=args.min_in,
+                             min_out=args.min_out) if args.from_unsloth else
+                total_totals(dest, model=args.model, since_ms=args.since,
+                             until_ms=args.until, min_in=args.min_in,
+                             min_out=args.min_out))
+        columns = TOTAL_COLUMNS
     elif args.from_unsloth:
         rows = (daily_events(dest, model=args.model, since_ms=args.since,
                              until_ms=args.until, min_in=args.min_in,

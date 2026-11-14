@@ -33,6 +33,10 @@ python3 tokenstat.py --min-in 10000 --min-out 5000
 # Per-day totals instead of per-session rows:
 python3 tokenstat.py --daily --model unsloth
 
+# All-time grand total in one row (add --model for a per-model breakdown):
+python3 tokenstat.py --total
+python3 tokenstat.py --total --model unsloth
+
 # Machine-readable (combine with --daily for daily aggregates):
 python3 tokenstat.py --json | jq '.[].total'
 

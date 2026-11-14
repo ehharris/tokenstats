@@ -1,11 +1,15 @@
 """Tests for tokenstat.py — run with: python3 -m unittest test_tokenstat -v"""
 import argparse
+import contextlib
 import datetime
+import io
+import json
+import os
 import sqlite3
 import unittest
 
-from tokenstat import (ensure_schema, parse_date, parse_model, query_sessions,
-                       record, render_table)
+from tokenstat import (daily_totals, ensure_schema, main, parse_date,
+                       parse_model, query_sessions, record, render_table)
 
 LEMONADE_JSON = '{"id":"gpt-oss-120b","providerID":"lemonade"}'
 
@@ -184,6 +188,94 @@ class RenderTableTests(unittest.TestCase):
 
     def test_render_table_empty(self):
         self.assertIn("no sessions match", render_table([]))
+
+
+def make_file_db(path, rows=()):
+    """A real on-disk fake source DB (for CLI-level tests)."""
+    conn = sqlite3.connect(path)
+    conn.execute(
+        """CREATE TABLE session_v2 (
+               id TEXT PRIMARY KEY, model TEXT,
+               tokens_input INTEGER, tokens_output INTEGER, tokens_reasoning INTEGER,
+               tokens_cache_read INTEGER, tokens_cache_write INTEGER, cost REAL,
+               title TEXT, directory TEXT, agent TEXT,
+               time_created INTEGER, time_updated INTEGER)"""
+    )
+    for row in rows:
+        conn.execute("INSERT INTO session_v2 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
+    conn.commit()
+    return conn
+
+
+class DailyTotalsTests(unittest.TestCase):
+    def test_daily_totals_groups_by_date(self):
+        src = make_src([
+            src_row(sid="a1", tin=1000, tout=100, created=ms(2026, 11, 1)),
+            src_row(sid="a2", tin=2000, tout=200, created=ms(2026, 11, 1)),
+            src_row(sid="b1", tin=500, tout=50, created=ms(2026, 11, 5)),
+        ])
+        dest = make_dest()
+        record(src, dest, now_ms=1)
+        days = daily_totals(dest)
+        self.assertEqual([d["date"] for d in days], ["2026-11-01", "2026-11-05"])
+        first = days[0]
+        self.assertEqual(first["sessions"], 2)
+        self.assertEqual(first["tokens_input"], 3000)
+        self.assertEqual(first["tokens_output"], 300)
+        self.assertEqual(first["total"], 3300)
+
+
+class CliTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = os.path.join(self.tmp.name, "usage.db")
+        self.src = os.path.join(self.tmp.name, "src.db")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_main(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(argv)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_implicit_record_fallback_missing_src(self):
+        code, out, err = self.run_main(
+            ["--db", self.db, "--model", "x", "--src",
+             os.path.join(self.tmp.name, "nope.db")])
+        self.assertEqual(code, 0)
+        self.assertIn("warning:", err)
+        self.assertIn("no sessions match", out)
+
+    def test_record_subcommand_prints_counts(self):
+        make_file_db(self.src, [src_row()])
+        code, out, _ = self.run_main(
+            ["record", "--db", self.db, "--src", self.src])
+        self.assertEqual(code, 0)
+        self.assertRegex(out.strip(),
+                         r"inserted=\d+ updated=\d+ unchanged=\d+")
+
+    def test_record_then_query_implicit_records(self):
+        make_file_db(self.src, [src_row()])
+        code, out, err = self.run_main(
+            ["--db", self.db, "--src", self.src])
+        self.assertEqual(code, 0)
+        self.assertNotIn("warning:", err)
+        self.assertIn("unsloth-studio", out)
+
+    def test_json_output_parses(self):
+        make_file_db(self.src, [src_row(sid="a1", created=ms(2026, 11, 1)),
+                                src_row(sid="a2", created=ms(2026, 11, 1))])
+        code, out, _ = self.run_main(
+            ["--db", self.db, "--src", self.src, "--json", "--daily"])
+        self.assertEqual(code, 0)
+        days = json.loads(out)
+        self.assertEqual(len(days), 1)
+        self.assertEqual(sorted(days[0].keys()),
+                         sorted(["date", "sessions", "tokens_input",
+                                 "tokens_output", "total", "cost"]))
 
 
 if __name__ == "__main__":

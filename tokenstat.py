@@ -11,6 +11,7 @@ import json
 import os
 import sqlite3
 import sys
+import time
 
 DEFAULT_SRC = os.path.expanduser("~/.local/share/opencode/opencode.db")
 DEFAULT_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "usage.db")
@@ -149,33 +150,52 @@ def query_sessions(dest, model=None, since_ms=None, until_ms=None,
     return rows
 
 
-def render_table(rows):
-    """Aligned report: DATE MODEL IN OUT TOTAL COST SESSION."""
+SESSION_COLUMNS = [
+    ("DATE", "date", "text"), ("MODEL", "model", "text"),
+    ("IN", "tokens_input", "int"), ("OUT", "tokens_output", "int"),
+    ("TOTAL", "total", "int"), ("COST", "cost", "cost"),
+    ("SESSION", "title", "title"),
+]
+DAILY_COLUMNS = [
+    ("DATE", "date", "text"), ("SESSIONS", "sessions", "int"),
+    ("IN", "tokens_input", "int"), ("OUT", "tokens_output", "int"),
+    ("TOTAL", "total", "int"), ("COST", "cost", "cost"),
+]
+
+
+def render_table(rows, columns=None):
+    """Aligned report. `columns` is a list of (header, key, kind)."""
+    if columns is None:
+        columns = SESSION_COLUMNS
     if not rows:
         return "no sessions match\n"
-    header = ["DATE", "MODEL", "IN", "OUT", "TOTAL", "COST", "SESSION"]
-    lines = [header]
-    for r in rows:
-        title = (r["title"] or "")[:40]
-        lines.append([r["date"], r["model"], f"{r['tokens_input']:,}",
-                      f"{r['tokens_output']:,}", f"{r['total']:,}",
-                      f"{r['cost']:.4f}", title])
-    body = lines[1:]
+
+    def fmt(value, kind):
+        if value is None:
+            return ""
+        if kind == "int":
+            return f"{value:,}"
+        if kind == "cost":
+            return f"{value:.4f}"
+        if kind == "title":
+            return str(value)[:40]
+        return str(value)
+
+    header = [name for name, _, _ in columns]
+    body = [[fmt(r.get(key), kind) for _, key, kind in columns] for r in rows]
     widths = []
-    for i, name in enumerate(header):
-        if name in ("IN", "OUT", "TOTAL", "COST"):
-            widths.append(max(len(name), *(len(l[i + 1]) for l in body)))
-        elif name == "SESSION":
-            widths.append(None)  # last column: no padding needed
+    for i, (name, _, kind) in enumerate(columns):
+        if i == len(columns) - 1:
+            widths.append(None)  # last column needs no padding
         else:
-            widths.append(max(len(name), *(len(l[i + 1]) for l in body)))
+            widths.append(max([len(name)] + [len(row[i]) for row in body]))
     out = []
-    for line in lines:
+    for line in [header] + body:
         parts = []
         for i, cell in enumerate(line):
             if widths[i] is None:
                 parts.append(cell)
-            elif header[i] in ("IN", "OUT", "TOTAL", "COST"):
+            elif columns[i][2] in ("int", "cost"):
                 parts.append(cell.rjust(widths[i]))
             else:
                 parts.append(cell.ljust(widths[i]))
@@ -183,9 +203,43 @@ def render_table(rows):
     return "\n".join(out) + "\n"
 
 
+def daily_totals(dest, model=None, since_ms=None, until_ms=None):
+    """Per-day aggregates matching the filters, oldest day first."""
+    sql = ("SELECT date(time_created/1000, 'unixepoch', 'localtime') AS day,"
+           " COUNT(*), SUM(tokens_input), SUM(tokens_output), SUM(cost)"
+           " FROM usage")
+    where, params = [], []
+    if model:
+        where.append("lower(provider || '/' || model_id) LIKE ?")
+        params.append(f"%{model.lower()}%")
+    if since_ms is not None:
+        where.append("time_created >= ?")
+        params.append(since_ms)
+    if until_ms is not None:
+        where.append("time_created < ?")
+        params.append(until_ms + DAY_MS)  # until-day inclusive
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " GROUP BY day ORDER BY day ASC"
+    return [
+        {"date": day, "sessions": n, "tokens_input": tin or 0,
+         "tokens_output": tout or 0, "total": (tin or 0) + (tout or 0),
+         "cost": cost or 0.0}
+        for day, n, tin, tout, cost in dest.execute(sql, params)
+    ]
+
+
+def _connect_src(path):
+    return sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+
+
 def main(argv):
     parser = argparse.ArgumentParser(
-        prog="tokenstat", description=__doc__.splitlines()[1])
+        prog="tokenstat",
+        description="Record and report AI token usage from OpenCode's "
+                    "database into a permanent local store.")
+    parser.add_argument("command", nargs="?", choices=["record"],
+                        help="record = snapshot usage now and exit")
     parser.add_argument("--model", help="substring match on provider/model")
     parser.add_argument("--since", type=parse_date, metavar="YYYY-MM-DD",
                         help="first day of usage (inclusive)")
@@ -195,15 +249,50 @@ def main(argv):
                         help="minimum tokens in")
     parser.add_argument("--min-out", type=int, dest="min_out",
                         help="minimum tokens out")
+    parser.add_argument("--daily", action="store_true",
+                        help="totals per day instead of per session")
+    parser.add_argument("--json", action="store_true", dest="as_json",
+                        help="emit JSON instead of a table")
     parser.add_argument("--db", default=DEFAULT_DB,
                         help=f"our store (default: {DEFAULT_DB})")
+    parser.add_argument("--src", default=DEFAULT_SRC,
+                        help=f"OpenCode database (default: {DEFAULT_SRC})")
     args = parser.parse_args(argv)
 
     dest = sqlite3.connect(args.db)
     ensure_schema(dest)
-    print(render_table(query_sessions(
-        dest, model=args.model, since_ms=args.since, until_ms=args.until,
-        min_in=args.min_in, min_out=args.min_out)), end="")
+    now_ms = int(time.time() * 1000)
+
+    if args.command == "record":
+        try:
+            counts = record(_connect_src(args.src), dest, now_ms)
+        except sqlite3.Error as exc:
+            print(f"warning: could not read {args.src}: {exc}",
+                  file=sys.stderr)
+            return 1
+        print(f"inserted={counts['inserted']} updated={counts['updated']}"
+              f" unchanged={counts['unchanged']}")
+        return 0
+
+    # Query mode: record implicitly first, degrade gracefully if the source
+    # database is missing or locked while OpenCode writes.
+    try:
+        record(_connect_src(args.src), dest, now_ms)
+    except sqlite3.Error as exc:
+        print(f"warning: could not read {args.src}: {exc}", file=sys.stderr)
+
+    if args.daily:
+        rows = daily_totals(dest, model=args.model, since_ms=args.since,
+                            until_ms=args.until)
+    else:
+        rows = query_sessions(dest, model=args.model, since_ms=args.since,
+                              until_ms=args.until, min_in=args.min_in,
+                              min_out=args.min_out)
+    if args.as_json:
+        print(json.dumps(rows, indent=2))
+    else:
+        columns = DAILY_COLUMNS if args.daily else SESSION_COLUMNS
+        print(render_table(rows, columns), end="")
     return 0
 
 

@@ -19,6 +19,7 @@ python3 tokenstat.py --model unsloth --since 2026-11-01 --until 2026-11-13
 python3 tokenstat.py --min-in 10000 --daily            # thresholds apply to daily mode too
 python3 tokenstat.py --total                           # all-time grand total, one row
 python3 tokenstat.py --total --model unsloth           # all-time totals, one row per model
+python3 tokenstat.py --total --model                   # ...for ALL models (bare --model)
 python3 tokenstat.py --from-unsloth [--daily|--json]   # Unsloth's own per-request log
 python3 tokenstat.py reconcile                         # lost-history view per model
 python3 tokenstat.py record | import-unsloth           # explicit snapshots (exit 1 if source unreadable)

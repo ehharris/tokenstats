@@ -628,6 +628,14 @@ class TotalTotalsTests(unittest.TestCase):
         self.assertEqual(total_totals(empty), [])
 
 
+    def test_total_totals_by_model_without_filter(self):
+        rows = total_totals(self.dest, by_model=True)
+        self.assertEqual([r["model"] for r in rows],
+                         ["lemonade/gpt-oss-120b",
+                          "unsloth-studio/unsloth/Qwen3.8-Flash-Next-GGUF"])
+        self.assertEqual({r["sessions"] for r in rows}, {1})
+
+
 class TotalEventsTests(unittest.TestCase):
     def setUp(self):
         self.dest = make_dest()
@@ -662,6 +670,12 @@ class TotalEventsTests(unittest.TestCase):
         r = total_events(self.dest, min_in=500)[0]
         self.assertEqual((r["sessions"], r["tokens_input"]), (1, 900))
         self.assertEqual(total_events(self.dest, model="nope"), [])
+
+    def test_total_events_by_model_without_filter(self):
+        rows = total_events(self.dest, by_model=True)
+        self.assertEqual([r["model"] for r in rows],
+                         ["other-model", UNSLOTH_MODEL_ID])
+        self.assertEqual(sum(r["sessions"] for r in rows), 2)
 
 
 class CliTotalTests(unittest.TestCase):
@@ -728,6 +742,36 @@ class CliTotalTests(unittest.TestCase):
                 main(["reconcile", "--db", self.db, "--src", self.src,
                       "--unsloth-db", self.no_udb, "--total"])
         self.assertEqual(cm.exception.code, 2)
+
+    def test_total_bare_model_lists_all_models(self):
+        code, out, _ = self.run_main(
+            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+             "--total", "--model"])
+        self.assertEqual(code, 0)
+        self.assertIn("lemonade/qwen-mini", out)
+        self.assertIn(f"unsloth-studio/{UNSLOTH_MODEL_ID}", out)
+        self.assertNotIn("(all)", out)
+
+    def test_bare_model_without_total_rejected(self):
+        for extra in ([], ["--daily"]):
+            with self.subTest(extra=extra):
+                with self.assertRaises(SystemExit) as cm:
+                    with contextlib.redirect_stderr(io.StringIO()):
+                        main(["--db", self.db, "--src", self.src,
+                              "--unsloth-db", self.no_udb] + extra + ["--model"])
+                self.assertEqual(cm.exception.code, 2)
+
+    def test_from_unsloth_total_bare_model(self):
+        udb = os.path.join(self.tmp.name, "studio.db")
+        make_file_unsloth_db(udb, [unsloth_event("e1"),
+                                   unsloth_event("e2", model="other-model")])
+        code, out, _ = self.run_main(
+            ["--db", self.db, "--src", os.path.join(self.tmp.name, "none.db"),
+             "--unsloth-db", udb, "--from-unsloth", "--total", "--model"])
+        self.assertEqual(code, 0)
+        self.assertIn(UNSLOTH_MODEL_ID, out)
+        self.assertIn("other-model", out)
+        self.assertNotIn("(all)", out)
 
 
 class DisplayAlignmentTests(unittest.TestCase):

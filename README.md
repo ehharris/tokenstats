@@ -37,6 +37,9 @@ python3 tokenstat.py --daily --model unsloth
 python3 tokenstat.py --total
 python3 tokenstat.py --total --model unsloth
 
+# Per-model totals across ALL models (--model with no value):
+python3 tokenstat.py --total --model
+
 # Machine-readable (combine with --daily for daily aggregates):
 python3 tokenstat.py --json | jq '.[].total'
 

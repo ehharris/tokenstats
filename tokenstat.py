@@ -15,6 +15,7 @@ import time
 
 DEFAULT_SRC = os.path.expanduser("~/.local/share/opencode/opencode.db")
 DEFAULT_UNSLOTH_DB = os.path.expanduser("~/.unsloth/studio/studio.db")
+MODEL_ANY = object()  # --model with no value (valid only with --total)
 DEFAULT_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "usage.db")
 
 TOKEN_COLUMNS = (
@@ -218,13 +219,13 @@ def daily_events(dest, model=None, since_ms=None, until_ms=None,
 
 
 def total_events(dest, model=None, since_ms=None, until_ms=None,
-                 min_in=None, min_out=None):
-    """All-time event aggregates: one grand-total row, or with a model
-    filter one row per event model string, ordered by it. Empty when no
+                 min_in=None, min_out=None, by_model=False):
+    """All-time event aggregates: one grand-total row; per-event-model rows
+    (ordered by it) with a model filter or by_model=True. Empty when no
     events match. Mirrors total_totals; cost is always 0.0 (daily_events)."""
     where, params = _event_filters(model, since_ms, until_ms, min_in, min_out)
     tail = " WHERE " + " AND ".join(where) if where else ""
-    if not model:
+    if not model and not by_model:
         n, p, c = dest.execute(
             "SELECT COUNT(*), SUM(prompt_tokens), SUM(completion_tokens)"
             " FROM unsloth_events" + tail, params).fetchone()
@@ -431,13 +432,13 @@ def daily_totals(dest, model=None, since_ms=None, until_ms=None,
 
 
 def total_totals(dest, model=None, since_ms=None, until_ms=None,
-                 min_in=None, min_out=None):
-    """All-time aggregates: one grand-total row, or with a model filter one
-    row per provider/model_id, ordered by that string. Empty when no rows
-    match."""
+                 min_in=None, min_out=None, by_model=False):
+    """All-time aggregates: one grand-total row; per-provider/model_id rows
+    (ordered by that string) with a model filter or by_model=True. Empty
+    when no rows match."""
     where, params = _session_filters(model, since_ms, until_ms, min_in, min_out)
     tail = " WHERE " + " AND ".join(where) if where else ""
-    if not model:
+    if not model and not by_model:
         n, tin, tout, cost = dest.execute(
             "SELECT COUNT(*), SUM(tokens_input), SUM(tokens_output), SUM(cost)"
             " FROM usage" + tail, params).fetchone()
@@ -473,7 +474,9 @@ def main(argv):
                         help="record = snapshot OpenCode now; import-unsloth ="
                              " snapshot Unsloth Studio now; reconcile ="
                              " compare both sources per model (default: report)")
-    parser.add_argument("--model", help="substring match on provider/model")
+    parser.add_argument("--model", nargs="?", const=MODEL_ANY,
+                        help="substring match on provider/model (omit the "
+                             "value with --total: totals for every model)")
     parser.add_argument("--since", type=parse_date, metavar="YYYY-MM-DD",
                         help="first day of usage (inclusive)")
     parser.add_argument("--until", type=parse_date, metavar="YYYY-MM-DD",
@@ -545,6 +548,12 @@ def main(argv):
     _ingest(lambda: import_unsloth(_connect_src(args.unsloth_db), dest),
             "unsloth", args.unsloth_db, verbose=False)
 
+    model_any = args.model is MODEL_ANY
+    if model_any and not args.total:
+        parser.error("--model requires a value, except with --total where "
+                     "it may be omitted to list totals for every model")
+    model = None if model_any else args.model
+
     if args.command == "reconcile":
         unsupported = [flag for flag, val in (
             ("--since", args.since), ("--until", args.until),
@@ -555,31 +564,32 @@ def main(argv):
         if unsupported:
             parser.error("reconcile supports only --model; unsupported:"
                          f" {', '.join(unsupported)}")
-        rows = reconcile(dest, model=args.model)
+        rows = reconcile(dest, model=model)
         columns = RECON_COLUMNS
     elif args.total and args.daily:
         parser.error("--total cannot be combined with --daily")
     elif args.total:
-        rows = (total_events(dest, model=args.model, since_ms=args.since,
+        rows = (total_events(dest, model=model, since_ms=args.since,
                              until_ms=args.until, min_in=args.min_in,
-                             min_out=args.min_out) if args.from_unsloth else
-                total_totals(dest, model=args.model, since_ms=args.since,
+                             min_out=args.min_out, by_model=model_any)
+                if args.from_unsloth else
+                total_totals(dest, model=model, since_ms=args.since,
                              until_ms=args.until, min_in=args.min_in,
-                             min_out=args.min_out))
+                             min_out=args.min_out, by_model=model_any))
         columns = TOTAL_COLUMNS
     elif args.from_unsloth:
-        rows = (daily_events(dest, model=args.model, since_ms=args.since,
+        rows = (daily_events(dest, model=model, since_ms=args.since,
                              until_ms=args.until, min_in=args.min_in,
                              min_out=args.min_out) if args.daily else
-                query_events(dest, model=args.model, since_ms=args.since,
+                query_events(dest, model=model, since_ms=args.since,
                              until_ms=args.until, min_in=args.min_in,
                              min_out=args.min_out))
         columns = DAILY_COLUMNS if args.daily else SESSION_COLUMNS
     else:
-        rows = (daily_totals(dest, model=args.model, since_ms=args.since,
+        rows = (daily_totals(dest, model=model, since_ms=args.since,
                              until_ms=args.until, min_in=args.min_in,
                              min_out=args.min_out) if args.daily else
-                query_sessions(dest, model=args.model, since_ms=args.since,
+                query_sessions(dest, model=model, since_ms=args.since,
                                until_ms=args.until, min_in=args.min_in,
                                min_out=args.min_out))
         columns = DAILY_COLUMNS if args.daily else SESSION_COLUMNS

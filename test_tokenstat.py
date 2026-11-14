@@ -8,10 +8,12 @@ import os
 import sqlite3
 import unittest
 
-from tokenstat import (daily_totals, ensure_schema, main, parse_date,
-                       parse_model, query_sessions, record, render_table)
+from tokenstat import (daily_events, daily_totals, ensure_schema, import_unsloth,
+                       main, parse_date, parse_model, query_events,
+                       query_sessions, reconcile, record, render_table)
 
 LEMONADE_JSON = '{"id":"gpt-oss-120b","providerID":"lemonade"}'
+UNSLOTH_MODEL_ID = "unsloth/Qwen3.8-Flash-Next-GGUF"
 
 
 def ms(y, m, d):
@@ -334,6 +336,167 @@ class StoreErrorTests(unittest.TestCase):
         self.assertNotEqual(code, 0)
         self.assertIn("warning:", err.getvalue())
         self.assertNotIn("Traceback", err.getvalue())
+
+
+def make_unsloth_src(rows=()):
+    """Fake Unsloth Studio DB with the api_usage_events columns we read."""
+    conn = sqlite3.connect(":memory:")
+    conn.execute(
+        """CREATE TABLE api_usage_events (
+               id TEXT PRIMARY KEY, subject TEXT, endpoint TEXT, model TEXT,
+               status TEXT, prompt_tokens INTEGER, completion_tokens INTEGER,
+               total_tokens INTEGER, created_at INTEGER)"""
+    )
+    for row in rows:
+        conn.execute("INSERT INTO api_usage_events VALUES (?,?,?,?,?,?,?,?,?)", row)
+    return conn
+
+
+def unsloth_event(eid="e1", model=UNSLOTH_MODEL_ID, prompt=1000, completion=50,
+                  created=1_764_000_000_000):
+    return (eid, "unsloth", "/v1/chat/completions", model, "completed",
+            prompt, completion, prompt + completion, created)
+
+
+def make_file_unsloth_db(path, rows=()):
+    """On-disk fake Unsloth Studio DB (for CLI-level tests)."""
+    conn = sqlite3.connect(path)
+    conn.execute(
+        """CREATE TABLE api_usage_events (
+               id TEXT PRIMARY KEY, subject TEXT, endpoint TEXT, model TEXT,
+               status TEXT, prompt_tokens INTEGER, completion_tokens INTEGER,
+               total_tokens INTEGER, created_at INTEGER)"""
+    )
+    for row in rows:
+        conn.execute("INSERT INTO api_usage_events VALUES (?,?,?,?,?,?,?,?,?)", row)
+    conn.commit()
+    return conn
+
+
+class ImportUnslothTests(unittest.TestCase):
+    def setUp(self):
+        self.dest = make_dest()
+
+    def stored_total(self):
+        row = self.dest.execute(
+            "SELECT COUNT(*), SUM(prompt_tokens), SUM(completion_tokens)"
+            " FROM unsloth_events").fetchone()
+        return row if row[0] else (0, 0, 0)
+
+    def test_import_inserts_then_is_idempotent(self):
+        src = make_unsloth_src([unsloth_event("e1"), unsloth_event("e2", prompt=20)])
+        first = import_unsloth(src, self.dest)
+        self.assertEqual(first, {"inserted": 2, "updated": 0, "unchanged": 0})
+        second = import_unsloth(src, self.dest)
+        self.assertEqual(second, {"inserted": 0, "updated": 0, "unchanged": 2})
+        self.assertEqual(self.stored_total(), (2, 1020, 100))
+
+    def test_import_never_shrinks_on_source_regression(self):
+        src = make_unsloth_src([unsloth_event("e1", prompt=100)])
+        import_unsloth(src, self.dest)
+        src.execute("UPDATE api_usage_events SET prompt_tokens = 50 WHERE id='e1'")
+        import_unsloth(src, self.dest)
+        stored = self.dest.execute(
+            "SELECT prompt_tokens FROM unsloth_events"
+            " WHERE event_id='e1'").fetchone()
+        self.assertEqual(stored[0], 100)
+
+    def test_query_events_filters(self):
+        src = make_unsloth_src([
+            unsloth_event("e1", created=ms(2026, 11, 1)),
+            unsloth_event("e2", model="unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
+                          prompt=50, completion=7, created=ms(2026, 11, 5)),
+        ])
+        import_unsloth(src, self.dest)
+        rows = query_events(self.dest, model="qwen3-coder")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["tokens_output"], 7)  # completion maps to OUT
+        both = query_events(self.dest, since_ms=ms(2026, 11, 1),
+                            until_ms=ms(2026, 11, 5))
+        self.assertEqual(len(both), 2)
+        only_big = query_events(self.dest, min_in=500)
+        self.assertEqual([r["date"] for r in only_big], ["2026-11-01"])
+
+    def test_daily_events_groups_by_request_date(self):
+        src = make_unsloth_src([
+            unsloth_event("e1", prompt=100, completion=1, created=ms(2026, 11, 1)),
+            unsloth_event("e2", prompt=200, completion=2, created=ms(2026, 11, 1)),
+            unsloth_event("e3", prompt=400, completion=4, created=ms(2026, 11, 5)),
+        ])
+        import_unsloth(src, self.dest)
+        days = daily_events(self.dest)
+        self.assertEqual([d["date"] for d in days], ["2026-11-01", "2026-11-05"])
+        self.assertEqual(days[0]["sessions"], 2)  # request count under same key
+        self.assertEqual(days[0]["tokens_input"], 300)
+        self.assertEqual(days[0]["total"], 303)
+
+    def test_reconcile_computes_gap(self):
+        osrc = make_src([src_row(sid="s1", tin=1000, tcr=5000, tcw=0, tout=200)])
+        record(osrc, self.dest, now_ms=1)
+        usrc = make_unsloth_src([
+            unsloth_event("e1", prompt=9000, completion=300),
+            unsloth_event("e2", prompt=1000, completion=100),
+        ])
+        import_unsloth(usrc, self.dest)
+        rows = reconcile(self.dest)
+        self.assertEqual(len(rows), 1)
+        r = rows[0]
+        self.assertEqual(r["model"], UNSLOTH_MODEL_ID)
+        self.assertEqual(r["attributed_in"], 6000)   # in + cache_read
+        self.assertEqual(r["reported_prompt"], 10000)
+        self.assertEqual(r["gap_prompt"], 4000)      # lost to pruning
+        self.assertEqual(r["attributed_out"], 250)  # out + reasoning (200+50)
+        self.assertEqual(r["reported_completion"], 400)
+        self.assertEqual(r["gap_completion"], 150)  # 400 - (200 out + 50 reasoning)
+
+
+class CliUnslothTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = os.path.join(self.tmp.name, "usage.db")
+        self.src = os.path.join(self.tmp.name, "src.db")
+        self.udb = os.path.join(self.tmp.name, "studio.db")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_main(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(argv)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_import_unsloth_subcommand_prints_counts(self):
+        conn = make_file_unsloth_db(self.udb, [unsloth_event("e1")])
+        code, out, _ = self.run_main(
+            ["import-unsloth", "--db", self.db, "--unsloth-db", self.udb])
+        self.assertEqual(code, 0)
+        self.assertRegex(out.strip(),
+                         r"inserted=\d+ updated=\d+ unchanged=\d+")
+
+    def test_from_unsloth_query_renders_events(self):
+        make_file_unsloth_db(self.udb, [unsloth_event("e1")])
+        code, out, _ = self.run_main(
+            ["--db", self.db, "--src", os.path.join(self.tmp.name, "none.db"),
+             "--unsloth-db", self.udb, "--from-unsloth"])
+        self.assertEqual(code, 0)
+        self.assertIn(UNSLOTH_MODEL_ID, out)
+
+    def test_reconcile_subcommand(self):
+        make_file_unsloth_db(self.udb, [unsloth_event("e1")])
+        code, out, _ = self.run_main(
+            ["reconcile", "--db", self.db, "--src",
+             os.path.join(self.tmp.name, "none.db"), "--unsloth-db", self.udb])
+        self.assertEqual(code, 0)
+        self.assertIn(UNSLOTH_MODEL_ID, out)
+
+    def test_implicit_unsloth_import_falls_back_when_missing(self):
+        code, out, err = self.run_main(
+            ["--db", self.db, "--src", os.path.join(self.tmp.name, "none.db"),
+             "--unsloth-db", os.path.join(self.tmp.name, "no-studio.db")])
+        self.assertEqual(code, 0)
+        self.assertIn("warning:", err)
 
 
 if __name__ == "__main__":

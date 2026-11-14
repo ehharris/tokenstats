@@ -9,8 +9,10 @@ token counts. OpenCode prunes its own history over time; your copy in
 Single Python file, stdlib only — no install step:
 
 ```bash
-python3 tokenstat.py [filters]      # record + report
-python3 tokenstat.py record         # record only
+python3 tokenstat.py [filters]      # snapshot both sources + report
+python3 tokenstat.py record         # snapshot OpenCode only
+python3 tokenstat.py import-unsloth # snapshot Unsloth Studio only
+python3 tokenstat.py reconcile      # per-model: sessions vs Unsloth's log, gaps
 ```
 
 ## Examples
@@ -36,11 +38,20 @@ python3 tokenstat.py --json | jq '.[].total'
 
 # Snapshot without querying:
 python3 tokenstat.py record
+
+# Unsloth's own per-request log (IN = prompt incl. cache hits, OUT = completion):
+python3 tokenstat.py --from-unsloth --model unsloth --since 2026-11-01
+python3 tokenstat.py --from-unsloth --daily
+
+# Lost-history view: what Unsloth recorded that OpenCode no longer can:
+python3 tokenstat.py reconcile
 ```
 
-Every query records first, so reports are always current. If OpenCode's
-database is missing or locked mid-write, `tokenstat` prints a warning and
-reports from your existing store instead of failing.
+Every query snapshots both sources first (OpenCode's database and Unsloth
+Studio's `api_usage_events`), so reports are always current. If either
+database is missing or locked, `tokenstat` prints a warning and reports
+from your existing store instead of failing. Override paths with `--src`,
+`--unsloth-db`, and `--db`.
 
 ## No double counting
 
@@ -51,13 +62,20 @@ a session that grew between snapshots replaces its old totals rather than
 adding to them; and if OpenCode ever rewrites a row smaller, the stored
 values only ever go up. `record` reports `inserted=N updated=N unchanged=N`
 so you can see this happen: repeated runs show everything `unchanged`.
+The same guarantee applies to imported Unsloth events, keyed by their own
+event ids.
+
+One mapping caveat: Unsloth's `prompt_tokens` counts every prompt token it
+processed, including KV-cache hits; OpenCode splits those into
+`tokens_input` vs `tokens_cache_read`. So compare an Unsloth prompt total to
+OpenCode's input + cache columns — which is exactly what `reconcile` does.
 
 ## Keeping history complete
 
-Because queries record implicitly, using the tool keeps history current for
-free. To guarantee snapshots even in weeks without a query, schedule an
-hourly run: add to crontab (`crontab -e`):
-`0 * * * * /usr/bin/python3 $HOME/messinaround/token_counter/tokenstat.py record >> $HOME/messinaround/token_counter/record.log 2>&1`
+Because queries snapshot both sources implicitly, using the tool keeps
+history current for free. To guarantee snapshots even in weeks without a
+query, schedule an hourly run: add to crontab (`crontab -e`):
+`0 * * * * /usr/bin/python3 $HOME/messinaround/token_counter/tokenstat.py record >> $HOME/messinaround/token_counter/record.log 2>&1; /usr/bin/python3 $HOME/messinaround/token_counter/tokenstat.py import-unsloth >> $HOME/messinaround/token_counter/record.log 2>&1`
 
 ## Tests
 

@@ -20,6 +20,9 @@ largest row; deliberately NOT eighth glyphs U+2581..2587 — their vertical
 metrics differ from █ and ragged the bar bottoms), padded one space either
 side and colored truecolor by a per-glyph blue->orange gradient whose
 transition marks each row's in/out split (`TOKEN_IN_RGB`/`TOKEN_OUT_RGB`,
+interpolated via colorsys HLS sweeping UP through purple — a direct RGB
+lerp goes through gray; hue/lightness constants derived from the endpoint
+RGBs so endpoints round-trip exactly,
 `paint_bars`, table-only; tty-gated
 via `_color_enabled` — plain when piped or under `NO_COLOR`);
 bare `--model` (no value, no `--total`)

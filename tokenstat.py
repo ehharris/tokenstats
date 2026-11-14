@@ -6,6 +6,7 @@ usage into our own SQLite store, and reports it filtered by model, date,
 and token thresholds. See README.md.
 """
 import argparse
+import colorsys
 import datetime
 import json
 import os
@@ -421,15 +422,25 @@ def add_shares(rows, bar_width=30):
 
 # Bars are a left-to-right color gradient: input tokens blue fading into
 # output-token orange, with the transition centered where the input share of
-# the row's total ends.
+# the row's total ends. Interpolated in HSL sweeping UP from blue through
+# purple/magenta (never through gray), so every stop stays fully saturated;
+# at these endpoints that reproduces TOKEN_IN/OUT_RGB exactly.
 TOKEN_IN_RGB = (80, 168, 255)
 TOKEN_OUT_RGB = (255, 136, 90)
 
 
+_HUE_IN, _LUM_IN, _SAT = colorsys.rgb_to_hls(*(v / 255 for v in TOKEN_IN_RGB))
+_HUE_OUT, _LUM_OUT, _ = colorsys.rgb_to_hls(*(v / 255 for v in TOKEN_OUT_RGB))
+# sweep UP (blue -> purple -> magenta -> red-orange), wrapping past 1.0;
+# the DOWN route would go through green/yellow
+_HUE_SPAN = (_HUE_OUT - _HUE_IN) % 1.0
+
+
 def _token_rgb(t):
-    """Linear blend from TOKEN_IN_RGB (t=0) to TOKEN_OUT_RGB (t=1)."""
-    return tuple(round(a + (b - a) * t)
-                 for a, b in zip(TOKEN_IN_RGB, TOKEN_OUT_RGB))
+    """Fully saturated blend from TOKEN_IN_RGB (t=0) to TOKEN_OUT_RGB (t=1)."""
+    r, g, b = colorsys.hls_to_rgb((_HUE_IN + t * _HUE_SPAN) % 1.0,
+                                  _LUM_IN + (_LUM_OUT - _LUM_IN) * t, 1.0)
+    return (round(r * 255), round(g * 255), round(b * 255))
 
 
 def _paint_gradient(bar, frac_in):

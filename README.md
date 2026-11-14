@@ -47,6 +47,12 @@ python3 tokenstat.py --from-unsloth --daily
 python3 tokenstat.py reconcile
 ```
 
+The two reports (session mode and `--from-unsloth`) describe the *same*
+traffic from two angles — never add them together. In `reconcile`, a
+positive gap means usage only Unsloth still records (OpenCode pruned it);
+a negative gap means OpenCode counted tokens Studio's log doesn't contain
+(e.g. Studio rotated its log, or a request was retried client-side).
+
 Every query snapshots both sources first (OpenCode's database and Unsloth
 Studio's `api_usage_events`), so reports are always current. If either
 database is missing or locked, `tokenstat` prints a warning and reports

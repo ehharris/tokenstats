@@ -130,24 +130,28 @@ def import_unsloth(src: sqlite3.Connection, dest: sqlite3.Connection) -> dict:
         " created_at FROM api_usage_events").fetchall()
     for eid, model, p, c, t, ts in rows:
         vals = [v or 0 for v in (p, c, t)]
-        existing = dest.execute(
-            "SELECT prompt_tokens, completion_tokens, total_tokens"
-            " FROM unsloth_events WHERE event_id = ?", (eid,)).fetchone()
-        if existing is None:
-            dest.execute(
-                "INSERT INTO unsloth_events (event_id, model,"
-                " prompt_tokens, completion_tokens, total_tokens, created_at)"
-                " VALUES (?,?,?,?,?,?)",
-                [eid, model or "", *vals, ts])
-            counts["inserted"] += 1
-        else:
-            merged = [max(e, v) for e, v in zip(existing, vals)]
-            changed = merged != list(existing)
-            dest.execute(
-                "UPDATE unsloth_events SET model = ?, prompt_tokens = ?,"
-                " completion_tokens = ?, total_tokens = ? WHERE event_id = ?",
-                [model or "", *merged, eid])
-            counts["updated" if changed else "unchanged"] += 1
+        try:
+            existing = dest.execute(
+                "SELECT prompt_tokens, completion_tokens, total_tokens"
+                " FROM unsloth_events WHERE event_id = ?", (eid,)).fetchone()
+            if existing is None:
+                dest.execute(
+                    "INSERT INTO unsloth_events (event_id, model,"
+                    " prompt_tokens, completion_tokens, total_tokens,"
+                    " created_at) VALUES (?,?,?,?,?,?)",
+                    [eid, model or "", *vals, ts])
+                counts["inserted"] += 1
+            else:
+                merged = [max(e, v) for e, v in zip(existing, vals)]
+                changed = merged != list(existing)
+                dest.execute(
+                    "UPDATE unsloth_events SET model = ?, prompt_tokens = ?,"
+                    " completion_tokens = ?, total_tokens = ?"
+                    " WHERE event_id = ?", [model or "", *merged, eid])
+                counts["updated" if changed else "unchanged"] += 1
+        except sqlite3.Error:
+            # One malformed source row must not abort (or roll back) the rest.
+            counts["skipped"] = counts.get("skipped", 0) + 1
     dest.commit()
     return counts
 
@@ -155,8 +159,11 @@ def import_unsloth(src: sqlite3.Connection, dest: sqlite3.Connection) -> dict:
 def _event_filters(model, since_ms, until_ms, min_in, min_out):
     where, params = [], []
     if model:
-        where.append("lower(model) LIKE ?")
-        params.append(f"%{model.lower()}%")
+        pattern = f"%{model.lower()}%"
+        # Accept either the event's own model string or the provider-prefixed
+        # form shown in session reports (e.g. "unsloth-studio/unsloth/Qwen...").
+        where.append("(lower(model) LIKE ? OR lower(? || '/' || model) LIKE ?)")
+        params.extend([pattern, UNSLOTH_PROVIDER, pattern])
     if since_ms is not None:
         where.append("created_at >= ?")
         params.append(since_ms)
@@ -210,28 +217,40 @@ def daily_events(dest, model=None, since_ms=None, until_ms=None,
     ]
 
 
+UNSLOTH_PROVIDER = "unsloth-studio"  # providerID OpenCode records for Studio traffic
+
+
 def reconcile(dest, model=None):
-    """Per-model totals from both sources; gaps = Unsloth-reported minus
-    session-attributed (positive gap = usage OpenCode no longer records)."""
+    """Per-model totals from both sources; gap = Unsloth-reported minus
+    session-attributed (positive gap = usage OpenCode no longer records,
+    negative = OpenCode counted tokens Studio's log doesn't contain).
+
+    Portable LEFT JOIN + UNION ALL (no FULL OUTER JOIN, which needs SQLite
+    >= 3.39): every model from either side appears, with zeros on the other."""
     sql = """
-        SELECT COALESCE(u.model_id, e.model) AS model,
-               u.sessions, u.attributed_in, u.attributed_out,
+        WITH u AS (SELECT model_id, COUNT(*) AS sessions,
+                          SUM(tokens_input + tokens_cache_read
+                              + tokens_cache_write) AS attributed_in,
+                          SUM(tokens_output + tokens_reasoning) AS attributed_out
+                     FROM usage WHERE provider = ?
+                     GROUP BY model_id),
+             e AS (SELECT model, COUNT(*) AS requests,
+                          SUM(prompt_tokens) AS reported_prompt,
+                          SUM(completion_tokens) AS reported_completion
+                     FROM unsloth_events GROUP BY model)
+        SELECT u.model_id AS model, u.sessions, u.attributed_in,
+               u.attributed_out,
                e.requests, e.reported_prompt, e.reported_completion
-          FROM (SELECT model_id, COUNT(*) AS sessions,
-                       SUM(tokens_input + tokens_cache_read
-                           + tokens_cache_write) AS attributed_in,
-                       SUM(tokens_output + tokens_reasoning) AS attributed_out
-                  FROM usage WHERE provider = 'unsloth-studio'
-                  GROUP BY model_id) u
-          FULL OUTER JOIN
-               (SELECT model, COUNT(*) AS requests,
-                       SUM(prompt_tokens) AS reported_prompt,
-                       SUM(completion_tokens) AS reported_completion
-                  FROM unsloth_events GROUP BY model) e
-            ON u.model_id = e.model
+          FROM u LEFT JOIN e ON u.model_id = e.model
+        UNION ALL
+        SELECT e.model, NULL, NULL, NULL,
+               e.requests, e.reported_prompt, e.reported_completion
+          FROM e LEFT JOIN u ON u.model_id = e.model
+         WHERE u.model_id IS NULL
          ORDER BY model ASC"""
     rows = []
-    for (model_id, sess, ai, ao, reqs, rp, rc) in dest.execute(sql):
+    for (model_id, sess, ai, ao, reqs, rp, rc) in dest.execute(
+            sql, (UNSLOTH_PROVIDER,)):
         if model and model.lower() not in (model_id or "").lower():
             continue
         sess, ai, ao = sess or 0, ai or 0, ao or 0
@@ -451,9 +470,12 @@ def main(argv):
         try:
             counts = fn()
             if verbose:
-                print(f"inserted={counts['inserted']}"
-                      f" updated={counts['updated']}"
-                      f" unchanged={counts['unchanged']}")
+                line = (f"inserted={counts['inserted']}"
+                        f" updated={counts['updated']}"
+                        f" unchanged={counts['unchanged']}")
+                if counts.get("skipped"):
+                    line += f" skipped={counts['skipped']}"
+                print(line)
             return True
         except sqlite3.Error as exc:
             print(f"warning: could not read {path}: {exc}", file=sys.stderr)
@@ -476,6 +498,14 @@ def main(argv):
             "unsloth", args.unsloth_db, verbose=False)
 
     if args.command == "reconcile":
+        unsupported = [flag for flag, val in (
+            ("--since", args.since), ("--until", args.until),
+            ("--min-in", args.min_in), ("--min-out", args.min_out))
+            if val is not None] + (["--daily"] if args.daily else []) \
+            + (["--from-unsloth"] if args.from_unsloth else [])
+        if unsupported:
+            parser.error("reconcile supports only --model; unsupported:"
+                         f" {', '.join(unsupported)}")
         rows = reconcile(dest, model=args.model)
         columns = RECON_COLUMNS
     elif args.from_unsloth:

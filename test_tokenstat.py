@@ -499,5 +499,82 @@ class CliUnslothTests(unittest.TestCase):
         self.assertIn("warning:", err)
 
 
+class ReviewFixTests2(unittest.TestCase):
+    """Regression pins for whole-branch review of increment 2."""
+
+    def setUp(self):
+        self.dest = make_dest()
+
+    def test_reconcile_one_sided_models_both_directions(self):
+        # usage-only model: negative gap (OpenCode counted what Studio's log lacks)
+        osrc = make_src([src_row(sid="u1", model=LEMONADE_JSON, tin=1500, tout=30)])
+        record(osrc, self.dest, now_ms=1)  # lemonade: not in unsloth side at all
+        # unsloth-only model
+        usrc = make_unsloth_src([unsloth_event("e1", prompt=900, completion=9)])
+        import_unsloth(usrc, self.dest)
+        rows = {r["model"]: r for r in reconcile(self.dest)}
+        u = rows[UNSLOTH_MODEL_ID]
+        self.assertEqual((u["sessions"], u["attributed_in"]), (0, 0))
+        self.assertEqual(u["reported_prompt"], 900)
+        self.assertEqual(u["gap_prompt"], 900)
+
+    def test_import_skips_bad_row_keeps_good_rows(self):
+        src = make_unsloth_src([unsloth_event("good", prompt=100)])
+        src.execute("INSERT INTO api_usage_events VALUES ('bad','unsloth','/x',"
+                    "'m','completed',5,5,10,NULL)")
+        counts = import_unsloth(src, self.dest)
+        self.assertEqual(counts.get("skipped"), 1)
+        self.assertEqual(counts["inserted"], 1)
+        stored = self.dest.execute(
+            "SELECT COUNT(*), SUM(prompt_tokens) FROM unsloth_events").fetchone()
+        self.assertEqual(stored, (1, 100))  # good row persisted despite bad one
+
+    def test_event_filter_accepts_provider_prefixed_string(self):
+        import_unsloth(make_unsloth_src([unsloth_event("e1")]), self.dest)
+        # the string shown in session reports must also work in event mode
+        self.assertEqual(len(query_events(self.dest, model="unsloth-studio")), 1)
+        self.assertEqual(len(query_events(self.dest, model="qwen3.8")), 1)
+
+    def test_event_until_dst_boundary(self):
+        late = int(datetime.datetime(2026, 11, 1, 23, 30).timestamp() * 1000)
+        import_unsloth(make_unsloth_src([unsloth_event("e1", created=late)]),
+                       self.dest)
+        rows = query_events(self.dest, since_ms=ms(2026, 11, 1),
+                            until_ms=ms(2026, 11, 1))
+        self.assertEqual(len(rows), 1)
+
+    def test_report_stable_across_repeated_imports(self):
+        src = make_unsloth_src([unsloth_event("e1", prompt=500),
+                                unsloth_event("e2", prompt=7)])
+        import_unsloth(src, self.dest)
+        before = sum(r["total"] for r in query_events(self.dest))
+        import_unsloth(src, self.dest)
+        after = sum(r["total"] for r in query_events(self.dest))
+        self.assertEqual(before, after)
+
+    def test_reconcile_rejects_unsupported_flags(self):
+        with self.assertRaises(SystemExit) as cm:
+            main(["reconcile", "--since", "2026-11-01"])
+        self.assertEqual(cm.exception.code, 2)
+
+
+class CliUnslothFailTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_explicit_import_unsloth_fails_nonzero_when_missing(self):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(["import-unsloth", "--db",
+                         os.path.join(self.tmp.name, "usage.db"),
+                         "--unsloth-db", os.path.join(self.tmp.name, "none.db")])
+        self.assertEqual(code, 1)
+        self.assertIn("warning:", err.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

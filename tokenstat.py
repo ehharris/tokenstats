@@ -380,19 +380,35 @@ SHARE_COLUMNS = TOTAL_COLUMNS + [
 ]
 
 
+BAR_FULL = "█"                       # U+2588 full block
+BAR_FRACTIONS = "▁▂▃▄▅▆▇"            # U+2581..2587, one to seven eighths
+
+
+def _bar(value, biggest, width):
+    """Smooth text bar: full blocks plus at most one eighth-block fraction,
+    length proportional to value/biggest; nonzero never renders empty."""
+    if value <= 0 or biggest <= 0:
+        return ""
+    exact = width * value / biggest
+    full = int(exact)
+    eighths = round((exact - full) * 8)
+    if eighths == 8:  # fraction rounded up to a whole block
+        full, eighths = full + 1, 0
+    bar = BAR_FULL * full + (BAR_FRACTIONS[eighths - 1] if eighths else "")
+    return bar or BAR_FRACTIONS[0]
+
+
 def add_shares(rows, bar_width=30):
     """Copy of `rows` with per-row share of the overall (summed) total plus a
-    `bar` scaled to the largest row. Pure display enrichment; inputs untouched."""
+    smooth Unicode bar scaled to the largest row. Pure display enrichment;
+    inputs untouched."""
     overall = sum(r["total"] for r in rows)
     biggest = max((r["total"] for r in rows), default=0)
     out = []
     for r in rows:
         share = 100.0 * r["total"] / overall if overall else 0.0
-        n = round(bar_width * r["total"] / biggest) if biggest else 0
-        if r["total"] and not n:
-            n = 1  # a nonzero row never renders as an empty bar
         out.append({**r, "share": share, "share_str": f"{share:.1f}%",
-                    "bar": "#" * n})
+                    "bar": _bar(r["total"], biggest, bar_width)})
     return out
 
 

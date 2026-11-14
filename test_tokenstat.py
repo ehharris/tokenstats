@@ -829,13 +829,29 @@ class AddSharesTests(unittest.TestCase):
         add_shares(rows)
         self.assertNotIn("share", rows[0])
 
-    def test_bar_scaled_to_largest_row(self):
+    def test_bar_scaled_to_largest_row_with_smooth_blocks(self):
         rows = [{"model": "a", "total": 100}, {"model": "b", "total": 50},
                 {"model": "c", "total": 1}]
         out = add_shares(rows, bar_width=20)
-        self.assertEqual(out[0]["bar"], "#" * 20)
-        self.assertEqual(out[1]["bar"], "#" * 10)
-        self.assertEqual(out[2]["bar"], "#")  # nonzero stays visible
+        self.assertEqual(out[0]["bar"], "█" * 20)  # biggest row: full blocks
+        self.assertEqual(out[1]["bar"], "█" * 10)  # exact half: no fraction
+        self.assertEqual(out[2]["bar"], "▂")       # 0.2 cells -> rounded eighth
+
+    def test_bar_shows_fraction_when_not_exact(self):
+        rows = [{"model": "a", "total": 3}, {"model": "b", "total": 1}]
+        out = add_shares(rows, bar_width=30)
+        self.assertEqual(out[0]["bar"], "█" * 30)
+        # 1/3 of max over width 30 = exactly 10 full blocks
+        self.assertEqual(out[1]["bar"], "█" * 10)
+        rows2 = [{"model": "a", "total": 7}, {"model": "b", "total": 1}]
+        out2 = add_shares(rows2, bar_width=30)
+        # 30/7 = 4.285... -> 4 full blocks + 2/8 fraction (▂)
+        self.assertEqual(out2[1]["bar"], "████▂")
+
+    def test_tiny_nonzero_row_never_renders_empty(self):
+        rows = [{"model": "a", "total": 10_000}, {"model": "b", "total": 1}]
+        out = add_shares(rows, bar_width=30)
+        self.assertEqual(out[1]["bar"], "▁")  # rounds to nothing -> lightest block
 
     def test_zero_total_rows_get_no_bar_and_zero_share(self):
         rows = [{"model": "a", "total": 0}, {"model": "b", "total": 0}]
@@ -881,7 +897,7 @@ class CliShareTests(unittest.TestCase):
         lemonade_line = next(ln for ln in lines if "lemonade" in ln)
         self.assertIn("66.7%", unsloth_line)
         self.assertIn("33.3%", lemonade_line)
-        self.assertTrue(unsloth_line.count("#") > lemonade_line.count("#"))
+        self.assertTrue(unsloth_line.count("█") > lemonade_line.count("█"))
 
     def test_bare_model_is_now_valid_per_model_totals(self):
         code, out, _ = self.run_main(

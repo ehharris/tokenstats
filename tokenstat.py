@@ -412,6 +412,42 @@ def add_shares(rows, bar_width=30):
     return out
 
 
+# Heat gradient for colored bars: red-orange (smallest) -> yellow -> green.
+BAR_GRADIENT = ((235, 100, 60), (230, 200, 80), (85, 215, 110))
+
+
+def _gradient_rgb(t):
+    """Piecewise-linear RGB along BAR_GRADIENT for t in [0, 1]."""
+    t = min(max(t, 0.0), 1.0)
+    span = len(BAR_GRADIENT) - 1
+    pos = t * span
+    lo = min(int(pos), span - 1)
+    frac = pos - lo
+    a, b = BAR_GRADIENT[lo], BAR_GRADIENT[lo + 1]
+    return tuple(round(a[i] + (b[i] - a[i]) * frac) for i in range(3))
+
+
+def _color_enabled(out, environ):
+    """True-color output only on a terminal, and never under NO_COLOR."""
+    return bool(out.isatty()) and "NO_COLOR" not in environ
+
+
+def paint_bars(rows, color):
+    """Copy of `rows` with BAR cells padded by one space either side; when
+    color is true, nonzero bars are wrapped in an ANSI true-color escape
+    keyed to the row's share relative to the largest share. Table-only."""
+    biggest_share = max((r["share"] for r in rows), default=0.0)
+    out = []
+    for r in rows:
+        padded = f" {r['bar']} "
+        if color and r["total"]:
+            t = r["share"] / biggest_share if biggest_share else 0.0
+            rgb = _gradient_rgb(t)
+            padded = f"\x1b[38;2;{rgb[0]};{rgb[1]};{rgb[2]}m{padded}\x1b[0m"
+        out.append({**r, "bar": padded})
+    return out
+
+
 def render_table(rows, columns=None):
     """Aligned report. `columns` is a list of (header, key, kind)."""
     if columns is None:
@@ -631,11 +667,14 @@ def main(argv):
                                min_out=args.min_out))
         columns = DAILY_COLUMNS if args.daily else SESSION_COLUMNS
     if args.as_json:
-        # share travels in JSON; the bar is table-only decoration
+        # share travels in JSON; the painted bar is table-only decoration
         print(json.dumps([{k: v for k, v in r.items()
                            if k not in ("bar", "share_str")}
                           for r in rows], indent=2))
     else:
+        if columns is SHARE_COLUMNS:
+            rows = paint_bars(rows, color=_color_enabled(sys.stdout,
+                                                         os.environ))
         print(render_table(rows, columns), end="")
     return 0
 

@@ -730,5 +730,46 @@ class CliTotalTests(unittest.TestCase):
         self.assertEqual(cm.exception.code, 2)
 
 
+class DisplayAlignmentTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = os.path.join(self.tmp.name, "usage.db")
+        self.src = os.path.join(self.tmp.name, "src.db")
+        make_file_db(self.src, [src_row(sid="s1", cost=0.05)])
+        self.no_udb = os.path.join(self.tmp.name, "no-studio.db")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_main(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(argv)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_render_table_left_aligns_numbers(self):
+        columns = [("N", "n", "int"), ("T", "t", "text")]
+        rows = [{"n": 5, "t": "x"}, {"n": 1000, "t": "y"}]
+        self.assertEqual(render_table(rows, columns),
+                         "N      T\n5      x\n1,000  y\n")
+
+    def test_report_tables_have_no_cost_column(self):
+        # every displayed report (sessions, daily, total) drops COST...
+        for argv_extra in ([], ["--daily"], ["--total"]):
+            with self.subTest(argv_extra=argv_extra):
+                code, out, _ = self.run_main(
+                    ["--db", self.db, "--src", self.src,
+                     "--unsloth-db", self.no_udb] + argv_extra)
+                self.assertEqual(code, 0)
+                self.assertNotIn("COST", out)
+        # ...while --json still carries the data
+        code, out, _ = self.run_main(["--db", self.db, "--src", self.src,
+                                      "--unsloth-db", self.no_udb, "--total",
+                                      "--json"])
+        self.assertEqual(code, 0)
+        self.assertIn("cost", json.loads(out)[0])
+
+
 if __name__ == "__main__":
     unittest.main()

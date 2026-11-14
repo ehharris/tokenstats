@@ -71,8 +71,10 @@ python3 -m unittest test_tokenstat -v                  # tests (~0.05s, no deps)
   per-row isolation; the Unsloth import has it — mirror it if you touch this).
 - Per-event/per-session SELECT+UPDATE loops are O(N) full rewrites each run
   (~0.4s per 100k rows; fine for years at current volume).
-- `--from-unsloth` renders with session-shaped columns (cost shows 0.0000,
-  blank SESSION); a dedicated event column set is unclaimed polish.
+- `--from-unsloth` renders with session-shaped columns (blank SESSION); a
+  dedicated event column set is unclaimed polish. Displayed tables have no
+  COST column since the 2026-11-13 display increment; cost is still stored
+  and emitted by `--json`.
 - Module docstring/`--help` still describe OpenCode as the sole source;
   base spec says the same — both stale since the Unsloth increment.
 - No index on `unsloth_events(created_at)` yet (~70k rows/year expected).

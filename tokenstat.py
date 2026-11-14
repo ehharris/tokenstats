@@ -362,18 +362,17 @@ def query_sessions(dest, model=None, since_ms=None, until_ms=None,
 SESSION_COLUMNS = [
     ("DATE", "date", "text"), ("MODEL", "model", "text"),
     ("IN", "tokens_input", "int"), ("OUT", "tokens_output", "int"),
-    ("TOTAL", "total", "int"), ("COST", "cost", "cost"),
-    ("SESSION", "title", "title"),
+    ("TOTAL", "total", "int"), ("SESSION", "title", "title"),
 ]
 DAILY_COLUMNS = [
     ("DATE", "date", "text"), ("SESSIONS", "sessions", "int"),
     ("IN", "tokens_input", "int"), ("OUT", "tokens_output", "int"),
-    ("TOTAL", "total", "int"), ("COST", "cost", "cost"),
+    ("TOTAL", "total", "int"),
 ]
 TOTAL_COLUMNS = [
     ("MODEL", "model", "text"), ("SESSIONS", "sessions", "int"),
     ("IN", "tokens_input", "int"), ("OUT", "tokens_output", "int"),
-    ("TOTAL", "total", "int"), ("COST", "cost", "cost"),
+    ("TOTAL", "total", "int"),
 ]
 
 
@@ -389,8 +388,6 @@ def render_table(rows, columns=None):
             return ""
         if kind == "int":
             return f"{value:,}"
-        if kind == "cost":
-            return f"{value:.4f}"
         if kind == "title":
             return str(value)[:40]
         return str(value)
@@ -409,8 +406,6 @@ def render_table(rows, columns=None):
         for i, cell in enumerate(line):
             if widths[i] is None:
                 parts.append(cell)
-            elif columns[i][2] in ("int", "cost"):
-                parts.append(cell.rjust(widths[i]))
             else:
                 parts.append(cell.ljust(widths[i]))
         out.append("  ".join(parts).rstrip())

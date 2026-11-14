@@ -293,11 +293,7 @@ def parse_date(s: str) -> int:
     return int(dt.timestamp() * 1000)
 
 
-def query_sessions(dest, model=None, since_ms=None, until_ms=None,
-                   min_in=None, min_out=None):
-    """Session rows matching all given filters, oldest first."""
-    sql = ("SELECT time_created, provider, model_id, tokens_input,"
-           " tokens_output, cost, title FROM usage")
+def _session_filters(model, since_ms, until_ms, min_in, min_out):
     where, params = [], []
     if model:
         where.append("lower(provider || '/' || model_id) LIKE ?")
@@ -314,6 +310,15 @@ def query_sessions(dest, model=None, since_ms=None, until_ms=None,
     if min_out is not None:
         where.append("tokens_output >= ?")
         params.append(min_out)
+    return where, params
+
+
+def query_sessions(dest, model=None, since_ms=None, until_ms=None,
+                   min_in=None, min_out=None):
+    """Session rows matching all given filters, oldest first."""
+    sql = ("SELECT time_created, provider, model_id, tokens_input,"
+           " tokens_output, cost, title FROM usage")
+    where, params = _session_filters(model, since_ms, until_ms, min_in, min_out)
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY time_created ASC"
@@ -387,22 +392,7 @@ def daily_totals(dest, model=None, since_ms=None, until_ms=None,
     sql = ("SELECT date(time_created/1000, 'unixepoch', 'localtime') AS day,"
            " COUNT(*), SUM(tokens_input), SUM(tokens_output), SUM(cost)"
            " FROM usage")
-    where, params = [], []
-    if model:
-        where.append("lower(provider || '/' || model_id) LIKE ?")
-        params.append(f"%{model.lower()}%")
-    if since_ms is not None:
-        where.append("time_created >= ?")
-        params.append(since_ms)
-    if until_ms is not None:
-        where.append("time_created < ?")
-        params.append(_day_end_ms(until_ms))  # until-day inclusive
-    if min_in is not None:
-        where.append("tokens_input >= ?")
-        params.append(min_in)
-    if min_out is not None:
-        where.append("tokens_output >= ?")
-        params.append(min_out)
+    where, params = _session_filters(model, since_ms, until_ms, min_in, min_out)
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " GROUP BY day ORDER BY day ASC"
@@ -412,6 +402,35 @@ def daily_totals(dest, model=None, since_ms=None, until_ms=None,
          "cost": cost or 0.0}
         for day, n, tin, tout, cost in dest.execute(sql, params)
     ]
+
+
+def total_totals(dest, model=None, since_ms=None, until_ms=None,
+                 min_in=None, min_out=None):
+    """All-time aggregates: one grand-total row, or with a model filter one
+    row per provider/model_id, ordered by that string. Empty when no rows
+    match."""
+    where, params = _session_filters(model, since_ms, until_ms, min_in, min_out)
+    tail = " WHERE " + " AND ".join(where) if where else ""
+    if not model:
+        n, tin, tout, cost = dest.execute(
+            "SELECT COUNT(*), SUM(tokens_input), SUM(tokens_output), SUM(cost)"
+            " FROM usage" + tail, params).fetchone()
+        if not n:
+            return []
+        tin, tout = tin or 0, tout or 0
+        return [{"model": "(all)", "sessions": n, "tokens_input": tin,
+                 "tokens_output": tout, "total": tin + tout,
+                 "cost": cost or 0.0}]
+    rows = []
+    for m, n, tin, tout, cost in dest.execute(
+            "SELECT provider || '/' || model_id AS m, COUNT(*),"
+            " SUM(tokens_input), SUM(tokens_output), SUM(cost)"
+            " FROM usage" + tail + " GROUP BY m ORDER BY m ASC", params):
+        tin, tout = tin or 0, tout or 0
+        rows.append({"model": m, "sessions": n, "tokens_input": tin,
+                     "tokens_output": tout, "total": tin + tout,
+                     "cost": cost or 0.0})
+    return rows
 
 
 def _connect_src(path):

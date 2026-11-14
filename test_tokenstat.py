@@ -10,7 +10,8 @@ import unittest
 
 from tokenstat import (daily_events, daily_totals, ensure_schema, import_unsloth,
                        main, parse_date, parse_model, query_events,
-                       query_sessions, reconcile, record, render_table)
+                       query_sessions, reconcile, record, render_table,
+                       total_totals)
 
 LEMONADE_JSON = '{"id":"gpt-oss-120b","providerID":"lemonade"}'
 UNSLOTH_MODEL_ID = "unsloth/Qwen3.8-Flash-Next-GGUF"
@@ -574,6 +575,57 @@ class CliUnslothFailTests(unittest.TestCase):
                          "--unsloth-db", os.path.join(self.tmp.name, "none.db")])
         self.assertEqual(code, 1)
         self.assertIn("warning:", err.getvalue())
+
+
+class TotalTotalsTests(unittest.TestCase):
+    def setUp(self):
+        self.dest = make_dest()
+        record(make_src([
+            src_row(sid="s1", tin=1000, tout=200, cost=0.01),          # unsloth-studio
+            src_row(sid="s2", model=LEMONADE_JSON, tin=500, tout=50,
+                    cost=0.02),                                        # lemonade
+        ]), self.dest, now_ms=1)
+
+    def test_total_totals_single_grand_row(self):
+        rows = total_totals(self.dest)
+        self.assertEqual(len(rows), 1)
+        r = rows[0]
+        self.assertEqual(r["model"], "(all)")
+        self.assertEqual((r["sessions"], r["tokens_input"],
+                          r["tokens_output"], r["total"]), (2, 1500, 250, 1750))
+        self.assertAlmostEqual(r["cost"], 0.03)
+
+    def test_total_totals_per_model_when_filtered(self):
+        record(make_src([src_row(sid="s3", model=LEMONADE_JSON, tin=10, tout=1,
+                                 cost=0.0)]), self.dest, now_ms=2)
+        rows = total_totals(self.dest, model="lemonade")
+        self.assertEqual([r["model"] for r in rows], ["lemonade/gpt-oss-120b"])
+        self.assertEqual((rows[0]["sessions"], rows[0]["tokens_input"]), (2, 510))
+
+    def test_total_totals_keeps_same_model_id_separate_per_provider(self):
+        a = '{"id":"m1","providerID":"prov-a"}'
+        b = '{"id":"m1","providerID":"prov-b"}'
+        record(make_src([src_row(sid="p1", model=a), src_row(sid="p2", model=b)]),
+               self.dest, now_ms=2)
+        rows = total_totals(self.dest, model="m1")
+        self.assertEqual(sorted(r["model"] for r in rows), ["prov-a/m1", "prov-b/m1"])
+
+    def test_total_totals_filters_apply_before_summing(self):
+        record(make_src([src_row(sid="d1", created=ms(2026, 11, 1), tin=9000),
+                         src_row(sid="d2", created=ms(2026, 11, 5), tin=7)]),
+               self.dest, now_ms=2)
+        r = total_totals(self.dest, since_ms=ms(2026, 11, 1),
+                         until_ms=ms(2026, 11, 1))[0]
+        self.assertEqual((r["sessions"], r["tokens_input"]), (1, 9000))
+        # threshold pre-filters individual sessions, not the aggregate:
+        # s1 has tin>=1000; s2/d2 excluded by both date and threshold
+        r = total_totals(self.dest, min_in=1000)[0]
+        self.assertEqual((r["sessions"], r["tokens_input"]), (2, 1000 + 9000))
+
+    def test_total_totals_empty_result(self):
+        self.assertEqual(total_totals(self.dest, model="nope"), [])
+        empty = make_dest()
+        self.assertEqual(total_totals(empty), [])
 
 
 if __name__ == "__main__":

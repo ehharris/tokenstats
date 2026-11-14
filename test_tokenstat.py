@@ -8,10 +8,10 @@ import os
 import sqlite3
 import unittest
 
-from tokenstat import (daily_events, daily_totals, ensure_schema, import_unsloth,
-                       main, parse_date, parse_model, query_events,
-                       query_sessions, reconcile, record, render_table,
-                       total_events, total_totals)
+from tokenstat import (add_shares, daily_events, daily_totals, ensure_schema,
+                       import_unsloth, main, parse_date, parse_model,
+                       query_events, query_sessions, reconcile, record,
+                       render_table, total_events, total_totals)
 
 LEMONADE_JSON = '{"id":"gpt-oss-120b","providerID":"lemonade"}'
 UNSLOTH_MODEL_ID = "unsloth/Qwen3.8-Flash-Next-GGUF"
@@ -727,7 +727,7 @@ class CliTotalTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(
             set(rows[0]), {"model", "sessions", "tokens_input",
-                           "tokens_output", "total", "cost"})
+                           "tokens_output", "total", "cost", "share"})
 
     def test_total_rejects_daily(self):
         with self.assertRaises(SystemExit) as cm:
@@ -752,14 +752,15 @@ class CliTotalTests(unittest.TestCase):
         self.assertIn(f"unsloth-studio/{UNSLOTH_MODEL_ID}", out)
         self.assertNotIn("(all)", out)
 
-    def test_bare_model_without_total_rejected(self):
-        for extra in ([], ["--daily"]):
-            with self.subTest(extra=extra):
-                with self.assertRaises(SystemExit) as cm:
-                    with contextlib.redirect_stderr(io.StringIO()):
-                        main(["--db", self.db, "--src", self.src,
-                              "--unsloth-db", self.no_udb] + extra + ["--model"])
-                self.assertEqual(cm.exception.code, 2)
+    def test_bare_model_with_daily_renders_daily_report(self):
+        # superseded 2026-11-14: bare --model no longer errors; with --daily
+        # it means "all models" and renders the ordinary daily table
+        code, out, _ = self.run_main(
+            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+             "--daily", "--model"])
+        self.assertEqual(code, 0)
+        self.assertIn("DATE", out.splitlines()[0])
+        self.assertNotIn("SHARE", out)
 
     def test_from_unsloth_total_bare_model(self):
         udb = os.path.join(self.tmp.name, "studio.db")
@@ -813,6 +814,127 @@ class DisplayAlignmentTests(unittest.TestCase):
                                       "--json"])
         self.assertEqual(code, 0)
         self.assertIn("cost", json.loads(out)[0])
+
+
+class AddSharesTests(unittest.TestCase):
+    """add_shares: share-of-overall-total + relative bar for aggregate rows."""
+
+    def test_share_is_percent_of_row_total_over_sum(self):
+        rows = [{"model": "a", "total": 750}, {"model": "b", "total": 250}]
+        out = add_shares(rows)
+        self.assertEqual([r["share"] for r in out], [75.0, 25.0])
+
+    def test_original_rows_not_mutated(self):
+        rows = [{"model": "a", "total": 1}]
+        add_shares(rows)
+        self.assertNotIn("share", rows[0])
+
+    def test_bar_scaled_to_largest_row(self):
+        rows = [{"model": "a", "total": 100}, {"model": "b", "total": 50},
+                {"model": "c", "total": 1}]
+        out = add_shares(rows, bar_width=20)
+        self.assertEqual(out[0]["bar"], "#" * 20)
+        self.assertEqual(out[1]["bar"], "#" * 10)
+        self.assertEqual(out[2]["bar"], "#")  # nonzero stays visible
+
+    def test_zero_total_rows_get_no_bar_and_zero_share(self):
+        rows = [{"model": "a", "total": 0}, {"model": "b", "total": 0}]
+        out = add_shares(rows)
+        self.assertEqual([r["share"] for r in out], [0.0, 0.0])
+        self.assertEqual([r["bar"] for r in out], ["", ""])
+
+
+class CliShareTests(unittest.TestCase):
+    """--total per-model views (both sources) show SHARE + BAR; bare --model
+    is now a valid shortcut for --total --model."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = os.path.join(self.tmp.name, "usage.db")
+        qwen_lemonade = '{"id":"qwen-mini","providerID":"lemonade"}'
+        self.src = os.path.join(self.tmp.name, "src.db")
+        make_file_db(self.src, [
+            src_row(sid="s1", tin=9000, tout=1000),   # unsloth-studio: 10k
+            src_row(sid="s2", model=qwen_lemonade, tin=4500, tout=500),  # 5k
+        ])
+        self.no_udb = os.path.join(self.tmp.name, "no-studio.db")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_main(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(argv)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_total_per_model_table_shares_and_bars(self):
+        code, out, _ = self.run_main(
+            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+             "--total", "--model"])
+        self.assertEqual(code, 0)
+        lines = out.splitlines()
+        self.assertIn("SHARE", lines[0])
+        self.assertIn("BAR", lines[0])
+        unsloth_line = next(ln for ln in lines if "unsloth-studio" in ln)
+        lemonade_line = next(ln for ln in lines if "lemonade" in ln)
+        self.assertIn("66.7%", unsloth_line)
+        self.assertIn("33.3%", lemonade_line)
+        self.assertTrue(unsloth_line.count("#") > lemonade_line.count("#"))
+
+    def test_bare_model_is_now_valid_per_model_totals(self):
+        code, out, _ = self.run_main(
+            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+             "--model"])
+        self.assertEqual(code, 0)
+        self.assertIn("lemonade/qwen-mini", out)
+        self.assertIn(f"unsloth-studio/{UNSLOTH_MODEL_ID}", out)
+        self.assertNotIn("(all)", out)
+        self.assertIn("SHARE", out.splitlines()[0])
+
+    def test_total_grand_row_shares_full(self):
+        code, out, _ = self.run_main(
+            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+             "--total"])
+        self.assertEqual(code, 0)
+        self.assertIn("100.0%", out)
+
+    def test_total_json_carries_share_not_bar(self):
+        code, out, _ = self.run_main(
+            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+             "--total", "--model", "--json"])
+        self.assertEqual(code, 0)
+        rows = json.loads(out)
+        self.assertEqual(len(rows), 2)
+        for r in rows:
+            self.assertIn("share", r)
+            self.assertNotIn("bar", r)
+        self.assertAlmostEqual(
+            sum(r["share"] for r in rows), 100.0, places=6)
+
+    def test_from_unsloth_total_shares(self):
+        udb = os.path.join(self.tmp.name, "studio.db")
+        make_file_unsloth_db(udb, [unsloth_event("e1", prompt=900, completion=100),
+                                   unsloth_event("e2", model="other-model",
+                                                 prompt=500)])
+        code, out, _ = self.run_main(
+            ["--db", self.db, "--src", os.path.join(self.tmp.name, "none.db"),
+             "--unsloth-db", udb, "--from-unsloth", "--total", "--model"])
+        self.assertEqual(code, 0)
+        self.assertIn("SHARE", out.splitlines()[0])
+        self.assertIn("1,000", out)  # unsloth total renders
+        self.assertIn("35.5%", out)  # other-model = 550/1,550
+
+    def test_session_and_daily_tables_unchanged(self):
+        for extra in ([], ["--daily"]):
+            with self.subTest(extra=extra):
+                code, out, _ = self.run_main(
+                    ["--db", self.db, "--src", self.src,
+                     "--unsloth-db", self.no_udb] + extra)
+                self.assertEqual(code, 0)
+                self.assertNotIn("SHARE", out)
+                self.assertNotIn("BAR", out)
 
 
 if __name__ == "__main__":

@@ -9,11 +9,17 @@ and token counts. Built 2026-11-13 via spec → plan → TDD; design doc in
 **State at handoff (2026-11-14):** everything merged to `master` (no remote
 configured — local-only repo, no push; branch workflow used for the 2026-11-13
 evening increments, fast-forward merged after three clean review rounds).
-62 tests green. Increments since the original build: `--total` all-time
+72 tests green. Increments since the original build: `--total` all-time
 aggregate view (session and `--from-unsloth` paths; `--model PATTERN` = rows
 per matching model, bare `--model` = rows for every model), left-aligned
 tables everywhere, COST dropped from displayed reports (still stored and in
-`--json`). Store `usage.db` holds full recoverable history: ~56 OpenCode
+`--json`). Share increment: per-model `--total` tables end with `SHARE`
+(row total as % of the overall total across displayed rows) and a `BAR`
+text bar scaled to the largest row; bare `--model` (no value, no `--total`)
+is now a shortcut for `--total --model` instead of an error — with `--daily`
+it still means "all models" and renders the daily table; `reconcile --model`
+unchanged. `--json` `--total` rows carry a float `share` field (no bar).
+Store `usage.db` holds full recoverable history: ~56 OpenCode
 sessions and ~1,400 Unsloth request events back to 2026-11-06.
 
 ## Commands (run from this directory)
@@ -25,6 +31,7 @@ python3 tokenstat.py --min-in 10000 --daily            # thresholds apply to dai
 python3 tokenstat.py --total                           # all-time grand total, one row
 python3 tokenstat.py --total --model unsloth           # all-time totals, one row per model
 python3 tokenstat.py --total --model                   # ...for ALL models (bare --model)
+python3 tokenstat.py --model                           # same as --total --model (shortcut)
 python3 tokenstat.py --from-unsloth [--daily|--json]   # Unsloth's own per-request log
 python3 tokenstat.py reconcile                         # lost-history view per model
 python3 tokenstat.py record | import-unsloth           # explicit snapshots (exit 1 if source unreadable)
@@ -68,6 +75,10 @@ python3 -m unittest test_tokenstat -v                  # tests (~0.05s, no deps)
    safely. Keep `.gitignore` covering `usage.db*` and `record.log`.
 
 ## Known gotchas / deferred work (from five review rounds)
+
+- `SHARE` is computed over the **displayed rows**, so with `--since`/
+  `--until`/threshold filters it means "% of the filtered total", not
+  "% of all time". The grand-total row renders 100.0% and a full bar.
 
 - Dates in session mode bucket by **session creation day**; 7 of 53 real
   sessions span multiple days, so per-day session numbers differ from

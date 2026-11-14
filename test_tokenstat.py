@@ -278,5 +278,63 @@ class CliTests(unittest.TestCase):
                                  "tokens_output", "total", "cost"]))
 
 
+class ReviewFixTests(unittest.TestCase):
+    """Regression pins for findings from the whole-branch review."""
+
+    def setUp(self):
+        src = make_src([
+            src_row(sid="big", tin=5000, tout=900, created=ms(2026, 11, 1)),
+            src_row(sid="tiny", tin=100, tout=5, created=ms(2026, 11, 5)),
+        ])
+        self.src = src
+        self.dest = make_dest()
+        record(src, self.dest, now_ms=1)
+
+    def test_daily_totals_applies_token_thresholds(self):
+        days = daily_totals(self.dest, min_out=100)
+        self.assertEqual([d["date"] for d in days], ["2026-11-01"])
+        days = daily_totals(self.dest, min_in=1000)
+        self.assertEqual([d["date"] for d in days], ["2026-11-01"])
+
+    def test_record_keeps_labels_when_source_nulls_them(self):
+        self.src.execute("UPDATE session_v2 SET model = NULL, title = NULL"
+                         " WHERE id = 'big'")
+        record(self.src, self.dest, now_ms=2)
+        row = self.dest.execute(
+            "SELECT provider, model_id, title FROM usage"
+            " WHERE session_id = 'big'").fetchone()
+        self.assertEqual(row[0], "unsloth-studio")
+        self.assertEqual(row[1], "unsloth/Qwen3.8-Flash-Next-GGUF")
+        self.assertEqual(row[2], "a session")
+
+    def test_until_includes_whole_local_day_on_dst_fall_back(self):
+        # 2026-11-01 is a 25-hour local day here (fall back); a session at
+        # 23:30 local must be inside --until 2026-11-01.
+        late = int(datetime.datetime(2026, 11, 1, 23, 30).timestamp() * 1000)
+        self.src.execute("INSERT INTO session_v2 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                         src_row(sid="late", tin=77, created=late))
+        record(self.src, self.dest, now_ms=2)
+        rows = query_sessions(self.dest, since_ms=ms(2026, 11, 1),
+                              until_ms=ms(2026, 11, 1))
+        self.assertIn(77, [r["tokens_input"] for r in rows])
+
+    def test_report_totals_stable_across_repeated_records(self):
+        before = sum(r["total"] for r in query_sessions(self.dest))
+        record(self.src, self.dest, now_ms=2)
+        record(self.src, self.dest, now_ms=3)
+        after = sum(r["total"] for r in query_sessions(self.dest))
+        self.assertEqual(before, after)
+
+
+class StoreErrorTests(unittest.TestCase):
+    def test_unopenable_store_warns_and_exits_nonzero_no_traceback(self):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(["--db", "/nonexistent-dir-xyz/usage.db"])
+        self.assertNotEqual(code, 0)
+        self.assertIn("warning:", err.getvalue())
+        self.assertNotIn("Traceback", err.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

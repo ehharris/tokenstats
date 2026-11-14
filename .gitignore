@@ -1,3 +1,4 @@
-usage.db
+usage.db*
 __pycache__/
 .superpowers/
+record.log

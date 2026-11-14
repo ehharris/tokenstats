@@ -74,7 +74,8 @@ def record(src: sqlite3.Connection, dest: sqlite3.Connection, now_ms: int) -> di
         provider, model_id = parse_model(model_raw)
         existing = dest.execute(
             "SELECT tokens_input, tokens_output, tokens_reasoning,"
-            " tokens_cache_read, tokens_cache_write, cost"
+            " tokens_cache_read, tokens_cache_write, cost, provider,"
+            " model_id, title, directory, agent"
             " FROM usage WHERE session_id = ?", (sid,)).fetchone()
         if existing is None:
             dest.execute(
@@ -87,15 +88,21 @@ def record(src: sqlite3.Connection, dest: sqlite3.Connection, now_ms: int) -> di
                  agent, created, updated, now_ms, now_ms])
             counts["inserted"] += 1
         else:
-            merged = [max(e, s) for e, s in zip(existing, source_vals)]
-            changed = merged != list(existing)
+            merged = [max(e, s) for e, s in zip(existing[:6], source_vals)]
+            changed = merged != list(existing[:6])
+            # Labels make the numbers interpretable: like the token columns,
+            # they never shrink — a null/empty value from the source keeps
+            # the best label we already have.
+            kept = [new or old for new, old in
+                    zip((provider, model_id, title, directory, agent),
+                        existing[6:])]
             dest.execute(
                 "UPDATE usage SET provider = ?, model_id = ?,"
                 " tokens_input = ?, tokens_output = ?, tokens_reasoning = ?,"
                 " tokens_cache_read = ?, tokens_cache_write = ?, cost = ?,"
                 " title = ?, directory = ?, agent = ?, time_updated = ?,"
                 " last_seen = ? WHERE session_id = ?",
-                [provider, model_id, *merged, title, directory, agent,
+                [kept[0], kept[1], *merged, kept[2], kept[3], kept[4],
                  updated, now_ms, sid])
             counts["updated" if changed else "unchanged"] += 1
     dest.commit()
@@ -103,6 +110,13 @@ def record(src: sqlite3.Connection, dest: sqlite3.Connection, now_ms: int) -> di
 
 
 DAY_MS = 86_400_000
+
+
+def _day_end_ms(until_ms):
+    """Exclusive upper bound for an inclusive until-day: local midnight of
+    the next calendar day (DST-safe, unlike until_ms + DAY_MS)."""
+    start = datetime.datetime.fromtimestamp(until_ms / 1000)
+    return int((start + datetime.timedelta(days=1)).timestamp() * 1000)
 
 
 def parse_date(s: str) -> int:
@@ -129,7 +143,7 @@ def query_sessions(dest, model=None, since_ms=None, until_ms=None,
         params.append(since_ms)
     if until_ms is not None:
         where.append("time_created < ?")
-        params.append(until_ms + DAY_MS)  # until-day inclusive
+        params.append(_day_end_ms(until_ms))  # until-day inclusive
     if min_in is not None:
         where.append("tokens_input >= ?")
         params.append(min_in)
@@ -203,7 +217,8 @@ def render_table(rows, columns=None):
     return "\n".join(out) + "\n"
 
 
-def daily_totals(dest, model=None, since_ms=None, until_ms=None):
+def daily_totals(dest, model=None, since_ms=None, until_ms=None,
+                 min_in=None, min_out=None):
     """Per-day aggregates matching the filters, oldest day first."""
     sql = ("SELECT date(time_created/1000, 'unixepoch', 'localtime') AS day,"
            " COUNT(*), SUM(tokens_input), SUM(tokens_output), SUM(cost)"
@@ -217,7 +232,13 @@ def daily_totals(dest, model=None, since_ms=None, until_ms=None):
         params.append(since_ms)
     if until_ms is not None:
         where.append("time_created < ?")
-        params.append(until_ms + DAY_MS)  # until-day inclusive
+        params.append(_day_end_ms(until_ms))  # until-day inclusive
+    if min_in is not None:
+        where.append("tokens_input >= ?")
+        params.append(min_in)
+    if min_out is not None:
+        where.append("tokens_output >= ?")
+        params.append(min_out)
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " GROUP BY day ORDER BY day ASC"
@@ -259,8 +280,17 @@ def main(argv):
                         help=f"OpenCode database (default: {DEFAULT_SRC})")
     args = parser.parse_args(argv)
 
-    dest = sqlite3.connect(args.db)
-    ensure_schema(dest)
+    try:
+        dest = sqlite3.connect(args.db)
+        # WAL + busy_timeout so a scheduled `record` and an interactive
+        # query can overlap without either failing.
+        dest.execute("PRAGMA journal_mode=WAL")
+        dest.execute("PRAGMA busy_timeout=5000")
+        ensure_schema(dest)
+    except sqlite3.Error as exc:
+        print(f"warning: could not open our store {args.db}: {exc}",
+              file=sys.stderr)
+        return 1
     now_ms = int(time.time() * 1000)
 
     if args.command == "record":
@@ -283,7 +313,8 @@ def main(argv):
 
     if args.daily:
         rows = daily_totals(dest, model=args.model, since_ms=args.since,
-                            until_ms=args.until)
+                            until_ms=args.until, min_in=args.min_in,
+                            min_out=args.min_out)
     else:
         rows = query_sessions(dest, model=args.model, since_ms=args.since,
                               until_ms=args.until, min_in=args.min_in,

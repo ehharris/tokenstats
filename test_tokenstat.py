@@ -1,8 +1,18 @@
 """Tests for tokenstat.py — run with: python3 -m unittest test_tokenstat -v"""
+import argparse
+import datetime
 import sqlite3
 import unittest
 
-from tokenstat import ensure_schema, parse_model, record
+from tokenstat import (ensure_schema, parse_date, parse_model, query_sessions,
+                       record, render_table)
+
+LEMONADE_JSON = '{"id":"gpt-oss-120b","providerID":"lemonade"}'
+
+
+def ms(y, m, d):
+    """Local midnight of the given date, in epoch milliseconds."""
+    return int(datetime.datetime(y, m, d).timestamp() * 1000)
 
 UNSLOTH_JSON = (
     '{"id":"unsloth/Qwen3.8-Flash-Next-GGUF","providerID":"unsloth-studio",'
@@ -106,6 +116,74 @@ class ParseModelTests(unittest.TestCase):
     def test_parse_model_null_and_invalid(self):
         self.assertEqual(parse_model(None), ("", ""))
         self.assertEqual(parse_model("not json"), ("", ""))
+
+
+class QueryTests(unittest.TestCase):
+    def setUp(self):
+        src = make_src([
+            src_row(sid="u1", model=UNSLOTH_JSON, tin=5000, tout=900,
+                    created=ms(2026, 11, 1), title="unsloth session"),
+            src_row(sid="l1", model=LEMONADE_JSON, tin=100, tout=5,
+                    created=ms(2026, 11, 5), title="lemonade session"),
+        ])
+        self.dest = make_dest()
+        record(src, self.dest, now_ms=1)
+
+    def test_filter_by_model_substring(self):
+        for pattern in ("unsloth", "UNSLOTH"):
+            rows = query_sessions(self.dest, model=pattern)
+            self.assertEqual(len(rows), 1, pattern)
+            self.assertIn("unsloth-studio", rows[0]["model"])
+
+    def test_filter_date_window_inclusive_endpoints(self):
+        both = query_sessions(self.dest, since_ms=ms(2026, 11, 1),
+                              until_ms=ms(2026, 11, 5))
+        self.assertEqual(len(both), 2)
+        only_first = query_sessions(self.dest, since_ms=ms(2026, 11, 1),
+                                    until_ms=ms(2026, 11, 4))
+        self.assertEqual([r["date"] for r in only_first], ["2026-11-01"])
+
+    def test_filter_min_tokens(self):
+        rows = query_sessions(self.dest, min_out=100)
+        self.assertEqual(len(rows), 1)
+        self.assertIn("unsloth-studio", rows[0]["model"])
+        rows = query_sessions(self.dest, min_in=1000)
+        self.assertEqual(len(rows), 1)
+        self.assertIn("unsloth-studio", rows[0]["model"])
+
+    def test_query_returns_expected_dict_keys(self):
+        row = query_sessions(self.dest)[0]
+        self.assertEqual(
+            sorted(row.keys()),
+            sorted(["date", "model", "tokens_input", "tokens_output",
+                    "total", "cost", "title"]))
+        self.assertEqual(row["total"], row["tokens_input"] + row["tokens_output"])
+
+
+class ParseDateTests(unittest.TestCase):
+    def test_parse_date_accepts_good_value(self):
+        self.assertEqual(parse_date("2026-11-01"), ms(2026, 11, 1))
+
+    def test_parse_date_rejects_bad_value(self):
+        with self.assertRaises(argparse.ArgumentTypeError):
+            parse_date("13-2026")
+
+
+class RenderTableTests(unittest.TestCase):
+    ROW = {"date": "2026-11-01", "model": "unsloth-studio/unsloth/Qwen3.8",
+           "tokens_input": 12345, "tokens_output": 678, "total": 13023,
+           "cost": 0.0123, "title": "a session title"}
+
+    def test_render_table_smoke(self):
+        out = render_table([self.ROW])
+        lines = out.splitlines()
+        self.assertIn("DATE", lines[0])
+        self.assertTrue(any("unsloth-studio/unsloth/Qwen3.8" in ln
+                            for ln in lines[1:]))
+        self.assertTrue(any("12,345" in ln for ln in lines[1:]))
+
+    def test_render_table_empty(self):
+        self.assertIn("no sessions match", render_table([]))
 
 
 if __name__ == "__main__":

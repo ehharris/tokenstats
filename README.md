@@ -68,7 +68,9 @@ orange for output — set
 `NO_COLOR` to opt out; piped or `--json` output stays plain), and every bar
 is padded with a space on either side. The color itself is a gradient: blue
 across the row's input-token portion blending into orange across its output
-portion, so the transition point marks the in/out split.
+portion, so the transition point marks the in/out split. The gradient is
+interpolated in HSL (blue through purple/magenta to orange) at full
+saturation, so it never passes through a washed-out gray.
 
 The two reports (session mode and `--from-unsloth`) describe the *same*
 traffic from two angles — never add them together. In `reconcile`, a

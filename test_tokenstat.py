@@ -1020,6 +1020,19 @@ class PaintBarsTests(unittest.TestCase):
         self.assertEqual(blue_count(200, 0), 20)   # all input: all blue
         self.assertEqual(blue_count(0, 200), 0)    # all output: no blue
 
+    def test_gradient_stays_vivid_no_gray_midpoints(self):
+        # direct RGB lerp blue->orange passes through gray (~delta 21); the
+        # gradient must keep every glyph highly chromatic (via HSL hue sweep)
+        rows = [{"model": "a", "total": 10, "share": 100.0, "bar": "█" * 20,
+                 "tokens_input": 5, "tokens_output": 5}]
+        bar = paint_bars(rows, color=True)[0]["bar"]
+        import re
+        rgbs = [tuple(int(g) for g in m) for m in
+                re.findall(r"\x1b\[38;2;(\d+);(\d+);(\d+)m", bar)]
+        for rgb in rgbs:
+            self.assertGreater(max(rgb) - min(rgb), 100,
+                               f"washed-out midpoint {rgb}")
+
     def test_zero_total_row_not_colored(self):
         rows = [{"model": "z", "total": 0, "share": 0.0, "bar": "",
                  "tokens_input": 0, "tokens_output": 0}]

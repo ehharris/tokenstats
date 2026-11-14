@@ -217,6 +217,32 @@ def daily_events(dest, model=None, since_ms=None, until_ms=None,
     ]
 
 
+def total_events(dest, model=None, since_ms=None, until_ms=None,
+                 min_in=None, min_out=None):
+    """All-time event aggregates: one grand-total row, or with a model
+    filter one row per event model string, ordered by it. Empty when no
+    events match. Mirrors total_totals; cost is always 0.0 (daily_events)."""
+    where, params = _event_filters(model, since_ms, until_ms, min_in, min_out)
+    tail = " WHERE " + " AND ".join(where) if where else ""
+    if not model:
+        n, p, c = dest.execute(
+            "SELECT COUNT(*), SUM(prompt_tokens), SUM(completion_tokens)"
+            " FROM unsloth_events" + tail, params).fetchone()
+        if not n:
+            return []
+        p, c = p or 0, c or 0
+        return [{"model": "(all)", "sessions": n, "tokens_input": p,
+                 "tokens_output": c, "total": p + c, "cost": 0.0}]
+    return [
+        {"model": m, "sessions": n, "tokens_input": p or 0,
+         "tokens_output": c or 0, "total": (p or 0) + (c or 0), "cost": 0.0}
+        for m, n, p, c in dest.execute(
+            "SELECT model, COUNT(*), SUM(prompt_tokens), SUM(completion_tokens)"
+            " FROM unsloth_events" + tail + " GROUP BY model ORDER BY model ASC",
+            params)
+    ]
+
+
 UNSLOTH_PROVIDER = "unsloth-studio"  # providerID OpenCode records for Studio traffic
 
 

@@ -11,7 +11,7 @@ import unittest
 from tokenstat import (daily_events, daily_totals, ensure_schema, import_unsloth,
                        main, parse_date, parse_model, query_events,
                        query_sessions, reconcile, record, render_table,
-                       total_totals)
+                       total_events, total_totals)
 
 LEMONADE_JSON = '{"id":"gpt-oss-120b","providerID":"lemonade"}'
 UNSLOTH_MODEL_ID = "unsloth/Qwen3.8-Flash-Next-GGUF"
@@ -626,6 +626,42 @@ class TotalTotalsTests(unittest.TestCase):
         self.assertEqual(total_totals(self.dest, model="nope"), [])
         empty = make_dest()
         self.assertEqual(total_totals(empty), [])
+
+
+class TotalEventsTests(unittest.TestCase):
+    def setUp(self):
+        self.dest = make_dest()
+        import_unsloth(make_unsloth_src([
+            unsloth_event("e1", prompt=900, completion=30),
+            unsloth_event("e2", model="other-model", prompt=100, completion=5),
+        ]), self.dest)
+
+    def test_total_events_single_grand_row(self):
+        rows = total_events(self.dest)
+        self.assertEqual(len(rows), 1)
+        r = rows[0]
+        self.assertEqual(r["model"], "(all)")
+        self.assertEqual((r["sessions"], r["tokens_input"],
+                          r["tokens_output"], r["total"]), (2, 1000, 35, 1035))
+        self.assertEqual(r["cost"], 0.0)
+
+    def test_total_events_per_model_when_filtered(self):
+        import_unsloth(make_unsloth_src([unsloth_event("e3", prompt=50)]),
+                       self.dest)  # same model as e1
+        rows = total_events(self.dest, model="qwen")
+        self.assertEqual([r["model"] for r in rows], [UNSLOTH_MODEL_ID])
+        self.assertEqual((rows[0]["sessions"], rows[0]["tokens_input"]), (2, 950))
+
+    def test_total_events_provider_prefixed_filter(self):
+        # the provider-prefixed string shown in session reports selects just
+        # that model's events (every event belongs to the unsloth provider)
+        rows = total_events(self.dest, model="unsloth-studio/" + UNSLOTH_MODEL_ID)
+        self.assertEqual([r["model"] for r in rows], [UNSLOTH_MODEL_ID])
+
+    def test_total_events_thresholds_and_empty(self):
+        r = total_events(self.dest, min_in=500)[0]
+        self.assertEqual((r["sessions"], r["tokens_input"]), (1, 900))
+        self.assertEqual(total_events(self.dest, model="nope"), [])
 
 
 if __name__ == "__main__":

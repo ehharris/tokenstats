@@ -835,7 +835,7 @@ class AddSharesTests(unittest.TestCase):
         out = add_shares(rows, bar_width=20)
         self.assertEqual(out[0]["bar"], "█" * 20)  # biggest row: full blocks
         self.assertEqual(out[1]["bar"], "█" * 10)  # exact half: no fraction
-        self.assertEqual(out[2]["bar"], "▂")       # 0.2 cells -> rounded eighth
+        self.assertEqual(out[2]["bar"], "░")       # 0.2 cells -> light shade
 
     def test_bar_shows_fraction_when_not_exact(self):
         rows = [{"model": "a", "total": 3}, {"model": "b", "total": 1}]
@@ -845,13 +845,21 @@ class AddSharesTests(unittest.TestCase):
         self.assertEqual(out[1]["bar"], "█" * 10)
         rows2 = [{"model": "a", "total": 7}, {"model": "b", "total": 1}]
         out2 = add_shares(rows2, bar_width=30)
-        # 30/7 = 4.285... -> 4 full blocks + 2/8 fraction (▂)
-        self.assertEqual(out2[1]["bar"], "████▂")
+        # 30/7 = 4.285... -> 4 full blocks + 2/8 fraction (light shade)
+        self.assertEqual(out2[1]["bar"], "████░")
+
+    def test_fraction_shades_are_all_full_cell_height(self):
+        # the old eighth glyphs (U+2581..2587) sit lower than U+2588 in many
+        # fonts; only full-cell glyphs may appear so bars never rag at bottom
+        allowed = set("█░▒▓")
+        rows = [{"model": "a", "total": t} for t in (1000, 97, 43, 9, 1)]
+        for r in add_shares(rows, bar_width=20):
+            self.assertTrue(set(r["bar"]) <= allowed, r["bar"])
 
     def test_tiny_nonzero_row_never_renders_empty(self):
         rows = [{"model": "a", "total": 10_000}, {"model": "b", "total": 1}]
         out = add_shares(rows, bar_width=30)
-        self.assertEqual(out[1]["bar"], "▁")  # rounds to nothing -> lightest block
+        self.assertEqual(out[1]["bar"], "░")  # rounds to nothing -> lightest
 
     def test_zero_total_rows_get_no_bar_and_zero_share(self):
         rows = [{"model": "a", "total": 0}, {"model": "b", "total": 0}]
@@ -1047,7 +1055,7 @@ class CliColorTests(unittest.TestCase):
         self.assertNotIn("\x1b", out)
         unsloth_line = next(ln for ln in out.splitlines() if "unsloth" in ln)
         # SHARE value then a space-gap before the bar starts
-        self.assertRegex(unsloth_line, r"\d+\.\d%   [█▁▂▃▄▅▆▇ ]+$")
+        self.assertRegex(unsloth_line, r"\d+\.\d%   [█░▒▓ ]+$")
 
 
 if __name__ == "__main__":

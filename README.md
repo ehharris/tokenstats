@@ -59,8 +59,10 @@ python3 tokenstat.py reconcile
 
 Per-model `--total` reports end with two extra columns: `SHARE`, the row's
 percent of the overall total across the displayed rows, and `BAR`, a smooth
-Unicode bar (full blocks plus eighth-block fractions) scaled to the largest
-row so the mix is visible at a glance. When output is a terminal the bars
+Unicode bar (full blocks `█` plus one shade block `░▒▓` for the fraction —
+deliberately no eighth-block glyphs like `▁`, whose different vertical
+metrics rag the bottom edge in many fonts) scaled to the largest row so the
+mix is visible at a glance. When output is a terminal the bars
 are heat-colored by share (red-orange for small, green for large — set
 `NO_COLOR` to opt out; piped or `--json` output stays plain), and every bar
 is padded with a space on either side.

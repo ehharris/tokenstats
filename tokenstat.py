@@ -380,13 +380,17 @@ SHARE_COLUMNS = TOTAL_COLUMNS + [
 ]
 
 
-BAR_FULL = "█"                       # U+2588 full block
-BAR_FRACTIONS = "▁▂▃▄▅▆▇"            # U+2581..2587, one to seven eighths
+BAR_FULL = "█"  # U+2588; fractions use the full-cell shades ░▒▓ (U+2591..2593).
+# Eighth-block glyphs (U+2581..2587) match fill height better but sit on a
+# different vertical metric than U+2588 in many fonts, which rags the bar's
+# bottom edge — full-cell shades avoid that entirely.
+BAR_SHADES = ("░", "▒", "▓")  # light / medium / dark shade
 
 
 def _bar(value, biggest, width):
-    """Smooth text bar: full blocks plus at most one eighth-block fraction,
-    length proportional to value/biggest; nonzero never renders empty."""
+    """Smooth text bar: full blocks plus at most one shade block for the
+    fraction, length proportional to value/biggest; nonzero never renders
+    empty."""
     if value <= 0 or biggest <= 0:
         return ""
     exact = width * value / biggest
@@ -394,8 +398,11 @@ def _bar(value, biggest, width):
     eighths = round((exact - full) * 8)
     if eighths == 8:  # fraction rounded up to a whole block
         full, eighths = full + 1, 0
-    bar = BAR_FULL * full + (BAR_FRACTIONS[eighths - 1] if eighths else "")
-    return bar or BAR_FRACTIONS[0]
+    shade = ""
+    if eighths:
+        shade = BAR_SHADES[0 if eighths <= 2 else 1 if eighths <= 4 else 2]
+    bar = BAR_FULL * full + shade
+    return bar or BAR_SHADES[0]  # nonzero never renders empty
 
 
 def add_shares(rows, bar_width=30):

@@ -6,10 +6,15 @@ sources into its own SQLite store and reports them filtered by model, date,
 and token counts. Built 2026-11-13 via spec → plan → TDD; design doc in
 `docs/superpowers/specs/`, implementation plan in `docs/superpowers/plans/`.
 
-**State at handoff:** everything merged to `master` (no remote configured —
-local-only repo, no push). 41 tests green. Store `usage.db` already holds
-full recoverable history: ~53 OpenCode sessions and ~1,300 Unsloth request
-events back to 2026-11-06.
+**State at handoff (2026-11-14):** everything merged to `master` (no remote
+configured — local-only repo, no push; branch workflow used for the 2026-11-13
+evening increments, fast-forward merged after three clean review rounds).
+62 tests green. Increments since the original build: `--total` all-time
+aggregate view (session and `--from-unsloth` paths; `--model PATTERN` = rows
+per matching model, bare `--model` = rows for every model), left-aligned
+tables everywhere, COST dropped from displayed reports (still stored and in
+`--json`). Store `usage.db` holds full recoverable history: ~56 OpenCode
+sessions and ~1,400 Unsloth request events back to 2026-11-06.
 
 ## Commands (run from this directory)
 
@@ -62,7 +67,7 @@ python3 -m unittest test_tokenstat -v                  # tests (~0.05s, no deps)
 7. Our store uses WAL + busy_timeout so cron and interactive runs overlap
    safely. Keep `.gitignore` covering `usage.db*` and `record.log`.
 
-## Known gotchas / deferred work (from two review rounds)
+## Known gotchas / deferred work (from five review rounds)
 
 - Dates in session mode bucket by **session creation day**; 7 of 53 real
   sessions span multiple days, so per-day session numbers differ from
@@ -79,6 +84,16 @@ python3 -m unittest test_tokenstat -v                  # tests (~0.05s, no deps)
 - Module docstring/`--help` still describe OpenCode as the sole source;
   base spec says the same — both stale since the Unsloth increment.
 - No index on `unsloth_events(created_at)` yet (~70k rows/year expected).
+- Sessions whose source model JSON was null/malformed group under `MODEL="/"`
+  in per-model reports (empty provider + empty model_id joined by `/`).
+  Honest display — any fix belongs in ingestion labeling (invariant 3), not
+  display filtering.
+- Deferred polish from the `--total` review rounds (all verified safe): no
+  CLI-level pin for `--from-unsloth --total <pattern>` or bare `--model` on
+  `reconcile`; flag-conflict guard tests assert exit 2 but not message text;
+  no-COST-header test skips the `--from-unsloth` tables; README `--json`
+  example doesn't mention `--total`. Guards (all modes) run after implicit
+  ingestion — side effects are idempotent no-op writes to our own store.
 
 ## NOT DONE (decisions left to the human)
 

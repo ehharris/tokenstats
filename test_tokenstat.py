@@ -980,6 +980,88 @@ class CliTotalTests(unittest.TestCase):
         self.assertIn("other-model", out)
         self.assertNotIn("(all)", out)
 
+    def test_cost_flag_adds_cost_column_and_json_field(self):
+        code, out, _ = self.run_main(
+            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+             "--total", "--cost"])
+        self.assertEqual(code, 0)
+        self.assertIn("COST", out)
+        code, out, _ = self.run_main(
+            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+             "--total", "--cost", "--json"])
+        self.assertIn("cost_est", json.loads(out)[0])
+
+    def test_cost_default_off_still_has_no_cost_column(self):
+        code, out, _ = self.run_main(
+            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+             "--total"])
+        self.assertEqual(code, 0)
+        self.assertNotIn("COST", out)
+
+    def test_cost_on_any_model_and_piped_plain(self):
+        code, out, _ = self.run_main(
+            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+             "--total", "--cost"])
+        self.assertEqual(code, 0)
+        self.assertIn("$", out)          # estimate prints for non-Claude traffic
+        self.assertNotIn("\x1b", out)    # piped output stays plain
+
+    def test_cost_keeps_share_bar_padded(self):
+        # regression pin: appending COST after BAR must not disable paint_bars
+        # (the print path's identity check on SHARE_COLUMNS would silently
+        # turn bars off for --cost --total --model)
+        code, out, _ = self.run_main(
+            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+             "--total", "--model", "--cost"])
+        self.assertEqual(code, 0)
+        unsloth_line = next(ln for ln in out.splitlines() if "unsloth" in ln)
+        # SHARE percent value, then the space-padded bar (two column
+        # separators + paint_bars' leading pad), then block glyphs
+        self.assertRegex(unsloth_line, r"\d+\.\d%   [█░▒▓]")
+
+    def test_reconcile_rejects_cost(self):
+        with self.assertRaises(SystemExit) as cm:
+            with contextlib.redirect_stderr(io.StringIO()):
+                main(["reconcile", "--db", self.db, "--src", self.src,
+                      "--unsloth-db", self.no_udb, "--cost"])
+        self.assertEqual(cm.exception.code, 2)
+
+
+class CostTests(unittest.TestCase):
+    """annotate_cost: reference Claude-tier price overlay on row copies."""
+
+    def test_annotate_cost_session_uses_all_token_classes_sonnet(self):
+        from tokenstat import annotate_cost
+        rows = [{"tokens_input": 1_000_000, "tokens_output": 1_000_000,
+                 "tokens_cache_read": 1_000_000, "tokens_cache_write": 1_000_000}]
+        (r,) = annotate_cost(rows, "sonnet")
+        # 3 + 15 + 0.30 + 3.75 = 22.05 per Mtok of each class
+        self.assertAlmostEqual(r["cost_est"], 22.05)
+
+    def test_annotate_cost_tier_changes_number(self):
+        from tokenstat import annotate_cost
+        rows = [{"tokens_input": 1_000_000, "tokens_output": 0,
+                 "tokens_cache_read": 0, "tokens_cache_write": 0}]
+        self.assertAlmostEqual(annotate_cost(rows, "haiku")[0]["cost_est"], 1.0)
+        self.assertAlmostEqual(annotate_cost(rows, "opus")[0]["cost_est"], 5.0)
+
+    def test_annotate_cost_event_uses_prompt_completion(self):
+        from tokenstat import annotate_cost
+        rows = [{"tokens_input": 1_000_000, "tokens_output": 1_000_000}]
+        self.assertAlmostEqual(annotate_cost(rows, "sonnet")[0]["cost_est"], 18.0)
+
+    def test_annotate_cost_run_uses_progress_only(self):
+        from tokenstat import annotate_cost
+        rows = [{"progress_tokens": 1_000_000, "tokens_input": 1_000_000}]
+        self.assertAlmostEqual(annotate_cost(rows, "sonnet")[0]["cost_est"], 15.0)
+
+    def test_annotate_cost_does_not_mutate_input_rows(self):
+        from tokenstat import annotate_cost
+        rows = [{"tokens_input": 10, "tokens_output": 10}]
+        out = annotate_cost(rows, "sonnet")
+        self.assertNotIn("cost_est", rows[0])  # inputs untouched...
+        self.assertIn("cost_est", out[0])      # ...copies carry the estimate
+
 
 class DisplayAlignmentTests(unittest.TestCase):
     def setUp(self):

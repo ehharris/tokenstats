@@ -559,6 +559,39 @@ RUNS_COLUMNS = [
 SHARE_COLUMNS = TOTAL_COLUMNS + [
     ("SHARE", "share_str", "text"), ("BAR", "bar", "text"),
 ]
+COST_COLUMN = ("COST", "cost_est", "cost")  # opt-in --cost estimate overlay
+
+
+# Reference Claude list prices, USD per million tokens, as of 2026-11-14:
+# Sonnet 4.6 / Haiku 4.5 / Opus 4.8 — cache reads at the standard 0.1x and
+# cache writes at 1.25x each model's input price.
+PRICES = {
+    "haiku": {"in": 1.0, "out": 5.0, "cache_read": 0.10, "cache_write": 1.25},
+    "sonnet": {"in": 3.0, "out": 15.0, "cache_read": 0.30, "cache_write": 3.75},
+    "opus": {"in": 5.0, "out": 25.0, "cache_read": 0.50, "cache_write": 6.25},
+}
+
+
+def annotate_cost(rows, tier="sonnet"):
+    """Copy of `rows` with a reference Claude-tier estimate added as float
+    `cost_est` (USD). Display/JSON overlay only: inputs untouched, nothing
+    stored. Row shape picks the math: run rows (progress_tokens) price as
+    output-only; session-family rows add the cache classes; event rows use
+    input+output."""
+    p = PRICES[tier]
+    out = []
+    for r in rows:
+        if "progress_tokens" in r:
+            est = r["progress_tokens"] * p["out"] / 1e6
+        elif "tokens_cache_read" in r:
+            est = (r["tokens_input"] * p["in"] + r["tokens_output"] * p["out"]
+                   + r["tokens_cache_read"] * p["cache_read"]
+                   + r["tokens_cache_write"] * p["cache_write"]) / 1e6
+        else:
+            est = (r["tokens_input"] * p["in"]
+                   + r["tokens_output"] * p["out"]) / 1e6
+        out.append({**r, "cost_est": est})
+    return out
 
 
 BAR_FULL = "█"  # U+2588; fractions use the full-cell shades ░▒▓ (U+2591..2593).
@@ -671,6 +704,8 @@ def render_table(rows, columns=None):
             return ""
         if kind == "rate":
             return f"{value:.1f}"
+        if kind == "cost":
+            return f"${value:.4f}"
         if kind == "int":
             return f"{value:,}"
         if kind == "title":
@@ -803,6 +838,12 @@ def main(argv):
     parser.add_argument("--from-runs", action="store_true", dest="from_runs",
                         help="report imported Unsloth generation runs with true"
                              " tokens/second")
+    parser.add_argument("--cost", action="store_true", dest="cost",
+                        help="add a reference Claude-tier cost estimate column"
+                             " (--cost-tier) to reports; display-only overlay")
+    parser.add_argument("--cost-tier", choices=["haiku", "sonnet", "opus"],
+                        default="sonnet", dest="cost_tier",
+                        help="price tier for --cost (default: sonnet)")
     args = parser.parse_args(argv)
 
     try:
@@ -872,7 +913,8 @@ def main(argv):
             if val is not None] + (["--daily"] if args.daily else []) \
             + (["--from-unsloth"] if args.from_unsloth else []) \
             + (["--from-runs"] if args.from_runs else []) \
-            + (["--total"] if args.total else [])
+            + (["--total"] if args.total else []) \
+            + (["--cost"] if args.cost else [])
         if unsupported:
             parser.error("reconcile supports only --model; unsupported:"
                          f" {', '.join(unsupported)}")
@@ -915,13 +957,21 @@ def main(argv):
                                until_ms=args.until, min_in=args.min_in,
                                min_out=args.min_out))
         columns = DAILY_COLUMNS if args.daily else SESSION_COLUMNS
+    # Opt-in --cost overlay: reference pricing on row copies, never stored
+    # data; reconcile keeps its own reject list above. The share-view flag
+    # is captured BEFORE appending COST_COLUMN — the append creates a new
+    # list, and paint_bars below must still recognize the share view.
+    share_view = columns is SHARE_COLUMNS
+    if args.cost and columns is not RECON_COLUMNS:
+        rows = annotate_cost(rows, args.cost_tier)
+        columns = columns + [COST_COLUMN]
     if args.as_json:
         # share travels in JSON; the painted bar is table-only decoration
         print(json.dumps([{k: v for k, v in r.items()
                            if k not in ("bar", "share_str")}
                           for r in rows], indent=2))
     else:
-        if columns is SHARE_COLUMNS:
+        if share_view:
             rows = paint_bars(rows, color=_color_enabled(sys.stdout,
                                                          os.environ))
         print(render_table(rows, columns), end="")

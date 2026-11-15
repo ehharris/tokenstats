@@ -1579,7 +1579,7 @@ class CliShareTests(unittest.TestCase):
         self.assertLess(u, l)
 
     def test_share_json_sorted_desc_ties_alphabetical(self):
-        # own fixture: three models, one big (50%) and a tie at 12.5% each;
+        # own fixture: three models, one big (66.7%) and a tie at 16.7% each;
         # expected order: zzz/zzz, then the tied pair alphabetically
         src = os.path.join(self.tmp.name, "src3.db")
         aaa_one = '{"id":"one","providerID":"aaa"}'

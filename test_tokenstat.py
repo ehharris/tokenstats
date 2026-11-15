@@ -115,6 +115,24 @@ class RecordTests(unittest.TestCase):
             self.assertEqual((row[0], row[1]), ("", ""), f"session {sid}")
 
 
+class RecordIsolationTests(unittest.TestCase):
+    def setUp(self):
+        self.dest = make_dest()
+
+    def test_record_skips_bad_row_keeps_good(self):
+        # src_row(sid="bad", created=None) -> NULL time_created on insert ->
+        # NOT NULL violation; record() must skip it, not abort the run.
+        src = make_src([src_row(sid="good"), src_row(sid="bad", created=None)])
+        counts = record(src, self.dest, now_ms=1)
+        self.assertEqual(counts["inserted"], 1)             # good row
+        self.assertEqual(counts.get("skipped", 0), 1)       # bad row
+        self.assertEqual(self.dest.execute(
+            "SELECT tokens_input FROM usage WHERE session_id='good'").fetchone()[0],
+            1000)
+        self.assertEqual(self.dest.execute(
+            "SELECT COUNT(*) FROM usage WHERE session_id='bad'").fetchone()[0], 0)
+
+
 class ParseModelTests(unittest.TestCase):
     def test_parse_model_extracts_provider_and_id(self):
         self.assertEqual(

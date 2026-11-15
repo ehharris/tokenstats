@@ -1260,6 +1260,111 @@ class CacheOverlayTests(unittest.TestCase):
         self.assertEqual(SESSION_COLUMNS, original)
 
 
+class CliCacheTests(unittest.TestCase):
+    """--cache overlay column end-to-end through main()."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = os.path.join(self.tmp.name, "usage.db")
+        qwen_lemonade = '{"id":"qwen-mini","providerID":"lemonade"}'
+        self.src = os.path.join(self.tmp.name, "src.db")
+        self.addCleanup(make_file_db(self.src, [
+            src_row(sid="s1"),                        # unsloth-studio model
+            src_row(sid="s2", model=qwen_lemonade),   # lemonade qwen-mini
+        ]).close)
+        self.no_udb = os.path.join(self.tmp.name, "no-studio.db")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_main(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(argv)
+        return code, out.getvalue(), err.getvalue()
+
+    def base(self, *flags):
+        return self.run_main(["--db", self.db, "--src", self.src,
+                              "--unsloth-db", self.no_udb, *flags])
+
+    def test_cache_flag_adds_column_to_session_view(self):
+        code, out, _ = self.base("--cache")
+        self.assertEqual(code, 0)
+        self.assertRegex(out.splitlines()[0], r"OUT\s+CACHE\s+TOTAL")
+        self.assertIn("7,100", out)   # per seeded session: 7000 read + 100 write
+
+    def test_cache_daily_view_shows_combined(self):
+        code, out, _ = self.base("--daily", "--cache")
+        self.assertEqual(code, 0)
+        self.assertRegex(out.splitlines()[0], r"OUT\s+CACHE\s+TOTAL")
+        self.assertIn("14,200", out)  # two seeded sessions
+
+    def test_cache_total_view_shows_combined(self):
+        code, out, _ = self.base("--total", "--cache")
+        self.assertEqual(code, 0)
+        all_row = next(ln for ln in out.splitlines() if "(all)" in ln)
+        self.assertIn("14,200", all_row)
+
+    def test_default_off_has_no_cache_column(self):
+        code, out, _ = self.base("--total")
+        self.assertEqual(code, 0)
+        self.assertNotIn("CACHE", out)
+
+    def test_cache_leaves_in_out_total_unchanged(self):
+        code, out, _ = self.base("--total", "--cache")
+        self.assertEqual(code, 0)
+        all_row = next(ln for ln in out.splitlines() if "(all)" in ln)
+        cells = all_row.split()
+        # MODEL SESSIONS IN OUT CACHE TOTAL — IN, OUT, TOTAL keep their
+        # no-cache values, with the new CACHE cell between OUT and TOTAL
+        self.assertEqual(cells[2:6], ["2,000", "400", "14,200", "2,400"])
+
+    def test_cache_keeps_share_bar_padded(self):
+        # regression pin: inserting CACHE must not disable paint_bars
+        code, out, _ = self.base("--total", "--model", "--cache")
+        self.assertEqual(code, 0)
+        unsloth_line = next(ln for ln in out.splitlines() if "unsloth" in ln)
+        self.assertRegex(unsloth_line, r"\d+\.\d%   [█░▒▓]")
+
+    def test_cost_and_cache_together_show_both_columns(self):
+        code, out, _ = self.base("--total", "--cost", "--cache")
+        self.assertEqual(code, 0)
+        header = out.splitlines()[0]
+        self.assertIn("CACHE", header)
+        self.assertIn("COST", header)
+
+    def test_json_shape_unchanged_by_cache(self):
+        _, plain, _ = self.base("--total", "--json")
+        _, cached, _ = self.base("--total", "--cache", "--json")
+        rows_plain, rows_cached = json.loads(plain), json.loads(cached)
+        self.assertEqual(set(rows_plain[0]), set(rows_cached[0]))
+        self.assertNotIn("cache", rows_cached[0])
+
+    def test_reconcile_rejects_cache(self):
+        with self.assertRaises(SystemExit) as cm:
+            with contextlib.redirect_stderr(io.StringIO()):
+                main(["reconcile", "--db", self.db, "--src", self.src,
+                      "--unsloth-db", self.no_udb, "--cache"])
+        self.assertEqual(cm.exception.code, 2)
+
+    def test_from_unsloth_rejects_cache(self):
+        with self.assertRaises(SystemExit) as cm:
+            with contextlib.redirect_stderr(io.StringIO()):
+                main(["--db", self.db, "--src", self.src,
+                      "--unsloth-db", self.no_udb, "--from-unsloth",
+                      "--cache"])
+        self.assertEqual(cm.exception.code, 2)
+
+    def test_from_runs_rejects_cache(self):
+        with self.assertRaises(SystemExit) as cm:
+            with contextlib.redirect_stderr(io.StringIO()):
+                main(["--db", self.db, "--src", self.src,
+                      "--unsloth-db", self.no_udb, "--from-runs",
+                      "--cache"])
+        self.assertEqual(cm.exception.code, 2)
+
+
 class DisplayAlignmentTests(unittest.TestCase):
     def setUp(self):
         import tempfile

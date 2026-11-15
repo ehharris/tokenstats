@@ -67,6 +67,9 @@ python3 tokenstat.py --from-runs --total        # per-model, with SHARE/BAR
 python3 tokenstat.py --total --model --cost
 python3 tokenstat.py --from-runs --cost --cost-tier opus
 
+# Opt-in cache column between OUT and TOTAL (see "Cache tokens" below):
+python3 tokenstat.py --total --model --cache
+
 # Lost-history view: what Unsloth recorded that OpenCode no longer can:
 python3 tokenstat.py reconcile
 ```
@@ -117,6 +120,20 @@ rows price prompt + completion — since Unsloth's prompt includes KV-cache
 hits, that over-estimates the input side; run rows price progress tokens as
 output-only. The overlay is display/JSON only — nothing stored changes — and
 flag-less output is exactly as before.
+
+## Cache tokens (`--cache`)
+
+`--cache` adds one `CACHE` column between `OUT` and `TOTAL` in the OpenCode
+session views (sessions, `--daily`, `--total`): the combined cache-read +
+cache-write tokens OpenCode records per session. It is **informational** —
+`TOTAL` stays `IN + OUT`, so every existing number is unchanged — and it
+explains the gap to Unsloth's counters: agentic sessions re-send their whole
+history every request, those re-sends land in `CACHE`, and `IN + CACHE` is
+roughly what Unsloth logs as each request's prompt. `--json` already carries
+the two classes separately (`tokens_cache_read`, `tokens_cache_write`) and
+gains no new field. The flag is rejected (exit 2) for `reconcile`,
+`--from-unsloth`, and `--from-runs`: those sources fold cache hits into
+prompt totals with no split to show.
 
 The reports (session mode, `--from-unsloth`, `--from-runs`) describe the
 *same* traffic from different angles — never add them together. In

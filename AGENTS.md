@@ -69,6 +69,11 @@ guard). Also: indexes `idx_unsloth_events_created` /
 `idx_usage_time_created`; `record()` gained per-row error isolation
 (`skipped` counter, mirrors the Unsloth imports); `--model` LIKE
 metacharacters (`%`, `_`) are literal in all three filter paths.
+Cache-column increment (2026-11-15): opt-in `--cache` adds one combined
+`CACHE` column (read+write) between OUT and TOTAL in the session-family
+views only; informational — TOTAL stays IN+OUT, `--json` gains no field
+(both classes already carried), rejected for reconcile/--from-unsloth/
+--from-runs (no cache split there); primitives `annotate_cache`/`with_cache`.
 Store `usage.db` holds full recoverable history: ~73 OpenCode
 sessions, ~1,850 Unsloth request events, and a handful of generation runs
 back to 2026-11-06.
@@ -86,6 +91,7 @@ python3 tokenstat.py --model                           # same as --total --model
 python3 tokenstat.py --from-unsloth [--daily|--json]   # Unsloth's own per-request log
 python3 tokenstat.py --from-runs [--daily|--total]     # Studio runs, TRUE generation tok/s
 python3 tokenstat.py --cost [--cost-tier haiku|opus]   # reference $ overlay (off by default)
+python3 tokenstat.py --total --model --cache           # combined cache column (session views only)
 python3 tokenstat.py reconcile                         # lost-history view per model
 python3 tokenstat.py record | import-unsloth           # explicit snapshots (import-unsloth = events + runs; exit 1 if source unreadable)
 python3 -m unittest test_tokenstat -v                  # tests (~0.15s, no deps)

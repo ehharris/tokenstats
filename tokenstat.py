@@ -895,6 +895,11 @@ def main(argv):
     parser.add_argument("--cost-tier", choices=["haiku", "sonnet", "opus"],
                         default="sonnet", dest="cost_tier",
                         help="price tier for --cost (default: sonnet)")
+    parser.add_argument("--cache", action="store_true", dest="cache",
+                        help="add a CACHE column (cache read + write) between"
+                             " OUT and TOTAL in session views; informational,"
+                             " TOTAL unchanged (not with reconcile,"
+                             " --from-unsloth or --from-runs)")
     args = parser.parse_args(argv)
 
     dest = None
@@ -966,6 +971,10 @@ def main(argv):
         if args.from_runs and (args.min_in is not None or args.min_out is not None):
             parser.error("--from-runs does not support --min-in/--min-out"
                          " (runs store only progress tokens)")
+        if args.cache and (args.from_unsloth or args.from_runs):
+            parser.error("--cache requires OpenCode session rows; Unsloth"
+                         " event/run sources fold cache hits into prompt"
+                         " tokens with no split")
         if args.command == "reconcile":
             unsupported = [flag for flag, val in (
                 ("--since", args.since), ("--until", args.until),
@@ -974,7 +983,8 @@ def main(argv):
                 + (["--from-unsloth"] if args.from_unsloth else []) \
                 + (["--from-runs"] if args.from_runs else []) \
                 + (["--total"] if args.total else []) \
-                + (["--cost"] if args.cost else [])
+                + (["--cost"] if args.cost else []) \
+                + (["--cache"] if args.cache else [])
             if unsupported:
                 parser.error("reconcile supports only --model; unsupported:"
                              f" {', '.join(unsupported)}")
@@ -1025,10 +1035,17 @@ def main(argv):
         if args.cost and columns is not RECON_COLUMNS:
             rows = annotate_cost(rows, args.cost_tier)
             columns = columns + [COST_COLUMN]
+        # Opt-in --cache overlay: combined cache classes as one informational
+        # column between OUT and TOTAL; TOTAL stays IN + OUT. The guard above
+        # keeps it off the cache-blind Unsloth views; reconcile rejects it.
+        if args.cache:
+            rows = annotate_cache(rows)
+            columns = with_cache(columns)
         if args.as_json:
-            # share travels in JSON; the painted bar is table-only decoration
+            # share travels in JSON; the painted bar is table-only decoration;
+            # `cache` is a render-time join of fields JSON already carries
             print(json.dumps([{k: v for k, v in r.items()
-                               if k not in ("bar", "share_str")}
+                               if k not in ("bar", "share_str", "cache")}
                               for r in rows], indent=2))
         else:
             if share_view:

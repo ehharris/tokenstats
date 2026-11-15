@@ -87,7 +87,10 @@ is padded with a space on either side. The color itself is a gradient: blue
 across the row's input-token portion blending into orange across its output
 portion, so the transition point marks the in/out split. The gradient is
 interpolated in HSL (blue through purple/magenta to orange) at full
-saturation, so it never passes through a washed-out gray.
+saturation, so it never passes through a washed-out gray. Rows sort by
+`SHARE` descending — biggest share first, ties alphabetical by model —
+in both the table and `--json`; session and daily views keep their
+chronological order.
 
 Every report table except `reconcile` also has a `TOK/S` column. In
 session, daily, and total views it is a **wall-clock average** — tokens

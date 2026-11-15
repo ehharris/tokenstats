@@ -102,39 +102,43 @@ def record(src: sqlite3.Connection, dest: sqlite3.Connection, now_ms: int) -> di
          agent, created, updated) in rows:
         source_vals = [v or 0 for v in (tin, tout, treas, tcr, tcw, cost)]
         provider, model_id = parse_model(model_raw)
-        existing = dest.execute(
-            "SELECT tokens_input, tokens_output, tokens_reasoning,"
-            " tokens_cache_read, tokens_cache_write, cost, provider,"
-            " model_id, title, directory, agent"
-            " FROM usage WHERE session_id = ?", (sid,)).fetchone()
-        if existing is None:
-            dest.execute(
-                "INSERT INTO usage (session_id, provider, model_id,"
-                " tokens_input, tokens_output, tokens_reasoning,"
-                " tokens_cache_read, tokens_cache_write, cost, title, directory,"
-                " agent, time_created, time_updated, first_seen, last_seen)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                [sid, provider, model_id, *source_vals, title, directory,
-                 agent, created, updated, now_ms, now_ms])
-            counts["inserted"] += 1
-        else:
-            merged = [max(e, s) for e, s in zip(existing[:6], source_vals)]
-            changed = merged != list(existing[:6])
-            # Labels make the numbers interpretable: like the token columns,
-            # they never shrink — a null/empty value from the source keeps
-            # the best label we already have.
-            kept = [new or old for new, old in
-                    zip((provider, model_id, title, directory, agent),
-                        existing[6:])]
-            dest.execute(
-                "UPDATE usage SET provider = ?, model_id = ?,"
-                " tokens_input = ?, tokens_output = ?, tokens_reasoning = ?,"
-                " tokens_cache_read = ?, tokens_cache_write = ?, cost = ?,"
-                " title = ?, directory = ?, agent = ?, time_updated = ?,"
-                " last_seen = ? WHERE session_id = ?",
-                [kept[0], kept[1], *merged, kept[2], kept[3], kept[4],
-                 updated, now_ms, sid])
-            counts["updated" if changed else "unchanged"] += 1
+        try:
+            existing = dest.execute(
+                "SELECT tokens_input, tokens_output, tokens_reasoning,"
+                " tokens_cache_read, tokens_cache_write, cost, provider,"
+                " model_id, title, directory, agent"
+                " FROM usage WHERE session_id = ?", (sid,)).fetchone()
+            if existing is None:
+                dest.execute(
+                    "INSERT INTO usage (session_id, provider, model_id,"
+                    " tokens_input, tokens_output, tokens_reasoning,"
+                    " tokens_cache_read, tokens_cache_write, cost, title,"
+                    " directory, agent, time_created, time_updated,"
+                    " first_seen, last_seen) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    [sid, provider, model_id, *source_vals, title, directory,
+                     agent, created, updated, now_ms, now_ms])
+                counts["inserted"] += 1
+            else:
+                merged = [max(e, s) for e, s in zip(existing[:6], source_vals)]
+                changed = merged != list(existing[:6])
+                # Labels make the numbers interpretable: like the token
+                # columns, they never shrink — a null/empty value from the
+                # source keeps the best label we already have.
+                kept = [new or old for new, old in
+                        zip((provider, model_id, title, directory, agent),
+                            existing[6:])]
+                dest.execute(
+                    "UPDATE usage SET provider = ?, model_id = ?,"
+                    " tokens_input = ?, tokens_output = ?, tokens_reasoning = ?,"
+                    " tokens_cache_read = ?, tokens_cache_write = ?, cost = ?,"
+                    " title = ?, directory = ?, agent = ?, time_updated = ?,"
+                    " last_seen = ? WHERE session_id = ?",
+                    [kept[0], kept[1], *merged, kept[2], kept[3], kept[4],
+                     updated, now_ms, sid])
+                counts["updated" if changed else "unchanged"] += 1
+        except sqlite3.Error:
+            # One malformed source row must not abort (or roll back) the rest.
+            counts["skipped"] = counts.get("skipped", 0) + 1
     dest.commit()
     return counts
 

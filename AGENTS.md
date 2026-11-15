@@ -35,6 +35,9 @@ bare `--model` (no value, no `--total`)
 is now a shortcut for `--total --model` instead of an error — with `--daily`
 it still means "all models" and renders the daily table; `reconcile --model`
 unchanged. `--json` `--total` rows carry a float `share` field (no bar).
+Share views (`--total --model`, bare `--model`) now sort rows by `SHARE`
+descending — ties keep alphabetical-by-model order (stable sort) and
+`--json` rows carry the same order — session/daily views unchanged.
 Tokens-per-second increment (branch `tokens-per-second-and-cost`): new store
 table `unsloth_runs` (run_id PK, model extracted in Python from Studio's
 `request_json` — no JSON1 dependency; `progress_tokens` monotonic max;

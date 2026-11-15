@@ -589,6 +589,23 @@ SHARE_COLUMNS = TOTAL_COLUMNS + [
     ("SHARE", "share_str", "text"), ("BAR", "bar", "text"),
 ]
 COST_COLUMN = ("COST", "cost_est", "cost")  # opt-in --cost estimate overlay
+CACHE_COLUMN = ("CACHE", "cache", "int")  # opt-in --cache display overlay
+
+
+def annotate_cache(rows):
+    """Copy of `rows` with the two cache classes combined into int `cache`.
+    Display-only overlay: inputs untouched, nothing stored, TOTAL unchanged."""
+    return [{**r, "cache": r.get("tokens_cache_read", 0)
+             + r.get("tokens_cache_write", 0)} for r in rows]
+
+
+def with_cache(columns):
+    """Copy of `columns` with CACHE_COLUMN inserted before the TOTAL entry
+    (OUT CACHE TOTAL reads as the token classes, CACHE outside the total)."""
+    out = list(columns)
+    i = next(i for i, (header, _, _) in enumerate(out) if header == "TOTAL")
+    out.insert(i, CACHE_COLUMN)
+    return out
 
 
 # Reference Claude list prices, USD per million tokens, as of 2026-11-14:

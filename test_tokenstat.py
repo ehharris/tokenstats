@@ -1223,6 +1223,43 @@ class CostTests(unittest.TestCase):
         self.assertIn("cost_est", out[0])      # ...copies carry the estimate
 
 
+class CacheOverlayTests(unittest.TestCase):
+    """annotate_cache/with_cache: display-only CACHE overlay primitives."""
+
+    def test_annotate_cache_combines_read_and_write(self):
+        from tokenstat import annotate_cache
+        (r,) = annotate_cache([{"tokens_input": 1, "tokens_cache_read": 7000,
+                                "tokens_cache_write": 100}])
+        self.assertEqual(r["cache"], 7100)
+
+    def test_annotate_cache_missing_keys_default_to_zero(self):
+        from tokenstat import annotate_cache
+        (r,) = annotate_cache([{}])
+        self.assertEqual(r["cache"], 0)
+
+    def test_annotate_cache_does_not_mutate_input_rows(self):
+        from tokenstat import annotate_cache
+        rows = [{"tokens_cache_read": 5, "tokens_cache_write": 6}]
+        out = annotate_cache(rows)
+        self.assertNotIn("cache", rows[0])  # inputs untouched...
+        self.assertIn("cache", out[0])      # ...copies carry the combined sum
+
+    def test_with_cache_inserts_consecutively_before_total(self):
+        from tokenstat import DAILY_COLUMNS, SHARE_COLUMNS, SESSION_COLUMNS, \
+            with_cache
+        for source in (SESSION_COLUMNS, DAILY_COLUMNS, SHARE_COLUMNS):
+            headers = [h for h, _, _ in with_cache(source)]
+            i = headers.index("CACHE")
+            self.assertEqual((headers[i - 1], headers[i + 1]),
+                             ("OUT", "TOTAL"))
+
+    def test_with_cache_does_not_mutate_argument(self):
+        from tokenstat import SESSION_COLUMNS, with_cache
+        original = list(SESSION_COLUMNS)
+        with_cache(SESSION_COLUMNS)
+        self.assertEqual(SESSION_COLUMNS, original)
+
+
 class DisplayAlignmentTests(unittest.TestCase):
     def setUp(self):
         import tempfile

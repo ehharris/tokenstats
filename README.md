@@ -1,9 +1,11 @@
 # tokenstat — permanent AI token usage record for this machine
 
-`tokenstat` snapshots per-session AI token usage from OpenCode's database
-(`~/.local/share/opencode/opencode.db`, read-only) into its own SQLite store
-(`usage.db` next to the script), and reports it filtered by model, date, and
-token counts. OpenCode prunes its own history over time; your copy in
+`tokenstat` snapshots AI token usage from two sources into its own SQLite
+store (`usage.db` next to the script), and reports it filtered by model,
+date, and token counts: OpenCode's session database
+(`~/.local/share/opencode/opencode.db`) and Unsloth Studio's per-request
+event log plus generation runs (`~/.unsloth/studio/studio.db`), both opened
+read-only. OpenCode prunes its own history over time; your copy in
 `usage.db` never shrinks, so this machine's full token history survives.
 
 Single Python file, stdlib only — no install step:
@@ -11,7 +13,7 @@ Single Python file, stdlib only — no install step:
 ```bash
 python3 tokenstat.py [filters]      # snapshot both sources + report
 python3 tokenstat.py record         # snapshot OpenCode only
-python3 tokenstat.py import-unsloth # snapshot Unsloth Studio only
+python3 tokenstat.py import-unsloth # snapshot Unsloth Studio only (events + runs)
 python3 tokenstat.py reconcile      # per-model: sessions vs Unsloth's log, gaps
 ```
 
@@ -42,8 +44,9 @@ python3 tokenstat.py --total --model unsloth
 python3 tokenstat.py --total --model
 python3 tokenstat.py --model
 
-# Machine-readable (combine with --daily for daily aggregates; --total rows
-# also carry a `share` field, the row's percent of the overall total):
+# Machine-readable (rows carry `tok_s`; with --cost every row also gains
+# `cost_est`; run rows and run aggregates carry `progress_tokens`; --total
+# rows carry `share`, the row's percent of the overall displayed total):
 python3 tokenstat.py --json | jq '.[].total'
 
 # Snapshot without querying:
@@ -52,6 +55,17 @@ python3 tokenstat.py record
 # Unsloth's own per-request log (IN = prompt incl. cache hits, OUT = completion):
 python3 tokenstat.py --from-unsloth --model unsloth --since 2026-11-01
 python3 tokenstat.py --from-unsloth --daily
+
+# Unsloth's generation runs — TOK/S here is each run's TRUE generation rate
+# (progress tokens over the run's own wall-clock seconds; IN carries the
+# progress total and OUT renders 0 — runs have no in/out split):
+python3 tokenstat.py --from-runs
+python3 tokenstat.py --from-runs --daily
+python3 tokenstat.py --from-runs --total        # per-model, with SHARE/BAR
+
+# Opt-in dollar overlay (off by default; see "Cost estimates" below):
+python3 tokenstat.py --total --model --cost
+python3 tokenstat.py --from-runs --cost --cost-tier opus
 
 # Lost-history view: what Unsloth recorded that OpenCode no longer can:
 python3 tokenstat.py reconcile
@@ -72,14 +86,48 @@ portion, so the transition point marks the in/out split. The gradient is
 interpolated in HSL (blue through purple/magenta to orange) at full
 saturation, so it never passes through a washed-out gray.
 
-The two reports (session mode and `--from-unsloth`) describe the *same*
-traffic from two angles — never add them together. In `reconcile`, a
+Every report table except `reconcile` also has a `TOK/S` column. In
+session, daily, and total views it is a **wall-clock average** — tokens
+divided by the row's time span (session creation → last update; aggregates
+span their earliest start to their latest end) — so idle time inside that
+window drags the number down; it is blank when the span is unknown or under
+a second. Per-event rows in `--from-unsloth` carry no duration, so their
+TOK/S is blank (their daily and total aggregates rate over the events'
+created_at range instead). Only `--from-runs` measures generation speed:
+there TOK/S is each run's *true* rate — progress tokens over the run's own
+wall-clock seconds — which is why those numbers typically sit well above
+session-mode averages. In `--json` the value is the float `tok_s` (null
+when blank).
+
+## Cost estimates (`--cost`)
+
+`--cost` adds a `COST` column (formatted `$X.XXXX`) and, under `--json`, a
+`cost_est` field to any report except `reconcile`, which rejects the flag.
+The number is a **reference estimate**, not money spent: all tracked traffic
+is priced at one Anthropic Claude tier's list prices — Sonnet 4.6 at $3/Mtok
+input / $15/Mtok output by default, switchable with `--cost-tier
+haiku|sonnet|opus` (Haiku 4.5 $1/$5, Opus 4.8 $5/$25; cache reads at 0.1x
+and cache writes at 1.25x each tier's input price) — as of 2026-11-14. Most
+tracked models are not Claude, so read it as "what this volume would cost at
+this tier," never as a bill. It is deliberately distinct from the `cost`
+OpenCode actually records and stores (still stored, still emitted by
+`--json`, no longer displayed). Row math follows the row shape: session-family
+rows price all four token classes (input + output + cache read/write); event
+rows price prompt + completion — since Unsloth's prompt includes KV-cache
+hits, that over-estimates the input side; run rows price progress tokens as
+output-only. The overlay is display/JSON only — nothing stored changes — and
+flag-less output is exactly as before.
+
+The reports (session mode, `--from-unsloth`, `--from-runs`) describe the
+*same* traffic from different angles — never add them together. In
+`reconcile`, a
 positive gap means usage only Unsloth still records (OpenCode pruned it);
 a negative gap means OpenCode counted tokens Studio's log doesn't contain
 (e.g. Studio rotated its log, or a request was retried client-side).
 
 Every query snapshots both sources first (OpenCode's database and Unsloth
-Studio's `api_usage_events`), so reports are always current. If either
+Studio's `api_usage_events` + `chat_generation_runs`), so reports are always
+current. If either
 database is missing or locked, `tokenstat` prints a warning and reports
 from your existing store instead of failing. Override paths with `--src`,
 `--unsloth-db`, and `--db`.
@@ -93,8 +141,9 @@ a session that grew between snapshots replaces its old totals rather than
 adding to them; and if OpenCode ever rewrites a row smaller, the stored
 values only ever go up. `record` reports `inserted=N updated=N unchanged=N`
 so you can see this happen: repeated runs show everything `unchanged`.
-The same guarantee applies to imported Unsloth events, keyed by their own
-event ids.
+The same guarantee applies to imported Unsloth events (keyed by their own
+event ids) and generation runs (keyed by run id, with `progress_tokens` a
+monotonic max).
 
 One mapping caveat: Unsloth's `prompt_tokens` counts every prompt token it
 processed, including KV-cache hits; OpenCode splits those into

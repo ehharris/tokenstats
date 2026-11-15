@@ -516,6 +516,21 @@ class ImportRunsTests(unittest.TestCase):
         self.assertEqual(import_unsloth_runs(conn, self.dest),
                          {"inserted": 0, "updated": 0, "unchanged": 0})
 
+    def test_import_runs_non_dict_request_json_keeps_row_blank_model(self):
+        # Valid JSON that is NOT an object ('null', '[1,2]') is an EXTRACTION
+        # failure, not a row error (mirrors parse_model): model becomes "" and
+        # the row still inserts — its progress/start are valid data.
+        src = make_runs_src([
+            ("r_null", 'null', 42, 1_764_000_000_000, 1_764_000_010_000,
+             "completed"),
+            ("r_list", '[1,2]', 7, 1_764_000_000_000, 1_764_000_010_000,
+             "completed"),
+        ])
+        counts = import_unsloth_runs(src, self.dest)
+        self.assertEqual(counts["inserted"], 2)
+        self.assertEqual(self.stored("r_null"), ("", 42))
+        self.assertEqual(self.stored("r_list"), ("", 7))
+
 
 class RunsQueryTests(unittest.TestCase):
     def setUp(self):
@@ -540,6 +555,18 @@ class RunsQueryTests(unittest.TestCase):
                                                    started=1_764_000_000_000,
                                                    completed=None)]), self.dest)
         rows = query_runs(self.dest, model="rate-blank-probe")
+        self.assertIsNone(rows[0]["tok_s"])
+
+    def test_query_runs_blank_rate_when_status_not_completed(self):
+        # A failed run that recorded completed_at must NOT render a rate:
+        # TOK/S is blank when the run hasn't completed (spec), so the gate
+        # is completed_at set AND status == "completed".
+        import_unsloth_runs(make_runs_src([run_row("r4", model="failed-probe",
+                                                   progress=500,
+                                                   started=1_764_000_000_000,
+                                                   completed=1_764_000_010_000,
+                                                   status="failed")]), self.dest)
+        rows = query_runs(self.dest, model="failed-probe")
         self.assertIsNone(rows[0]["tok_s"])
 
     def test_daily_runs_groups_by_started_day(self):
@@ -698,6 +725,25 @@ class CliUnslothTests(unittest.TestCase):
              "--unsloth-db", self.udb, "--from-runs"])
         self.assertEqual(code, 0)
         self.assertIn("TOK/S", out.splitlines()[0])
+
+    def test_from_runs_with_cost_renders_dollar_column(self):
+        # composition pin: --from-runs x --cost (run rows price output-only)
+        make_file_runs_db(self.udb, runs=[run_row("r1")])
+        code, out, _ = self.run_main(
+            ["--db", self.db, "--src", os.path.join(self.tmp.name, "none.db"),
+             "--unsloth-db", self.udb, "--from-runs", "--cost"])
+        self.assertEqual(code, 0)
+        self.assertIn("COST", out)
+        self.assertIn("$", out)
+
+    def test_from_runs_with_daily_renders_table(self):
+        # composition pin: --from-runs x --daily (closes a coverage gap)
+        make_file_runs_db(self.udb, runs=[run_row("r1")])
+        code, out, _ = self.run_main(
+            ["--db", self.db, "--src", os.path.join(self.tmp.name, "none.db"),
+             "--unsloth-db", self.udb, "--from-runs", "--daily"])
+        self.assertEqual(code, 0)
+        self.assertIn("DATE", out.splitlines()[0])
 
     def test_from_runs_rejects_min_flags(self):
         with self.assertRaises(SystemExit) as cm:

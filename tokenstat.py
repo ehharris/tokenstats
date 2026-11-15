@@ -206,9 +206,12 @@ def import_unsloth_runs(src: sqlite3.Connection,
     for rid, request_json, progress, started, completed, status in rows:
         try:
             try:
-                model = json.loads(request_json).get("model", "")
+                data = json.loads(request_json)
             except (TypeError, ValueError):
-                model = ""
+                data = None
+            # Non-dict JSON is an extraction failure, not a row error
+            # (mirrors parse_model): blank model, but the row still inserts.
+            model = data.get("model", "") if isinstance(data, dict) else ""
             vals = [progress or 0]
             existing = dest.execute(
                 "SELECT progress_tokens FROM unsloth_runs"
@@ -362,17 +365,20 @@ def query_runs(dest, model=None, since_ms=None, until_ms=None):
     tok_s is the run's true generation rate — progress over its wall-clock
     seconds — and None for unfinished or sub-second runs."""
     where, params = _run_filters(model, since_ms, until_ms)
-    sql = ("SELECT started_at, model, progress_tokens, completed_at"
+    sql = ("SELECT started_at, model, progress_tokens, completed_at, status"
            " FROM unsloth_runs")
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY started_at ASC"
     rows = []
-    for started, model_id, progress, completed in dest.execute(sql, params):
+    for (started, model_id, progress, completed,
+         status) in dest.execute(sql, params):
         date = datetime.datetime.fromtimestamp(started / 1000).strftime(
             "%Y-%m-%d")
         tok_s = None
-        if completed is not None:
+        # "hasn't completed" means EITHER condition: a failed run that
+        # recorded completed_at still renders blank.
+        if completed is not None and status == "completed":
             tok_s = _aggregate_rate(progress, started, completed)
         rows.append({"date": date, "model": model_id,
                      "progress_tokens": progress,

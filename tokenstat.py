@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """tokenstat — permanent local record of AI token usage on this machine.
 
-Reads OpenCode's session database (read-only), snapshots per-session token
-usage into our own SQLite store, and reports it filtered by model, date,
-and token thresholds. See README.md.
+Snapshots three tables from two sources (read-only) into our own SQLite
+store — OpenCode's per-session totals, plus Unsloth Studio's per-request
+events and generation runs — and reports them filtered by model, date, and
+token thresholds. Reporting views carry a TOK/S column (reconcile
+excepted): sessions and daily/total aggregates show a wall-clock average
+over their time span (idle drags it down); --from-runs shows each run's
+true generation rate. Opt-in --cost overlays a reference Claude-tier dollar
+estimate. See README.md.
 """
 import argparse
 import colorsys
@@ -819,16 +824,18 @@ def _connect_src(path):
 def main(argv):
     parser = argparse.ArgumentParser(
         prog="tokenstat",
-        description="Record and report AI token usage from OpenCode's "
-                    "database into a permanent local store.")
+        description="Record and report AI token usage from OpenCode and "
+                    "Unsloth Studio into a permanent local store.")
     parser.add_argument("command", nargs="?",
                         choices=["record", "import-unsloth", "reconcile"],
                         help="record = snapshot OpenCode now; import-unsloth ="
-                             " snapshot Unsloth Studio now; reconcile ="
-                             " compare both sources per model (default: report)")
+                             " snapshot Unsloth Studio now (events + runs);"
+                             " reconcile = compare both sources per model"
+                             " (default: report)")
     parser.add_argument("--model", nargs="?", const=MODEL_ANY,
-                        help="substring match on provider/model (omit the "
-                             "value: totals for every model)")
+                        help="substring match on provider/model — literal,"
+                             " %% and _ are not wildcards (omit the value:"
+                             " totals for every model)")
     parser.add_argument("--since", type=parse_date, metavar="YYYY-MM-DD",
                         help="first day of usage (inclusive)")
     parser.add_argument("--until", type=parse_date, metavar="YYYY-MM-DD",
@@ -843,7 +850,8 @@ def main(argv):
                         help="grand total (with --model: per-model totals) "
                              "instead of per-session rows")
     parser.add_argument("--json", action="store_true", dest="as_json",
-                        help="emit JSON instead of a table")
+                        help="emit JSON instead of a table (rows carry"
+                             " tok_s; --cost adds cost_est)")
     parser.add_argument("--db", default=DEFAULT_DB,
                         help=f"our store (default: {DEFAULT_DB})")
     parser.add_argument("--src", default=DEFAULT_SRC,
@@ -854,11 +862,13 @@ def main(argv):
                         help="report imported Unsloth request events instead of"
                              " OpenCode sessions (IN=prompt incl. cache, OUT=completion)")
     parser.add_argument("--from-runs", action="store_true", dest="from_runs",
-                        help="report imported Unsloth generation runs with true"
+                        help="report imported Unsloth generation runs (IN ="
+                             " progress tokens, no in/out split) with true"
                              " tokens/second")
     parser.add_argument("--cost", action="store_true", dest="cost",
                         help="add a reference Claude-tier cost estimate column"
-                             " (--cost-tier) to reports; display-only overlay")
+                             " (--cost-tier) to reports; display-only overlay"
+                             " (not with reconcile)")
     parser.add_argument("--cost-tier", choices=["haiku", "sonnet", "opus"],
                         default="sonnet", dest="cost_tier",
                         help="price tier for --cost (default: sonnet)")

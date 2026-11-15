@@ -1565,6 +1565,40 @@ class CliShareTests(unittest.TestCase):
                 self.assertNotIn("SHARE", out)
                 self.assertNotIn("BAR", out)
 
+    def test_per_model_rows_sort_by_share_desc(self):
+        # fixture models: unsloth-studio total 10k (66.7%) vs lemonade 5k
+        # (33.3%); alphabetical order would put lemonade first, so assert
+        # the unsloth line precedes the lemonade line
+        code, out, _ = self.run_main(
+            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+             "--total", "--model"])
+        self.assertEqual(code, 0)
+        lines = out.splitlines()
+        u = next(i for i, ln in enumerate(lines) if "unsloth-studio" in ln)
+        l = next(i for i, ln in enumerate(lines) if "lemonade" in ln)
+        self.assertLess(u, l)
+
+    def test_share_json_sorted_desc_ties_alphabetical(self):
+        # own fixture: three models, one big (50%) and a tie at 12.5% each;
+        # expected order: zzz/zzz, then the tied pair alphabetically
+        src = os.path.join(self.tmp.name, "src3.db")
+        aaa_one = '{"id":"one","providerID":"aaa"}'
+        aaa_two = '{"id":"two","providerID":"aaa"}'
+        zzz = '{"id":"zzz","providerID":"zzz"}'
+        self.addCleanup(make_file_db(src, [
+            src_row(sid="t1", model=zzz, tin=9000, tout=1000),
+            src_row(sid="t2", model=aaa_one, tin=2250, tout=250),
+            src_row(sid="t3", model=aaa_two, tin=2250, tout=250),
+        ]).close)
+        code, out, _ = self.run_main(
+            ["--db", os.path.join(self.tmp.name, "usage3.db"),
+             "--src", src, "--unsloth-db", self.no_udb,
+             "--total", "--model", "--json"])
+        self.assertEqual(code, 0)
+        rows = json.loads(out)
+        self.assertEqual([r["model"] for r in rows],
+                         ["zzz/zzz", "aaa/one", "aaa/two"])
+
 
 class PaintBarsTests(unittest.TestCase):
     """paint_bars: display-only padding + heat-gradient color for BAR cells."""

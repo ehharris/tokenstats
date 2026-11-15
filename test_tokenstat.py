@@ -6,6 +6,8 @@ import io
 import json
 import os
 import sqlite3
+import subprocess
+import sys
 import unittest
 
 from tokenstat import (add_shares, daily_events, daily_runs, daily_totals,
@@ -60,6 +62,7 @@ def make_dest():
 class RecordTests(unittest.TestCase):
     def setUp(self):
         self.dest = make_dest()
+        self.addCleanup(self.dest.close)
 
     def stored(self, sid="s1"):
         cur = self.dest.execute(
@@ -70,6 +73,7 @@ class RecordTests(unittest.TestCase):
 
     def test_record_inserts_new_session(self):
         src = make_src([src_row()])
+        self.addCleanup(src.close)
         result = record(src, self.dest, now_ms=1)
         self.assertEqual(result, {"inserted": 1, "updated": 0, "unchanged": 0})
         row = self.stored()
@@ -82,6 +86,7 @@ class RecordTests(unittest.TestCase):
 
     def test_record_is_idempotent_no_double_counting(self):
         src = make_src([src_row()])
+        self.addCleanup(src.close)
         record(src, self.dest, now_ms=1)
         result = record(src, self.dest, now_ms=2)
         self.assertEqual(result, {"inserted": 0, "updated": 0, "unchanged": 1})
@@ -89,6 +94,7 @@ class RecordTests(unittest.TestCase):
 
     def test_record_updates_grown_session(self):
         src = make_src([src_row(tin=1000, tout=200)])
+        self.addCleanup(src.close)
         record(src, self.dest, now_ms=1)
         src.execute(
             "UPDATE session_v2 SET tokens_input = 3000, tokens_output = 600"
@@ -101,6 +107,7 @@ class RecordTests(unittest.TestCase):
 
     def test_record_never_shrinks_on_source_regression(self):
         src = make_src([src_row(tin=100)])
+        self.addCleanup(src.close)
         record(src, self.dest, now_ms=1)
         src.execute("UPDATE session_v2 SET tokens_input = 50 WHERE id = 's1'")
         record(src, self.dest, now_ms=2)
@@ -109,6 +116,7 @@ class RecordTests(unittest.TestCase):
     def test_record_null_and_malformed_model(self):
         src = make_src([src_row(sid="n1", model=None),
                         src_row(sid="n2", model="not json")])
+        self.addCleanup(src.close)
         record(src, self.dest, now_ms=1)
         for sid in ("n1", "n2"):
             row = self.stored(sid)
@@ -118,11 +126,13 @@ class RecordTests(unittest.TestCase):
 class RecordIsolationTests(unittest.TestCase):
     def setUp(self):
         self.dest = make_dest()
+        self.addCleanup(self.dest.close)
 
     def test_record_skips_bad_row_keeps_good(self):
         # src_row(sid="bad", created=None) -> NULL time_created on insert ->
         # NOT NULL violation; record() must skip it, not abort the run.
         src = make_src([src_row(sid="good"), src_row(sid="bad", created=None)])
+        self.addCleanup(src.close)
         counts = record(src, self.dest, now_ms=1)
         self.assertEqual(counts["inserted"], 1)             # good row
         self.assertEqual(counts.get("skipped", 0), 1)       # bad row
@@ -152,7 +162,9 @@ class QueryTests(unittest.TestCase):
             src_row(sid="l1", model=LEMONADE_JSON, tin=100, tout=5,
                     created=ms(2026, 11, 5), title="lemonade session"),
         ])
+        self.addCleanup(src.close)
         self.dest = make_dest()
+        self.addCleanup(self.dest.close)
         record(src, self.dest, now_ms=1)
 
     def test_filter_by_model_substring(self):
@@ -190,9 +202,12 @@ class QueryTests(unittest.TestCase):
 class SessionTokSTests(unittest.TestCase):
     def setUp(self):
         self.dest = make_dest()
-        record(make_src([src_row(sid="s1", tin=1000, tout=200,
+        self.addCleanup(self.dest.close)
+        src = make_src([src_row(sid="s1", tin=1000, tout=200,
                                  created=1_764_000_000_000,
-                                 updated=1_764_000_005_000)]), self.dest, now_ms=1)
+                                 updated=1_764_000_005_000)])
+        self.addCleanup(src.close)
+        record(src, self.dest, now_ms=1)
 
     def test_session_rate_is_tokens_over_wall_clock_span(self):
         row = query_sessions(self.dest)[0]
@@ -203,9 +218,12 @@ class SessionTokSTests(unittest.TestCase):
         # 0-second span (time_updated == time_created) must yield None, not a
         # ZeroDivision.
         dest = make_dest()
-        record(make_src([src_row(sid="z", tin=100, tout=10,
+        self.addCleanup(dest.close)
+        src = make_src([src_row(sid="z", tin=100, tout=10,
                                  created=1_764_000_000_000,
-                                 updated=1_764_000_000_000)]), dest, now_ms=1)
+                                 updated=1_764_000_000_000)])
+        self.addCleanup(src.close)
+        record(src, dest, now_ms=1)
         rows = query_sessions(dest)
         self.assertEqual(len(rows), 1)
         self.assertIsNone(rows[0]["tok_s"])
@@ -218,7 +236,10 @@ class SessionTokSTests(unittest.TestCase):
     def test_event_rows_have_none_rate(self):
         # from ImportUnslothTests.setUp style
         dest = make_dest()
-        import_unsloth(make_unsloth_src([unsloth_event("e1")]), dest)
+        self.addCleanup(dest.close)
+        src = make_unsloth_src([unsloth_event("e1")])
+        self.addCleanup(src.close)
+        import_unsloth(src, dest)
         self.assertIsNone(query_events(dest)[0]["tok_s"])
 
 
@@ -228,12 +249,15 @@ class EventTokSTests(unittest.TestCase):
 
     def setUp(self):
         self.dest = make_dest()
+        self.addCleanup(self.dest.close)
         self.base = 1_764_000_000_000  # fixed instant; both events share one local day
-        import_unsloth(make_unsloth_src([
+        src = make_unsloth_src([
             unsloth_event("e1", prompt=100, completion=50, created=self.base),
             unsloth_event("e2", prompt=300, completion=50,
                           created=self.base + 5_000),
-        ]), self.dest)
+        ])
+        self.addCleanup(src.close)
+        import_unsloth(src, self.dest)
 
     def test_daily_events_rate_from_created_span(self):
         days = daily_events(self.dest)
@@ -242,9 +266,12 @@ class EventTokSTests(unittest.TestCase):
         self.assertAlmostEqual(days[0]["tok_s"], 100.0, places=2)
         # sub-second span -> None (same semantics as _aggregate_rate)
         dest = make_dest()
-        import_unsloth(make_unsloth_src([
+        self.addCleanup(dest.close)
+        src = make_unsloth_src([
             unsloth_event("f1", prompt=10, created=self.base),
-            unsloth_event("f2", prompt=10, created=self.base + 500)]), dest)
+            unsloth_event("f2", prompt=10, created=self.base + 500)])
+        self.addCleanup(src.close)
+        import_unsloth(src, dest)
         self.assertIsNone(daily_events(dest)[0]["tok_s"])
 
     def test_total_events_grand_row_rate(self):
@@ -302,7 +329,9 @@ class DailyTotalsTests(unittest.TestCase):
             src_row(sid="a2", tin=2000, tout=200, created=ms(2026, 11, 1)),
             src_row(sid="b1", tin=500, tout=50, created=ms(2026, 11, 5)),
         ])
+        self.addCleanup(src.close)
         dest = make_dest()
+        self.addCleanup(dest.close)
         record(src, dest, now_ms=1)
         days = daily_totals(dest)
         self.assertEqual([d["date"] for d in days], ["2026-11-01", "2026-11-05"])
@@ -338,7 +367,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("no sessions match", out)
 
     def test_record_subcommand_prints_counts(self):
-        make_file_db(self.src, [src_row()])
+        self.addCleanup(make_file_db(self.src, [src_row()]).close)
         code, out, _ = self.run_main(
             ["record", "--db", self.db, "--src", self.src])
         self.assertEqual(code, 0)
@@ -346,7 +375,7 @@ class CliTests(unittest.TestCase):
                          r"inserted=\d+ updated=\d+ unchanged=\d+")
 
     def test_record_then_query_implicit_records(self):
-        make_file_db(self.src, [src_row()])
+        self.addCleanup(make_file_db(self.src, [src_row()]).close)
         code, out, err = self.run_main(
             ["--db", self.db, "--src", self.src])
         self.assertEqual(code, 0)
@@ -354,8 +383,9 @@ class CliTests(unittest.TestCase):
         self.assertIn("unsloth-studio", out)
 
     def test_json_output_parses(self):
-        make_file_db(self.src, [src_row(sid="a1", created=ms(2026, 11, 1)),
-                                src_row(sid="a2", created=ms(2026, 11, 1))])
+        self.addCleanup(make_file_db(
+            self.src, [src_row(sid="a1", created=ms(2026, 11, 1)),
+                       src_row(sid="a2", created=ms(2026, 11, 1))]).close)
         code, out, _ = self.run_main(
             ["--db", self.db, "--src", self.src, "--json", "--daily"])
         self.assertEqual(code, 0)
@@ -376,7 +406,9 @@ class ReviewFixTests(unittest.TestCase):
             src_row(sid="tiny", tin=100, tout=5, created=ms(2026, 11, 5)),
         ])
         self.src = src
+        self.addCleanup(src.close)
         self.dest = make_dest()
+        self.addCleanup(self.dest.close)
         record(src, self.dest, now_ms=1)
 
     def test_daily_totals_applies_token_thresholds(self):
@@ -481,6 +513,7 @@ def run_row(rid="r1", model="unsloth/Ornith-1.5-122B-GGUF", progress=100,
 class ImportRunsTests(unittest.TestCase):
     def setUp(self):
         self.dest = make_dest()
+        self.addCleanup(self.dest.close)
 
     def stored(self, rid="r1"):
         return self.dest.execute(
@@ -494,17 +527,21 @@ class ImportRunsTests(unittest.TestCase):
 
     def test_import_runs_inserts_then_is_idempotent(self):
         src = make_runs_src([run_row("r1"), run_row("r2", progress=20)])
+        self.addCleanup(src.close)
         first = import_unsloth_runs(src, self.dest)
         self.assertEqual(first, {"inserted": 2, "updated": 0, "unchanged": 0})
         second = import_unsloth_runs(src, self.dest)
         self.assertEqual(second, {"inserted": 0, "updated": 0, "unchanged": 2})
 
     def test_import_runs_extracts_model_from_request_json(self):
-        import_unsloth_runs(make_runs_src([run_row("r1")]), self.dest)
+        src = make_runs_src([run_row("r1")])
+        self.addCleanup(src.close)
+        import_unsloth_runs(src, self.dest)
         self.assertEqual(self.stored()[0], "unsloth/Ornith-1.5-122B-GGUF")
 
     def test_import_runs_never_shrinks_on_regression(self):
         src = make_runs_src([run_row("r1", progress=100)])
+        self.addCleanup(src.close)
         import_unsloth_runs(src, self.dest)
         src.execute("UPDATE chat_generation_runs SET progress_tokens = 50"
                     " WHERE id = 'r1'")
@@ -513,6 +550,7 @@ class ImportRunsTests(unittest.TestCase):
 
     def test_import_runs_missing_table_is_noop(self):
         conn = sqlite3.connect(":memory:")  # no chat_generation_runs table
+        self.addCleanup(conn.close)
         self.assertEqual(import_unsloth_runs(conn, self.dest),
                          {"inserted": 0, "updated": 0, "unchanged": 0})
 
@@ -526,6 +564,7 @@ class ImportRunsTests(unittest.TestCase):
             ("r_list", '[1,2]', 7, 1_764_000_000_000, 1_764_000_010_000,
              "completed"),
         ])
+        self.addCleanup(src.close)
         counts = import_unsloth_runs(src, self.dest)
         self.assertEqual(counts["inserted"], 2)
         self.assertEqual(self.stored("r_null"), ("", 42))
@@ -535,13 +574,16 @@ class ImportRunsTests(unittest.TestCase):
 class RunsQueryTests(unittest.TestCase):
     def setUp(self):
         self.dest = make_dest()
-        import_unsloth_runs(make_runs_src([
+        self.addCleanup(self.dest.close)
+        src = make_runs_src([
             run_row("r1", model="unsloth/Qwen3.8-Flash-Next-GGUF", progress=243,
                     started=ms(2026, 11, 1),
                     completed=ms(2026, 11, 1) + 16082),
             run_row("r2", model="unsloth/Ornith-1.5-122B-GGUF", progress=51,
                     started=ms(2026, 11, 5), completed=ms(2026, 11, 5) + 4911),
-        ]), self.dest)
+        ])
+        self.addCleanup(src.close)
+        import_unsloth_runs(src, self.dest)
 
     def test_query_runs_reports_progress_and_rate(self):
         rows = query_runs(self.dest)
@@ -551,9 +593,11 @@ class RunsQueryTests(unittest.TestCase):
         self.assertAlmostEqual(rows[0]["tok_s"], round(243 / 16.082, 1))
 
     def test_query_runs_blank_rate_when_no_duration(self):
-        import_unsloth_runs(make_runs_src([run_row("r3", model="rate-blank-probe",
-                                                   started=1_764_000_000_000,
-                                                   completed=None)]), self.dest)
+        src = make_runs_src([run_row("r3", model="rate-blank-probe",
+                                     started=1_764_000_000_000,
+                                     completed=None)])
+        self.addCleanup(src.close)
+        import_unsloth_runs(src, self.dest)
         rows = query_runs(self.dest, model="rate-blank-probe")
         self.assertIsNone(rows[0]["tok_s"])
 
@@ -561,11 +605,13 @@ class RunsQueryTests(unittest.TestCase):
         # A failed run that recorded completed_at must NOT render a rate:
         # TOK/S is blank when the run hasn't completed (spec), so the gate
         # is completed_at set AND status == "completed".
-        import_unsloth_runs(make_runs_src([run_row("r4", model="failed-probe",
-                                                   progress=500,
-                                                   started=1_764_000_000_000,
-                                                   completed=1_764_000_010_000,
-                                                   status="failed")]), self.dest)
+        src = make_runs_src([run_row("r4", model="failed-probe",
+                                     progress=500,
+                                     started=1_764_000_000_000,
+                                     completed=1_764_000_010_000,
+                                     status="failed")])
+        self.addCleanup(src.close)
+        import_unsloth_runs(src, self.dest)
         rows = query_runs(self.dest, model="failed-probe")
         self.assertIsNone(rows[0]["tok_s"])
 
@@ -583,6 +629,7 @@ class RunsQueryTests(unittest.TestCase):
 class ImportUnslothTests(unittest.TestCase):
     def setUp(self):
         self.dest = make_dest()
+        self.addCleanup(self.dest.close)
 
     def stored_total(self):
         row = self.dest.execute(
@@ -592,6 +639,7 @@ class ImportUnslothTests(unittest.TestCase):
 
     def test_import_inserts_then_is_idempotent(self):
         src = make_unsloth_src([unsloth_event("e1"), unsloth_event("e2", prompt=20)])
+        self.addCleanup(src.close)
         first = import_unsloth(src, self.dest)
         self.assertEqual(first, {"inserted": 2, "updated": 0, "unchanged": 0})
         second = import_unsloth(src, self.dest)
@@ -600,6 +648,7 @@ class ImportUnslothTests(unittest.TestCase):
 
     def test_import_never_shrinks_on_source_regression(self):
         src = make_unsloth_src([unsloth_event("e1", prompt=100)])
+        self.addCleanup(src.close)
         import_unsloth(src, self.dest)
         src.execute("UPDATE api_usage_events SET prompt_tokens = 50 WHERE id='e1'")
         import_unsloth(src, self.dest)
@@ -614,6 +663,7 @@ class ImportUnslothTests(unittest.TestCase):
             unsloth_event("e2", model="unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
                           prompt=50, completion=7, created=ms(2026, 11, 5)),
         ])
+        self.addCleanup(src.close)
         import_unsloth(src, self.dest)
         rows = query_events(self.dest, model="qwen3-coder")
         self.assertEqual(len(rows), 1)
@@ -630,6 +680,7 @@ class ImportUnslothTests(unittest.TestCase):
             unsloth_event("e2", prompt=200, completion=2, created=ms(2026, 11, 1)),
             unsloth_event("e3", prompt=400, completion=4, created=ms(2026, 11, 5)),
         ])
+        self.addCleanup(src.close)
         import_unsloth(src, self.dest)
         days = daily_events(self.dest)
         self.assertEqual([d["date"] for d in days], ["2026-11-01", "2026-11-05"])
@@ -639,11 +690,13 @@ class ImportUnslothTests(unittest.TestCase):
 
     def test_reconcile_computes_gap(self):
         osrc = make_src([src_row(sid="s1", tin=1000, tcr=5000, tcw=0, tout=200)])
+        self.addCleanup(osrc.close)
         record(osrc, self.dest, now_ms=1)
         usrc = make_unsloth_src([
             unsloth_event("e1", prompt=9000, completion=300),
             unsloth_event("e2", prompt=1000, completion=100),
         ])
+        self.addCleanup(usrc.close)
         import_unsloth(usrc, self.dest)
         rows = reconcile(self.dest)
         self.assertEqual(len(rows), 1)
@@ -693,7 +746,8 @@ class CliUnslothTests(unittest.TestCase):
         return code, out.getvalue(), err.getvalue()
 
     def test_import_unsloth_subcommand_prints_counts(self):
-        conn = make_file_unsloth_db(self.udb, [unsloth_event("e1")])
+        self.addCleanup(make_file_unsloth_db(
+            self.udb, [unsloth_event("e1")]).close)
         code, out, _ = self.run_main(
             ["import-unsloth", "--db", self.db, "--unsloth-db", self.udb])
         self.assertEqual(code, 0)
@@ -701,17 +755,20 @@ class CliUnslothTests(unittest.TestCase):
                          r"inserted=\d+ updated=\d+ unchanged=\d+")
 
     def test_import_unsloth_subcommand_also_imports_runs(self):
-        make_file_runs_db(self.udb, events=[unsloth_event("e1")],
-                          runs=[run_row("r1")])
+        self.addCleanup(make_file_runs_db(
+            self.udb, events=[unsloth_event("e1")],
+            runs=[run_row("r1")]).close)
         code, out, _ = self.run_main(
             ["import-unsloth", "--db", self.db, "--unsloth-db", self.udb])
         self.assertEqual(code, 0)
-        stored = sqlite3.connect(self.db).execute(
+        probe = sqlite3.connect(self.db)
+        self.addCleanup(probe.close)
+        stored = probe.execute(
             "SELECT COUNT(*) FROM unsloth_runs").fetchone()[0]
         self.assertEqual(stored, 1)
 
     def test_from_unsloth_query_renders_events(self):
-        make_file_unsloth_db(self.udb, [unsloth_event("e1")])
+        self.addCleanup(make_file_unsloth_db(self.udb, [unsloth_event("e1")]).close)
         code, out, _ = self.run_main(
             ["--db", self.db, "--src", os.path.join(self.tmp.name, "none.db"),
              "--unsloth-db", self.udb, "--from-unsloth"])
@@ -719,7 +776,7 @@ class CliUnslothTests(unittest.TestCase):
         self.assertIn(UNSLOTH_MODEL_ID, out)
 
     def test_from_runs_renders_runs(self):
-        make_file_runs_db(self.udb, runs=[run_row("r1")])
+        self.addCleanup(make_file_runs_db(self.udb, runs=[run_row("r1")]).close)
         code, out, _ = self.run_main(
             ["--db", self.db, "--src", os.path.join(self.tmp.name, "none.db"),
              "--unsloth-db", self.udb, "--from-runs"])
@@ -728,7 +785,7 @@ class CliUnslothTests(unittest.TestCase):
 
     def test_from_runs_with_cost_renders_dollar_column(self):
         # composition pin: --from-runs x --cost (run rows price output-only)
-        make_file_runs_db(self.udb, runs=[run_row("r1")])
+        self.addCleanup(make_file_runs_db(self.udb, runs=[run_row("r1")]).close)
         code, out, _ = self.run_main(
             ["--db", self.db, "--src", os.path.join(self.tmp.name, "none.db"),
              "--unsloth-db", self.udb, "--from-runs", "--cost"])
@@ -738,7 +795,7 @@ class CliUnslothTests(unittest.TestCase):
 
     def test_from_runs_with_daily_renders_table(self):
         # composition pin: --from-runs x --daily (closes a coverage gap)
-        make_file_runs_db(self.udb, runs=[run_row("r1")])
+        self.addCleanup(make_file_runs_db(self.udb, runs=[run_row("r1")]).close)
         code, out, _ = self.run_main(
             ["--db", self.db, "--src", os.path.join(self.tmp.name, "none.db"),
              "--unsloth-db", self.udb, "--from-runs", "--daily"])
@@ -753,7 +810,7 @@ class CliUnslothTests(unittest.TestCase):
         self.assertEqual(cm.exception.code, 2)
 
     def test_reconcile_subcommand(self):
-        make_file_unsloth_db(self.udb, [unsloth_event("e1")])
+        self.addCleanup(make_file_unsloth_db(self.udb, [unsloth_event("e1")]).close)
         code, out, _ = self.run_main(
             ["reconcile", "--db", self.db, "--src",
              os.path.join(self.tmp.name, "none.db"), "--unsloth-db", self.udb])
@@ -773,13 +830,16 @@ class ReviewFixTests2(unittest.TestCase):
 
     def setUp(self):
         self.dest = make_dest()
+        self.addCleanup(self.dest.close)
 
     def test_reconcile_one_sided_models_both_directions(self):
         # usage-only model: negative gap (OpenCode counted what Studio's log lacks)
         osrc = make_src([src_row(sid="u1", model=LEMONADE_JSON, tin=1500, tout=30)])
+        self.addCleanup(osrc.close)
         record(osrc, self.dest, now_ms=1)  # lemonade: not in unsloth side at all
         # unsloth-only model
         usrc = make_unsloth_src([unsloth_event("e1", prompt=900, completion=9)])
+        self.addCleanup(usrc.close)
         import_unsloth(usrc, self.dest)
         rows = {r["model"]: r for r in reconcile(self.dest)}
         u = rows[UNSLOTH_MODEL_ID]
@@ -789,6 +849,7 @@ class ReviewFixTests2(unittest.TestCase):
 
     def test_import_skips_bad_row_keeps_good_rows(self):
         src = make_unsloth_src([unsloth_event("good", prompt=100)])
+        self.addCleanup(src.close)
         src.execute("INSERT INTO api_usage_events VALUES ('bad','unsloth','/x',"
                     "'m','completed',5,5,10,NULL)")
         counts = import_unsloth(src, self.dest)
@@ -799,15 +860,18 @@ class ReviewFixTests2(unittest.TestCase):
         self.assertEqual(stored, (1, 100))  # good row persisted despite bad one
 
     def test_event_filter_accepts_provider_prefixed_string(self):
-        import_unsloth(make_unsloth_src([unsloth_event("e1")]), self.dest)
+        src = make_unsloth_src([unsloth_event("e1")])
+        self.addCleanup(src.close)
+        import_unsloth(src, self.dest)
         # the string shown in session reports must also work in event mode
         self.assertEqual(len(query_events(self.dest, model="unsloth-studio")), 1)
         self.assertEqual(len(query_events(self.dest, model="qwen3.8")), 1)
 
     def test_event_until_dst_boundary(self):
         late = int(datetime.datetime(2026, 11, 1, 23, 30).timestamp() * 1000)
-        import_unsloth(make_unsloth_src([unsloth_event("e1", created=late)]),
-                       self.dest)
+        src = make_unsloth_src([unsloth_event("e1", created=late)])
+        self.addCleanup(src.close)
+        import_unsloth(src, self.dest)
         rows = query_events(self.dest, since_ms=ms(2026, 11, 1),
                             until_ms=ms(2026, 11, 1))
         self.assertEqual(len(rows), 1)
@@ -815,6 +879,7 @@ class ReviewFixTests2(unittest.TestCase):
     def test_report_stable_across_repeated_imports(self):
         src = make_unsloth_src([unsloth_event("e1", prompt=500),
                                 unsloth_event("e2", prompt=7)])
+        self.addCleanup(src.close)
         import_unsloth(src, self.dest)
         before = sum(r["total"] for r in query_events(self.dest))
         import_unsloth(src, self.dest)
@@ -848,11 +913,14 @@ class CliUnslothFailTests(unittest.TestCase):
 class TotalTotalsTests(unittest.TestCase):
     def setUp(self):
         self.dest = make_dest()
-        record(make_src([
+        self.addCleanup(self.dest.close)
+        src = make_src([
             src_row(sid="s1", tin=1000, tout=200, cost=0.01),          # unsloth-studio
             src_row(sid="s2", model=LEMONADE_JSON, tin=500, tout=50,
                     cost=0.02),                                        # lemonade
-        ]), self.dest, now_ms=1)
+        ])
+        self.addCleanup(src.close)
+        record(src, self.dest, now_ms=1)
 
     def test_total_totals_single_grand_row(self):
         rows = total_totals(self.dest)
@@ -864,8 +932,10 @@ class TotalTotalsTests(unittest.TestCase):
         self.assertAlmostEqual(r["cost"], 0.03)
 
     def test_total_totals_per_model_when_filtered(self):
-        record(make_src([src_row(sid="s3", model=LEMONADE_JSON, tin=10, tout=1,
-                                 cost=0.0)]), self.dest, now_ms=2)
+        src = make_src([src_row(sid="s3", model=LEMONADE_JSON, tin=10, tout=1,
+                                cost=0.0)])
+        self.addCleanup(src.close)
+        record(src, self.dest, now_ms=2)
         rows = total_totals(self.dest, model="lemonade")
         self.assertEqual([r["model"] for r in rows], ["lemonade/gpt-oss-120b"])
         self.assertEqual((rows[0]["sessions"], rows[0]["tokens_input"]), (2, 510))
@@ -873,15 +943,17 @@ class TotalTotalsTests(unittest.TestCase):
     def test_total_totals_keeps_same_model_id_separate_per_provider(self):
         a = '{"id":"m1","providerID":"prov-a"}'
         b = '{"id":"m1","providerID":"prov-b"}'
-        record(make_src([src_row(sid="p1", model=a), src_row(sid="p2", model=b)]),
-               self.dest, now_ms=2)
+        src = make_src([src_row(sid="p1", model=a), src_row(sid="p2", model=b)])
+        self.addCleanup(src.close)
+        record(src, self.dest, now_ms=2)
         rows = total_totals(self.dest, model="m1")
         self.assertEqual(sorted(r["model"] for r in rows), ["prov-a/m1", "prov-b/m1"])
 
     def test_total_totals_filters_apply_before_summing(self):
-        record(make_src([src_row(sid="d1", created=ms(2026, 11, 1), tin=9000),
-                         src_row(sid="d2", created=ms(2026, 11, 5), tin=7)]),
-               self.dest, now_ms=2)
+        src = make_src([src_row(sid="d1", created=ms(2026, 11, 1), tin=9000),
+                        src_row(sid="d2", created=ms(2026, 11, 5), tin=7)])
+        self.addCleanup(src.close)
+        record(src, self.dest, now_ms=2)
         r = total_totals(self.dest, since_ms=ms(2026, 11, 1),
                          until_ms=ms(2026, 11, 1))[0]
         self.assertEqual((r["sessions"], r["tokens_input"]), (1, 9000))
@@ -893,6 +965,7 @@ class TotalTotalsTests(unittest.TestCase):
     def test_total_totals_empty_result(self):
         self.assertEqual(total_totals(self.dest, model="nope"), [])
         empty = make_dest()
+        self.addCleanup(empty.close)
         self.assertEqual(total_totals(empty), [])
 
 
@@ -907,10 +980,13 @@ class TotalTotalsTests(unittest.TestCase):
 class TotalEventsTests(unittest.TestCase):
     def setUp(self):
         self.dest = make_dest()
-        import_unsloth(make_unsloth_src([
+        self.addCleanup(self.dest.close)
+        src = make_unsloth_src([
             unsloth_event("e1", prompt=900, completion=30),
             unsloth_event("e2", model="other-model", prompt=100, completion=5),
-        ]), self.dest)
+        ])
+        self.addCleanup(src.close)
+        import_unsloth(src, self.dest)
 
     def test_total_events_single_grand_row(self):
         rows = total_events(self.dest)
@@ -922,8 +998,9 @@ class TotalEventsTests(unittest.TestCase):
         self.assertEqual(r["cost"], 0.0)
 
     def test_total_events_per_model_when_filtered(self):
-        import_unsloth(make_unsloth_src([unsloth_event("e3", prompt=50)]),
-                       self.dest)  # same model as e1
+        src = make_unsloth_src([unsloth_event("e3", prompt=50)])
+        self.addCleanup(src.close)
+        import_unsloth(src, self.dest)  # same model as e1
         rows = total_events(self.dest, model="qwen")
         self.assertEqual([r["model"] for r in rows], [UNSLOTH_MODEL_ID])
         self.assertEqual((rows[0]["sessions"], rows[0]["tokens_input"]), (2, 950))
@@ -953,10 +1030,10 @@ class CliTotalTests(unittest.TestCase):
         self.db = os.path.join(self.tmp.name, "usage.db")
         qwen_lemonade = '{"id":"qwen-mini","providerID":"lemonade"}'
         self.src = os.path.join(self.tmp.name, "src.db")
-        make_file_db(self.src, [
+        self.addCleanup(make_file_db(self.src, [
             src_row(sid="s1"),                        # unsloth-studio model
             src_row(sid="s2", model=qwen_lemonade),   # lemonade qwen-mini
-        ])
+        ]).close)
         self.no_udb = os.path.join(self.tmp.name, "no-studio.db")
 
     def tearDown(self):
@@ -1034,8 +1111,9 @@ class CliTotalTests(unittest.TestCase):
 
     def test_from_unsloth_total_bare_model(self):
         udb = os.path.join(self.tmp.name, "studio.db")
-        make_file_unsloth_db(udb, [unsloth_event("e1"),
-                                   unsloth_event("e2", model="other-model")])
+        self.addCleanup(make_file_unsloth_db(
+            udb, [unsloth_event("e1"),
+                  unsloth_event("e2", model="other-model")]).close)
         code, out, _ = self.run_main(
             ["--db", self.db, "--src", os.path.join(self.tmp.name, "none.db"),
              "--unsloth-db", udb, "--from-unsloth", "--total", "--model"])
@@ -1125,8 +1203,11 @@ class CostTests(unittest.TestCase):
         # silently price via the event branch at the input rate.
         from tokenstat import annotate_cost
         dest = make_dest()
-        import_unsloth_runs(make_runs_src([
-            run_row("r1", progress=100), run_row("r2", progress=400)]), dest)
+        self.addCleanup(dest.close)
+        src = make_runs_src([run_row("r1", progress=100),
+                             run_row("r2", progress=400)])
+        self.addCleanup(src.close)
+        import_unsloth_runs(src, dest)
         self.assertIn("progress_tokens", daily_runs(dest)[0])
         (row,) = total_runs(dest, by_model=True)  # both runs share one model
         self.assertIn("progress_tokens", row)
@@ -1148,7 +1229,7 @@ class DisplayAlignmentTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.db = os.path.join(self.tmp.name, "usage.db")
         self.src = os.path.join(self.tmp.name, "src.db")
-        make_file_db(self.src, [src_row(sid="s1", cost=0.05)])
+        self.addCleanup(make_file_db(self.src, [src_row(sid="s1", cost=0.05)]).close)
         self.no_udb = os.path.join(self.tmp.name, "no-studio.db")
 
     def tearDown(self):
@@ -1245,10 +1326,10 @@ class CliShareTests(unittest.TestCase):
         self.db = os.path.join(self.tmp.name, "usage.db")
         qwen_lemonade = '{"id":"qwen-mini","providerID":"lemonade"}'
         self.src = os.path.join(self.tmp.name, "src.db")
-        make_file_db(self.src, [
+        self.addCleanup(make_file_db(self.src, [
             src_row(sid="s1", tin=9000, tout=1000),   # unsloth-studio: 10k
             src_row(sid="s2", model=qwen_lemonade, tin=4500, tout=500),  # 5k
-        ])
+        ]).close)
         self.no_udb = os.path.join(self.tmp.name, "no-studio.db")
 
     def tearDown(self):
@@ -1306,9 +1387,10 @@ class CliShareTests(unittest.TestCase):
 
     def test_from_unsloth_total_shares(self):
         udb = os.path.join(self.tmp.name, "studio.db")
-        make_file_unsloth_db(udb, [unsloth_event("e1", prompt=900, completion=100),
-                                   unsloth_event("e2", model="other-model",
-                                                 prompt=500)])
+        self.addCleanup(make_file_unsloth_db(
+            udb, [unsloth_event("e1", prompt=900, completion=100),
+                  unsloth_event("e2", model="other-model",
+                                prompt=500)]).close)
         code, out, _ = self.run_main(
             ["--db", self.db, "--src", os.path.join(self.tmp.name, "none.db"),
              "--unsloth-db", udb, "--from-unsloth", "--total", "--model"])
@@ -1431,10 +1513,10 @@ class CliColorTests(unittest.TestCase):
         self.db = os.path.join(self.tmp.name, "usage.db")
         qwen_lemonade = '{"id":"qwen-mini","providerID":"lemonade"}'
         self.src = os.path.join(self.tmp.name, "src.db")
-        make_file_db(self.src, [
+        self.addCleanup(make_file_db(self.src, [
             src_row(sid="s1", tin=9000, tout=1000),
             src_row(sid="s2", model=qwen_lemonade, tin=4500, tout=500),
-        ])
+        ]).close)
         self.no_udb = os.path.join(self.tmp.name, "no-studio.db")
 
     def tearDown(self):
@@ -1460,6 +1542,7 @@ class CliColorTests(unittest.TestCase):
 class SchemaTests(unittest.TestCase):
     def test_ensure_schema_creates_filter_indexes(self):
         dest = make_dest()
+        self.addCleanup(dest.close)
         created = dest.execute(
             "PRAGMA index_info(idx_unsloth_events_created)").fetchall()
         tcreated = dest.execute(
@@ -1474,35 +1557,42 @@ class LikeEscapingTests(unittest.TestCase):
 
     def setUp(self):
         self.dest = make_dest()
-        record(make_src([src_row(sid="a", model='{"id":"50%off","providerID":"x"}'),
-                         src_row(sid="b", model=LEMONADE_JSON)]), self.dest, now_ms=1)
+        self.addCleanup(self.dest.close)
+        src = make_src([src_row(sid="a", model='{"id":"50%off","providerID":"x"}'),
+                        src_row(sid="b", model=LEMONADE_JSON)])
+        self.addCleanup(src.close)
+        record(src, self.dest, now_ms=1)
 
     def test_model_percent_is_literal(self):
         # "gpt-50-mini" contains the digit pair "50": an unescaped `%`
         # (pattern %50%%) would match it too. Only a literal "50%" may match.
-        record(make_src([src_row(sid="p2",
-                                 model='{"id":"gpt-50-mini","providerID":"z"}')]),
-               self.dest, now_ms=1)
+        src = make_src([src_row(sid="p2",
+                                model='{"id":"gpt-50-mini","providerID":"z"}')])
+        self.addCleanup(src.close)
+        record(src, self.dest, now_ms=1)
         rows = query_sessions(self.dest, model="50%")
         self.assertEqual([r["model"] for r in rows],
                          ["x/50%off"])   # only the literal-percent model
 
     def test_model_underscore_is_literal(self):
-        record(make_src([src_row(sid="c", model='{"id":"a_b","providerID":"y"}')]),
-               self.dest, now_ms=2)
+        src = make_src([src_row(sid="c", model='{"id":"a_b","providerID":"y"}')])
+        self.addCleanup(src.close)
+        record(src, self.dest, now_ms=2)
         # "axb" matches when `_` is a wildcard (pattern %a_b%) but does not
         # contain the literal "a_b".
-        record(make_src([src_row(sid="u2", model='{"id":"axb","providerID":"w"}')]),
-               self.dest, now_ms=2)
+        src = make_src([src_row(sid="u2", model='{"id":"axb","providerID":"w"}')])
+        self.addCleanup(src.close)
+        record(src, self.dest, now_ms=2)
         rows = query_sessions(self.dest, model="a_b")
         self.assertEqual([r["model"] for r in rows], ["y/a_b"])
 
     def test_event_percent_is_literal(self):
         # The event filter has two LIKE clauses sharing one pattern param; if
         # either lacked ESCAPE '\', the OR would let "gpt-50-mini" leak in.
-        import_unsloth(make_unsloth_src([unsloth_event("e1", model="x/50%off"),
-                                         unsloth_event("e2", model="gpt-50-mini")]),
-                       self.dest)
+        src = make_unsloth_src([unsloth_event("e1", model="x/50%off"),
+                                unsloth_event("e2", model="gpt-50-mini")])
+        self.addCleanup(src.close)
+        import_unsloth(src, self.dest)
         rows = query_events(self.dest, model="50%")
         self.assertEqual([r["model"] for r in rows], ["x/50%off"])
 
@@ -1510,12 +1600,34 @@ class LikeEscapingTests(unittest.TestCase):
         # Run-path pin: _run_filters was already escaping when this test was
         # added — regression guard, not a RED demonstration. "gpt-50-mini"
         # gives it teeth: without ESCAPE the pattern %50%% matches it too.
-        import_unsloth_runs(make_runs_src([run_row("rp", model="x/50%off"),
-                                           run_row("rd"),
-                                           run_row("rg", model="gpt-50-mini")]),
-                            self.dest)
+        src = make_runs_src([run_row("rp", model="x/50%off"),
+                             run_row("rd"),
+                             run_row("rg", model="gpt-50-mini")])
+        self.addCleanup(src.close)
+        import_unsloth_runs(src, self.dest)
         rows = query_runs(self.dest, model="50%")
         self.assertEqual([r["model"] for r in rows], ["x/50%off"])
+
+
+class NoResourceWarningTests(unittest.TestCase):
+    """Regression pin: main() must close every sqlite connection it opens
+    (our store plus each read-only source). An unclosed one surfaces on
+    stderr as a 'ResourceWarning: unclosed database' finalizer message."""
+
+    def test_cli_run_emits_no_resource_warnings(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, "src.db")
+            self.addCleanup(make_file_db(src, [src_row()]).close)
+            script = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  "tokenstat.py")
+            proc = subprocess.run(
+                [sys.executable, "-W", "error::ResourceWarning", script,
+                 "--db", os.path.join(tmp, "usage.db"), "--src", src,
+                 "--unsloth-db", os.path.join(tmp, "no-studio.db")],
+                capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotIn("ResourceWarning", proc.stderr)
 
 
 if __name__ == "__main__":

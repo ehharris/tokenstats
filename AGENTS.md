@@ -11,7 +11,11 @@ in `docs/superpowers/plans/`.
 **State at handoff (2026-11-14):** current work sits on branch
 `tokens-per-second-and-cost` (no remote configured — local-only repo, no
 push; branch workflow used for increments, fast-forward merged after clean
-review rounds). 119 tests green. Increments since the original build: `--total` all-time
+review rounds). 124 tests green. Connection hygiene (2026-11-15): every sqlite
+connection main() opens is now closed — the store via try/finally and each
+read-only source by `_ingest` owning its open/close; `NoResourceWarningTests`
+subprocess-pins a `-W error::ResourceWarning` CLI run (suite runs warning-free
+under the same flag). Increments since the original build: `--total` all-time
 aggregate view (session and `--from-unsloth` paths; `--model PATTERN` = rows
 per matching model, bare `--model` = rows for every model), left-aligned
 tables everywhere, COST dropped from displayed reports (still stored and in
@@ -84,7 +88,8 @@ python3 tokenstat.py --from-runs [--daily|--total]     # Studio runs, TRUE gener
 python3 tokenstat.py --cost [--cost-tier haiku|opus]   # reference $ overlay (off by default)
 python3 tokenstat.py reconcile                         # lost-history view per model
 python3 tokenstat.py record | import-unsloth           # explicit snapshots (import-unsloth = events + runs; exit 1 if source unreadable)
-python3 -m unittest test_tokenstat -v                  # tests (~0.05s, no deps)
+python3 -m unittest test_tokenstat -v                  # tests (~0.15s, no deps)
+python3 -W error::ResourceWarning -m unittest test_tokenstat   # strict variant: must stay warning-clean
 ```
 
 ## Data sources (verified live)

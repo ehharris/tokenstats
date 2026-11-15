@@ -234,10 +234,11 @@ def import_unsloth_runs(src: sqlite3.Connection,
 def _event_filters(model, since_ms, until_ms, min_in, min_out):
     where, params = [], []
     if model:
-        pattern = f"%{model.lower()}%"
+        pattern = "%" + model.lower().replace("%", "\\%").replace("_", "\\_") + "%"
         # Accept either the event's own model string or the provider-prefixed
         # form shown in session reports (e.g. "unsloth-studio/unsloth/Qwen...").
-        where.append("(lower(model) LIKE ? OR lower(? || '/' || model) LIKE ?)")
+        where.append("(lower(model) LIKE ? ESCAPE '\\' OR "
+                     "lower(? || '/' || model) LIKE ? ESCAPE '\\')")
         params.extend([pattern, UNSLOTH_PROVIDER, pattern])
     if since_ms is not None:
         where.append("created_at >= ?")
@@ -505,8 +506,9 @@ def parse_date(s: str) -> int:
 def _session_filters(model, since_ms, until_ms, min_in, min_out):
     where, params = [], []
     if model:
-        where.append("lower(provider || '/' || model_id) LIKE ?")
-        params.append(f"%{model.lower()}%")
+        pattern = "%" + model.lower().replace("%", "\\%").replace("_", "\\_") + "%"
+        where.append("lower(provider || '/' || model_id) LIKE ? ESCAPE '\\'")
+        params.append(pattern)
     if since_ms is not None:
         where.append("time_created >= ?")
         params.append(since_ms)

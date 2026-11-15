@@ -164,8 +164,74 @@ class QueryTests(unittest.TestCase):
         self.assertEqual(
             sorted(row.keys()),
             sorted(["date", "model", "tokens_input", "tokens_output",
-                    "total", "cost", "title"]))
+                    "total", "cost", "title", "tok_s", "tokens_cache_read",
+                    "tokens_cache_write"]))
         self.assertEqual(row["total"], row["tokens_input"] + row["tokens_output"])
+
+
+class SessionTokSTests(unittest.TestCase):
+    def setUp(self):
+        self.dest = make_dest()
+        record(make_src([src_row(sid="s1", tin=1000, tout=200,
+                                 created=1_764_000_000_000,
+                                 updated=1_764_000_005_000)]), self.dest, now_ms=1)
+
+    def test_session_rate_is_tokens_over_wall_clock_span(self):
+        row = query_sessions(self.dest)[0]
+        # (1000+200) tokens over 5 s = 240.0
+        self.assertAlmostEqual(row["tok_s"], 240.0, places=2)
+
+    def test_session_zero_span_rate_is_none(self):
+        # 0-second span (time_updated == time_created) must yield None, not a
+        # ZeroDivision.
+        dest = make_dest()
+        record(make_src([src_row(sid="z", tin=100, tout=10,
+                                 created=1_764_000_000_000,
+                                 updated=1_764_000_000_000)]), dest, now_ms=1)
+        rows = query_sessions(dest)
+        self.assertEqual(len(rows), 1)
+        self.assertIsNone(rows[0]["tok_s"])
+
+    def test_session_rows_carry_cache_components(self):
+        row = query_sessions(self.dest)[0]
+        self.assertIn("tokens_cache_read", row)
+        self.assertIn("tokens_cache_write", row)
+
+    def test_event_rows_have_none_rate(self):
+        # from ImportUnslothTests.setUp style
+        dest = make_dest()
+        import_unsloth(make_unsloth_src([unsloth_event("e1")]), dest)
+        self.assertIsNone(query_events(dest)[0]["tok_s"])
+
+
+class EventTokSTests(unittest.TestCase):
+    """Aggregated event views derive tok_s from their rows' created_at span;
+    per-event rows carry no duration and report None."""
+
+    def setUp(self):
+        self.dest = make_dest()
+        self.base = 1_764_000_000_000  # fixed instant; both events share one local day
+        import_unsloth(make_unsloth_src([
+            unsloth_event("e1", prompt=100, completion=50, created=self.base),
+            unsloth_event("e2", prompt=300, completion=50,
+                          created=self.base + 5_000),
+        ]), self.dest)
+
+    def test_daily_events_rate_from_created_span(self):
+        days = daily_events(self.dest)
+        self.assertEqual(len(days), 1)
+        # (100+50) + (300+50) tokens over a 5 s created_at span = 100.0
+        self.assertAlmostEqual(days[0]["tok_s"], 100.0, places=2)
+        # sub-second span -> None (same semantics as _aggregate_rate)
+        dest = make_dest()
+        import_unsloth(make_unsloth_src([
+            unsloth_event("f1", prompt=10, created=self.base),
+            unsloth_event("f2", prompt=10, created=self.base + 500)]), dest)
+        self.assertIsNone(daily_events(dest)[0]["tok_s"])
+
+    def test_total_events_grand_row_rate(self):
+        r = total_events(self.dest)[0]
+        self.assertAlmostEqual(r["tok_s"], 100.0, places=2)
 
 
 class ParseDateTests(unittest.TestCase):
@@ -279,7 +345,8 @@ class CliTests(unittest.TestCase):
         self.assertEqual(len(days), 1)
         self.assertEqual(sorted(days[0].keys()),
                          sorted(["date", "sessions", "tokens_input",
-                                 "tokens_output", "total", "cost"]))
+                                 "tokens_output", "total", "cost", "tok_s",
+                                 "tokens_cache_read", "tokens_cache_write"]))
 
 
 class ReviewFixTests(unittest.TestCase):
@@ -864,7 +931,9 @@ class CliTotalTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(
             set(rows[0]), {"model", "sessions", "tokens_input",
-                           "tokens_output", "total", "cost", "share"})
+                           "tokens_output", "total", "cost", "share",
+                           "tok_s", "tokens_cache_read",
+                           "tokens_cache_write"})
 
     def test_total_rejects_daily(self):
         with self.assertRaises(SystemExit) as cm:

@@ -246,7 +246,8 @@ def query_events(dest, model=None, since_ms=None, until_ms=None,
     """Imported Unsloth request events matching all filters, oldest first.
 
     Dict shape matches query_sessions: tokens_input = prompt_tokens (which
-    include cache hits), tokens_output = completion_tokens."""
+    include cache hits), tokens_output = completion_tokens. tok_s is always
+    None: a single event carries no duration."""
     where, params = _event_filters(model, since_ms, until_ms, min_in, min_out)
     sql = ("SELECT created_at, model, prompt_tokens, completion_tokens"
            " FROM unsloth_events")
@@ -258,24 +259,26 @@ def query_events(dest, model=None, since_ms=None, until_ms=None,
         date = datetime.datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d")
         rows.append({"date": date, "model": model_id,
                      "tokens_input": p, "tokens_output": c, "total": p + c,
-                     "cost": 0.0, "title": ""})
+                     "cost": 0.0, "title": "", "tok_s": None})
     return rows
 
 
 def daily_events(dest, model=None, since_ms=None, until_ms=None,
                  min_in=None, min_out=None):
-    """Per-day event aggregates (sessions = request count), oldest first."""
+    """Per-day event aggregates (sessions = request count), oldest first.
+    tok_s spans the bucket's created_at range."""
     where, params = _event_filters(model, since_ms, until_ms, min_in, min_out)
     sql = ("SELECT date(created_at/1000, 'unixepoch', 'localtime') AS day,"
-           " COUNT(*), SUM(prompt_tokens), SUM(completion_tokens)"
-           " FROM unsloth_events")
+           " COUNT(*), SUM(prompt_tokens), SUM(completion_tokens),"
+           " MIN(created_at), MAX(created_at) FROM unsloth_events")
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " GROUP BY day ORDER BY day ASC"
     return [
         {"date": day, "sessions": n, "tokens_input": p or 0,
-         "tokens_output": c or 0, "total": (p or 0) + (c or 0), "cost": 0.0}
-        for day, n, p, c in dest.execute(sql, params)
+         "tokens_output": c or 0, "total": (p or 0) + (c or 0), "cost": 0.0,
+         "tok_s": _aggregate_rate((p or 0) + (c or 0), first, last)}
+        for day, n, p, c, first, last in dest.execute(sql, params)
     ]
 
 
@@ -283,25 +286,28 @@ def total_events(dest, model=None, since_ms=None, until_ms=None,
                  min_in=None, min_out=None, by_model=False):
     """All-time event aggregates: one grand-total row; per-event-model rows
     (ordered by it) with a model filter or by_model=True. Empty when no
-    events match. Mirrors total_totals; cost is always 0.0 (daily_events)."""
+    events match. Mirrors total_totals; cost is always 0.0 (daily_events);
+    tok_s spans each row's created_at range."""
     where, params = _event_filters(model, since_ms, until_ms, min_in, min_out)
     tail = " WHERE " + " AND ".join(where) if where else ""
+    sums = (" COUNT(*), SUM(prompt_tokens), SUM(completion_tokens),"
+            " MIN(created_at), MAX(created_at)")
     if not model and not by_model:
-        n, p, c = dest.execute(
-            "SELECT COUNT(*), SUM(prompt_tokens), SUM(completion_tokens)"
-            " FROM unsloth_events" + tail, params).fetchone()
+        n, p, c, first, last = dest.execute(
+            "SELECT" + sums + " FROM unsloth_events" + tail, params).fetchone()
         if not n:
             return []
         p, c = p or 0, c or 0
         return [{"model": "(all)", "sessions": n, "tokens_input": p,
-                 "tokens_output": c, "total": p + c, "cost": 0.0}]
+                 "tokens_output": c, "total": p + c, "cost": 0.0,
+                 "tok_s": _aggregate_rate(p + c, first, last)}]
     return [
         {"model": m, "sessions": n, "tokens_input": p or 0,
-         "tokens_output": c or 0, "total": (p or 0) + (c or 0), "cost": 0.0}
-        for m, n, p, c in dest.execute(
-            "SELECT model, COUNT(*), SUM(prompt_tokens), SUM(completion_tokens)"
-            " FROM unsloth_events" + tail + " GROUP BY model ORDER BY model ASC",
-            params)
+         "tokens_output": c or 0, "total": (p or 0) + (c or 0), "cost": 0.0,
+         "tok_s": _aggregate_rate((p or 0) + (c or 0), first, last)}
+        for m, n, p, c, first, last in dest.execute(
+            "SELECT model," + sums + " FROM unsloth_events" + tail
+            + " GROUP BY model ORDER BY model ASC", params)
     ]
 
 
@@ -502,38 +508,48 @@ def _session_filters(model, since_ms, until_ms, min_in, min_out):
 
 def query_sessions(dest, model=None, since_ms=None, until_ms=None,
                    min_in=None, min_out=None):
-    """Session rows matching all given filters, oldest first."""
+    """Session rows matching all given filters, oldest first.
+
+    tok_s is the session's wall-clock rate — tokens over created→updated
+    seconds; None when time_updated is NULL (span unknown) or under a
+    second."""
     sql = ("SELECT time_created, provider, model_id, tokens_input,"
-           " tokens_output, cost, title FROM usage")
+           " tokens_output, cost, title, tokens_cache_read,"
+           " tokens_cache_write, time_updated FROM usage")
     where, params = _session_filters(model, since_ms, until_ms, min_in, min_out)
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY time_created ASC"
     rows = []
-    for created, provider, model_id, tin, tout, cost, title in dest.execute(
-            sql, params):
+    for (created, provider, model_id, tin, tout, cost, title, tcr, tcw,
+         updated) in dest.execute(sql, params):
         date = datetime.datetime.fromtimestamp(created / 1000).strftime(
             "%Y-%m-%d")
+        tok_s = (_aggregate_rate(tin + tout, created, updated)
+                 if updated is not None else None)
         rows.append({"date": date, "model": f"{provider}/{model_id}",
                      "tokens_input": tin, "tokens_output": tout,
-                     "total": tin + tout, "cost": cost, "title": title or ""})
+                     "total": tin + tout, "cost": cost, "title": title or "",
+                     "tokens_cache_read": tcr, "tokens_cache_write": tcw,
+                     "tok_s": tok_s})
     return rows
 
 
 SESSION_COLUMNS = [
     ("DATE", "date", "text"), ("MODEL", "model", "text"),
     ("IN", "tokens_input", "int"), ("OUT", "tokens_output", "int"),
-    ("TOTAL", "total", "int"), ("SESSION", "title", "title"),
+    ("TOTAL", "total", "int"), ("TOK/S", "tok_s", "rate"),
+    ("SESSION", "title", "title"),
 ]
 DAILY_COLUMNS = [
     ("DATE", "date", "text"), ("SESSIONS", "sessions", "int"),
     ("IN", "tokens_input", "int"), ("OUT", "tokens_output", "int"),
-    ("TOTAL", "total", "int"),
+    ("TOTAL", "total", "int"), ("TOK/S", "tok_s", "rate"),
 ]
 TOTAL_COLUMNS = [
     ("MODEL", "model", "text"), ("SESSIONS", "sessions", "int"),
     ("IN", "tokens_input", "int"), ("OUT", "tokens_output", "int"),
-    ("TOTAL", "total", "int"),
+    ("TOTAL", "total", "int"), ("TOK/S", "tok_s", "rate"),
 ]
 RUNS_COLUMNS = [
     ("DATE", "date", "text"), ("MODEL", "model", "text"),
@@ -683,20 +699,28 @@ def render_table(rows, columns=None):
 
 def daily_totals(dest, model=None, since_ms=None, until_ms=None,
                  min_in=None, min_out=None):
-    """Per-day aggregates matching the filters, oldest day first."""
+    """Per-day aggregates matching the filters, oldest day first. tok_s
+    spans the bucket from its earliest session creation to its latest
+    update (None when no row in it has a time_updated)."""
     sql = ("SELECT date(time_created/1000, 'unixepoch', 'localtime') AS day,"
-           " COUNT(*), SUM(tokens_input), SUM(tokens_output), SUM(cost)"
-           " FROM usage")
+           " COUNT(*), SUM(tokens_input), SUM(tokens_output), SUM(cost),"
+           " SUM(tokens_cache_read), SUM(tokens_cache_write),"
+           " MIN(time_created), MAX(time_updated) FROM usage")
     where, params = _session_filters(model, since_ms, until_ms, min_in, min_out)
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " GROUP BY day ORDER BY day ASC"
-    return [
-        {"date": day, "sessions": n, "tokens_input": tin or 0,
-         "tokens_output": tout or 0, "total": (tin or 0) + (tout or 0),
-         "cost": cost or 0.0}
-        for day, n, tin, tout, cost in dest.execute(sql, params)
-    ]
+    rows = []
+    for (day, n, tin, tout, cost, tcr, tcw, first, last) in dest.execute(
+            sql, params):
+        total = (tin or 0) + (tout or 0)
+        rows.append({"date": day, "sessions": n, "tokens_input": tin or 0,
+                     "tokens_output": tout or 0, "total": total,
+                     "cost": cost or 0.0, "tokens_cache_read": tcr or 0,
+                     "tokens_cache_write": tcw or 0,
+                     "tok_s": _aggregate_rate(total, first, last)
+                             if last is not None else None})
+    return rows
 
 
 def total_totals(dest, model=None, since_ms=None, until_ms=None,
@@ -706,26 +730,33 @@ def total_totals(dest, model=None, since_ms=None, until_ms=None,
     when no rows match."""
     where, params = _session_filters(model, since_ms, until_ms, min_in, min_out)
     tail = " WHERE " + " AND ".join(where) if where else ""
+    sums = (" COUNT(*), SUM(tokens_input), SUM(tokens_output), SUM(cost),"
+            " SUM(tokens_cache_read), SUM(tokens_cache_write),"
+            " MIN(time_created), MAX(time_updated)")
     if not model and not by_model:
-        n, tin, tout, cost = dest.execute(
-            "SELECT COUNT(*), SUM(tokens_input), SUM(tokens_output), SUM(cost)"
-            " FROM usage" + tail, params).fetchone()
+        n, tin, tout, cost, tcr, tcw, first, last = dest.execute(
+            "SELECT" + sums + " FROM usage" + tail, params).fetchone()
         if not n:
             return []
         tin, tout = tin or 0, tout or 0
-        return [{"model": "(all)", "sessions": n, "tokens_input": tin,
-                 "tokens_output": tout, "total": tin + tout,
-                 "cost": cost or 0.0}]
+        return [_total_row("(all)", n, tin, tout, cost, tcr, tcw, first, last)]
     rows = []
-    for m, n, tin, tout, cost in dest.execute(
-            "SELECT provider || '/' || model_id AS m, COUNT(*),"
-            " SUM(tokens_input), SUM(tokens_output), SUM(cost)"
+    for m, n, tin, tout, cost, tcr, tcw, first, last in dest.execute(
+            "SELECT provider || '/' || model_id AS m," + sums +
             " FROM usage" + tail + " GROUP BY m ORDER BY m ASC", params):
-        tin, tout = tin or 0, tout or 0
-        rows.append({"model": m, "sessions": n, "tokens_input": tin,
-                     "tokens_output": tout, "total": tin + tout,
-                     "cost": cost or 0.0})
+        rows.append(_total_row(m, n, tin, tout, cost, tcr, tcw, first, last))
     return rows
+
+
+def _total_row(model, n, tin, tout, cost, tcr, tcw, first, last):
+    """Row dict for total_totals: totals plus cache components and a rate
+    over the group's created→updated span (None if unknown or < 1 s)."""
+    tin, tout = tin or 0, tout or 0
+    return {"model": model, "sessions": n, "tokens_input": tin,
+            "tokens_output": tout, "total": tin + tout, "cost": cost or 0.0,
+            "tokens_cache_read": tcr or 0, "tokens_cache_write": tcw or 0,
+            "tok_s": _aggregate_rate(tin + tout, first, last)
+                     if last is not None else None}
 
 
 def _connect_src(path):

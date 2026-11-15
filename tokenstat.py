@@ -880,136 +880,148 @@ def main(argv):
                         help="price tier for --cost (default: sonnet)")
     args = parser.parse_args(argv)
 
+    dest = None
     try:
-        dest = sqlite3.connect(args.db)
-        # WAL + busy_timeout so a scheduled `record` and an interactive
-        # query can overlap without either failing.
-        dest.execute("PRAGMA journal_mode=WAL")
-        dest.execute("PRAGMA busy_timeout=5000")
-        ensure_schema(dest)
-    except sqlite3.Error as exc:
-        print(f"warning: could not open our store {args.db}: {exc}",
-              file=sys.stderr)
-        return 1
-    now_ms = int(time.time() * 1000)
-
-    def _ingest(fn, label, path, verbose):
-        """Run one ingestion step; warn-and-continue on sqlite errors."""
         try:
-            counts = fn()
-            if verbose:
-                line = (f"inserted={counts['inserted']}"
-                        f" updated={counts['updated']}"
-                        f" unchanged={counts['unchanged']}")
-                if counts.get("skipped"):
-                    line += f" skipped={counts['skipped']}"
-                print(line)
-            return True
+            dest = sqlite3.connect(args.db)
+            # WAL + busy_timeout so a scheduled `record` and an interactive
+            # query can overlap without either failing.
+            dest.execute("PRAGMA journal_mode=WAL")
+            dest.execute("PRAGMA busy_timeout=5000")
+            ensure_schema(dest)
         except sqlite3.Error as exc:
-            print(f"warning: could not read {path}: {exc}", file=sys.stderr)
-            return False
+            print(f"warning: could not open our store {args.db}: {exc}",
+                  file=sys.stderr)
+            return 1
+        now_ms = int(time.time() * 1000)
 
-    if args.command == "record":
-        ok = _ingest(lambda: record(_connect_src(args.src), dest, now_ms),
-                     "opencode", args.src, verbose=True)
-        return 0 if ok else 1
-    if args.command == "import-unsloth":
-        ok = _ingest(lambda: import_unsloth(_connect_src(args.unsloth_db), dest),
-                     "unsloth", args.unsloth_db, verbose=True)
-        runs_ok = _ingest(
-            lambda: import_unsloth_runs(_connect_src(args.unsloth_db), dest),
-            "unsloth runs", args.unsloth_db, verbose=True)
-        return 0 if (ok and runs_ok) else 1
+        def _ingest(path, fn, verbose):
+            """Open `path` read-only, run one ingestion step on it, and always
+            close the source; warn-and-continue on sqlite errors."""
+            try:
+                src = _connect_src(path)
+            except sqlite3.Error as exc:
+                print(f"warning: could not read {path}: {exc}", file=sys.stderr)
+                return False
+            try:
+                counts = fn(src)
+                if verbose:
+                    line = (f"inserted={counts['inserted']}"
+                            f" updated={counts['updated']}"
+                            f" unchanged={counts['unchanged']}")
+                    if counts.get("skipped"):
+                        line += f" skipped={counts['skipped']}"
+                    print(line)
+                return True
+            except sqlite3.Error as exc:
+                print(f"warning: could not read {path}: {exc}", file=sys.stderr)
+                return False
+            finally:
+                src.close()
 
-    # Report modes: snapshot both sources first, degrade gracefully if
-    # either is missing or locked.
-    _ingest(lambda: record(_connect_src(args.src), dest, now_ms),
-            "opencode", args.src, verbose=False)
-    _ingest(lambda: import_unsloth(_connect_src(args.unsloth_db), dest),
-            "unsloth", args.unsloth_db, verbose=False)
-    _ingest(lambda: import_unsloth_runs(_connect_src(args.unsloth_db), dest),
-            "unsloth runs", args.unsloth_db, verbose=False)
+        if args.command == "record":
+            ok = _ingest(args.src, lambda src: record(src, dest, now_ms),
+                         verbose=True)
+            return 0 if ok else 1
+        if args.command == "import-unsloth":
+            ok = _ingest(args.unsloth_db,
+                         lambda src: import_unsloth(src, dest), verbose=True)
+            runs_ok = _ingest(
+                args.unsloth_db, lambda src: import_unsloth_runs(src, dest),
+                verbose=True)
+            return 0 if (ok and runs_ok) else 1
 
-    model_any = args.model is MODEL_ANY
-    # Bare --model is a shortcut for `--total --model`: totals per model.
-    # (With --daily it just means "all models", as before; reconcile keeps
-    # its own flag handling.)
-    want_total = args.total or (model_any and not args.daily)
-    model = None if model_any else args.model
+        # Report modes: snapshot both sources first, degrade gracefully if
+        # either is missing or locked.
+        _ingest(args.src, lambda src: record(src, dest, now_ms), verbose=False)
+        _ingest(args.unsloth_db, lambda src: import_unsloth(src, dest),
+                verbose=False)
+        _ingest(args.unsloth_db, lambda src: import_unsloth_runs(src, dest),
+                verbose=False)
 
-    if args.from_runs and (args.min_in is not None or args.min_out is not None):
-        parser.error("--from-runs does not support --min-in/--min-out"
-                     " (runs store only progress tokens)")
-    if args.command == "reconcile":
-        unsupported = [flag for flag, val in (
-            ("--since", args.since), ("--until", args.until),
-            ("--min-in", args.min_in), ("--min-out", args.min_out))
-            if val is not None] + (["--daily"] if args.daily else []) \
-            + (["--from-unsloth"] if args.from_unsloth else []) \
-            + (["--from-runs"] if args.from_runs else []) \
-            + (["--total"] if args.total else []) \
-            + (["--cost"] if args.cost else [])
-        if unsupported:
-            parser.error("reconcile supports only --model; unsupported:"
-                         f" {', '.join(unsupported)}")
-        rows = reconcile(dest, model=model)
-        columns = RECON_COLUMNS
-    elif want_total and args.daily:
-        parser.error("--total cannot be combined with --daily")
-    elif want_total:
-        rows = (total_runs(dest, model=model, since_ms=args.since,
-                           until_ms=args.until, by_model=model_any)
-                if args.from_runs else
-                total_events(dest, model=model, since_ms=args.since,
-                             until_ms=args.until, min_in=args.min_in,
-                             min_out=args.min_out, by_model=model_any)
-                if args.from_unsloth else
-                total_totals(dest, model=model, since_ms=args.since,
-                             until_ms=args.until, min_in=args.min_in,
-                             min_out=args.min_out, by_model=model_any))
-        rows = add_shares(rows)
-        columns = SHARE_COLUMNS
-    elif args.from_runs:
-        rows = (daily_runs(dest, model=model, since_ms=args.since,
-                           until_ms=args.until) if args.daily else
-                query_runs(dest, model=model, since_ms=args.since,
-                           until_ms=args.until))
-        columns = DAILY_COLUMNS if args.daily else RUNS_COLUMNS
-    elif args.from_unsloth:
-        rows = (daily_events(dest, model=model, since_ms=args.since,
-                             until_ms=args.until, min_in=args.min_in,
-                             min_out=args.min_out) if args.daily else
-                query_events(dest, model=model, since_ms=args.since,
-                             until_ms=args.until, min_in=args.min_in,
-                             min_out=args.min_out))
-        columns = DAILY_COLUMNS if args.daily else SESSION_COLUMNS
-    else:
-        rows = (daily_totals(dest, model=model, since_ms=args.since,
-                             until_ms=args.until, min_in=args.min_in,
-                             min_out=args.min_out) if args.daily else
-                query_sessions(dest, model=model, since_ms=args.since,
-                               until_ms=args.until, min_in=args.min_in,
-                               min_out=args.min_out))
-        columns = DAILY_COLUMNS if args.daily else SESSION_COLUMNS
-    # Opt-in --cost overlay: reference pricing on row copies, never stored
-    # data; reconcile keeps its own reject list above. The share-view flag
-    # is captured BEFORE appending COST_COLUMN — the append creates a new
-    # list, and paint_bars below must still recognize the share view.
-    share_view = columns is SHARE_COLUMNS
-    if args.cost and columns is not RECON_COLUMNS:
-        rows = annotate_cost(rows, args.cost_tier)
-        columns = columns + [COST_COLUMN]
-    if args.as_json:
-        # share travels in JSON; the painted bar is table-only decoration
-        print(json.dumps([{k: v for k, v in r.items()
-                           if k not in ("bar", "share_str")}
-                          for r in rows], indent=2))
-    else:
-        if share_view:
-            rows = paint_bars(rows, color=_color_enabled(sys.stdout,
-                                                         os.environ))
-        print(render_table(rows, columns), end="")
-    return 0
+        model_any = args.model is MODEL_ANY
+        # Bare --model is a shortcut for `--total --model`: totals per model.
+        # (With --daily it just means "all models", as before; reconcile keeps
+        # its own flag handling.)
+        want_total = args.total or (model_any and not args.daily)
+        model = None if model_any else args.model
+
+        if args.from_runs and (args.min_in is not None or args.min_out is not None):
+            parser.error("--from-runs does not support --min-in/--min-out"
+                         " (runs store only progress tokens)")
+        if args.command == "reconcile":
+            unsupported = [flag for flag, val in (
+                ("--since", args.since), ("--until", args.until),
+                ("--min-in", args.min_in), ("--min-out", args.min_out))
+                if val is not None] + (["--daily"] if args.daily else []) \
+                + (["--from-unsloth"] if args.from_unsloth else []) \
+                + (["--from-runs"] if args.from_runs else []) \
+                + (["--total"] if args.total else []) \
+                + (["--cost"] if args.cost else [])
+            if unsupported:
+                parser.error("reconcile supports only --model; unsupported:"
+                             f" {', '.join(unsupported)}")
+            rows = reconcile(dest, model=model)
+            columns = RECON_COLUMNS
+        elif want_total and args.daily:
+            parser.error("--total cannot be combined with --daily")
+        elif want_total:
+            rows = (total_runs(dest, model=model, since_ms=args.since,
+                               until_ms=args.until, by_model=model_any)
+                    if args.from_runs else
+                    total_events(dest, model=model, since_ms=args.since,
+                                 until_ms=args.until, min_in=args.min_in,
+                                 min_out=args.min_out, by_model=model_any)
+                    if args.from_unsloth else
+                    total_totals(dest, model=model, since_ms=args.since,
+                                 until_ms=args.until, min_in=args.min_in,
+                                 min_out=args.min_out, by_model=model_any))
+            rows = add_shares(rows)
+            columns = SHARE_COLUMNS
+        elif args.from_runs:
+            rows = (daily_runs(dest, model=model, since_ms=args.since,
+                               until_ms=args.until) if args.daily else
+                    query_runs(dest, model=model, since_ms=args.since,
+                               until_ms=args.until))
+            columns = DAILY_COLUMNS if args.daily else RUNS_COLUMNS
+        elif args.from_unsloth:
+            rows = (daily_events(dest, model=model, since_ms=args.since,
+                                 until_ms=args.until, min_in=args.min_in,
+                                 min_out=args.min_out) if args.daily else
+                    query_events(dest, model=model, since_ms=args.since,
+                                 until_ms=args.until, min_in=args.min_in,
+                                 min_out=args.min_out))
+            columns = DAILY_COLUMNS if args.daily else SESSION_COLUMNS
+        else:
+            rows = (daily_totals(dest, model=model, since_ms=args.since,
+                                 until_ms=args.until, min_in=args.min_in,
+                                 min_out=args.min_out) if args.daily else
+                    query_sessions(dest, model=model, since_ms=args.since,
+                                   until_ms=args.until, min_in=args.min_in,
+                                   min_out=args.min_out))
+            columns = DAILY_COLUMNS if args.daily else SESSION_COLUMNS
+        # Opt-in --cost overlay: reference pricing on row copies, never stored
+        # data; reconcile keeps its own reject list above. The share-view flag
+        # is captured BEFORE appending COST_COLUMN — the append creates a new
+        # list, and paint_bars below must still recognize the share view.
+        share_view = columns is SHARE_COLUMNS
+        if args.cost and columns is not RECON_COLUMNS:
+            rows = annotate_cost(rows, args.cost_tier)
+            columns = columns + [COST_COLUMN]
+        if args.as_json:
+            # share travels in JSON; the painted bar is table-only decoration
+            print(json.dumps([{k: v for k, v in r.items()
+                               if k not in ("bar", "share_str")}
+                              for r in rows], indent=2))
+        else:
+            if share_view:
+                rows = paint_bars(rows, color=_color_enabled(sys.stdout,
+                                                             os.environ))
+            print(render_table(rows, columns), end="")
+        return 0
+    finally:
+        if dest is not None:
+            dest.close()
 
 
 if __name__ == "__main__":

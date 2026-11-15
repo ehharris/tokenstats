@@ -1015,8 +1015,8 @@ def main(argv):
                                  until_ms=args.until, min_in=args.min_in,
                                  min_out=args.min_out, by_model=model_any))
             rows = add_shares(rows)
-            rows.sort(key=lambda r: -r["share"])  # biggest share first;
-            # ties keep SQL's alphabetical-by-model order (stable sort)
+            rows.sort(key=lambda r: -r["share"])  # biggest share first.
+            # Ties keep SQL's alphabetical-by-model order (stable sort).
             columns = SHARE_COLUMNS
         elif args.from_runs:
             rows = (daily_runs(dest, model=model, since_ms=args.since,

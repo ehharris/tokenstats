@@ -1462,9 +1462,12 @@ class LikeEscapingTests(unittest.TestCase):
 
     def test_run_percent_is_literal(self):
         # Run-path pin: _run_filters was already escaping when this test was
-        # added — regression guard, not a RED demonstration.
+        # added — regression guard, not a RED demonstration. "gpt-50-mini"
+        # gives it teeth: without ESCAPE the pattern %50%% matches it too.
         import_unsloth_runs(make_runs_src([run_row("rp", model="x/50%off"),
-                                           run_row("rd")]), self.dest)
+                                           run_row("rd"),
+                                           run_row("rg", model="gpt-50-mini")]),
+                            self.dest)
         rows = query_runs(self.dest, model="50%")
         self.assertEqual([r["model"] for r in rows], ["x/50%off"])
 

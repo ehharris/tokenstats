@@ -168,7 +168,7 @@ class PanelTests(unittest.TestCase):
 
 **Interfaces:**
 - Consumes: `SUNSET`, `_visible`.
-- Produces: `paint_cells(rows: list[dict], columns, theme: dict = SUNSET) -> list[dict]` — copy of rows with the *rendered string* of these keys wrapped in fg colors: `tokens_input`→tin, `tokens_output`→tout, `cache`→tcach, `cost_est`→num, `total`→bold num. Missing keys skipped; None/empty cells untouched; other keys untouched.
+- Produces: `paint_cells(rows: list[dict], theme: dict = SUNSET) -> list[dict]` — copy of rows with the *rendered string* of these keys wrapped in fg colors: `tokens_input`→tin, `tokens_output`→tout, `cache`→tcach, `cost_est`→num, `total`→bold num. Missing keys skipped; None/empty cells untouched; other keys untouched. (No `columns` parameter: `render_table` only reads keys listed in its columns, so coloring by key alone is sufficient.)
 
 - [ ] **Step 1: Write the failing tests**:
 
@@ -176,26 +176,25 @@ class PanelTests(unittest.TestCase):
 class PaintCellsTests(unittest.TestCase):
     def test_class_colors_applied(self):
         rows = paint_cells([{"tokens_input": "10", "tokens_output": "5",
-                             "total": "15"}], SESSION_COLUMNS)
+                             "total": "15"}])
         self.assertIn("38;2;96;165;250", rows[0]["tokens_input"])   # tin
         self.assertIn("38;2;251;146;60", rows[0]["tokens_output"])  # tout
         self.assertIn("38;2;245;235;229", rows[0]["total"])         # num
 
     def test_untouched_keys_and_missing_keys(self):
-        rows = paint_cells([{"model": "m", "date": "d"}], SESSION_COLUMNS)
+        rows = paint_cells([{"model": "m", "date": "d"}])
         self.assertEqual(rows[0], {"model": "m", "date": "d"})
 
     def test_original_rows_not_mutated(self):
         src = [{"total": "15"}]
-        paint_cells(src, TOTAL_COLUMNS)
+        paint_cells(src)
         self.assertEqual(src[0]["total"], "15")
 
     def test_table_alignment_survives_coloring(self):
         rows = [{"date": "2026-11-15", "model": "m", "tokens_input": "100",
                  "tokens_output": "50", "total": "150", "tok_s": None,
                  "title": ""}]
-        table = render_table(paint_cells(rows, SESSION_COLUMNS),
-                             SESSION_COLUMNS)
+        table = render_table(paint_cells(rows), SESSION_COLUMNS)
         plain = render_table(rows, SESSION_COLUMNS)
         self.assertEqual([_visible(l) for l in table.splitlines()],
                          [_visible(l) for l in plain.splitlines()])
@@ -228,7 +227,8 @@ class ReportHeaderTests(unittest.TestCase):
         text = _ANSI_RE.sub("", "\n".join(report_header("sessions", rows)))
         self.assertIn("8.00M tokens", text)
         self.assertIn("2 rows", text)
-        self.assertIn("2026-11-06", text) and self.assertIn("2026-11-15", text)
+        self.assertIn("2026-11-06", text)
+        self.assertIn("2026-11-15", text)
 
     def test_runs_rows_without_input_keys_are_safe(self):
         rows = [{"total": 10, "date": None}]
@@ -311,7 +311,7 @@ if share_view:
             biggest, 30)} "} for r in rows]
     else:
         rows = paint_bars(rows, color=False)   # padding only — today's look
-table = render_table(paint_cells(rows, columns) if color else rows, columns)
+table = render_table(paint_cells(rows) if color else rows, columns)
 if color and table != "no sessions match\n":
     lines = table.splitlines()
     lines[0] = dim-wrap(lines[0])              # label-colored header row
@@ -320,7 +320,7 @@ else:
     print(table, end="")
 ```
 
-The empty-rows case takes the `else` (plain `"no sessions match\n"`, Review Focus line 1). For runs views, `block_bar` receives `tin = total` so the bar is all OUT-orange per the spec. Compute `title` from the branch flags that already select `columns`, using the mapping above. Ensure the test module imports `unittest.mock`.
+The empty-rows case takes the `else` (plain `"no sessions match\n"`, Review Focus line 1). For runs views, `block_bar` receives `tin = total` so the bar is all OUT-orange per the spec. Compute `title` from the branch flags that already select `columns`, using the mapping above. Ensure the test module imports `unittest.mock` and `tokenstat` (patch target is `tokenstat._color_enabled`).
 
 - [ ] **Step 4: Run the full suite** — `python3 -m unittest test_tokenstat -v` → all green (124+ existing tests unchanged in behavior), then `python3 -W error::ResourceWarning -m unittest test_tokenstat` → warning-clean.
 - [ ] **Step 5: Manual eyeball** — run against the real store both ways and confirm: tty-style colored output matches the approved sunset mockup (no glyph bars, blocks + panels + header), and `python3 tokenstat.py --total --model | cat` is unchanged from before this branch (`git stash`-diff or compare against `master` output).

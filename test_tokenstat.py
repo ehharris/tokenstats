@@ -8,11 +8,11 @@ import os
 import sqlite3
 import unittest
 
-from tokenstat import (add_shares, daily_events, daily_totals, ensure_schema,
-                       import_unsloth, import_unsloth_runs, main, paint_bars,
-                       parse_date, parse_model, query_events, query_sessions,
-                       reconcile, record, render_table, total_events,
-                       total_totals)
+from tokenstat import (add_shares, daily_events, daily_runs, daily_totals,
+                       ensure_schema, import_unsloth, import_unsloth_runs,
+                       main, paint_bars, parse_date, parse_model, query_events,
+                       query_runs, query_sessions, reconcile, record,
+                       render_table, total_events, total_runs, total_totals)
 
 LEMONADE_JSON = '{"id":"gpt-oss-120b","providerID":"lemonade"}'
 UNSLOTH_MODEL_ID = "unsloth/Qwen3.8-Flash-Next-GGUF"
@@ -432,6 +432,42 @@ class ImportRunsTests(unittest.TestCase):
                          {"inserted": 0, "updated": 0, "unchanged": 0})
 
 
+class RunsQueryTests(unittest.TestCase):
+    def setUp(self):
+        self.dest = make_dest()
+        import_unsloth_runs(make_runs_src([
+            run_row("r1", model="unsloth/Qwen3.8-Flash-Next-GGUF", progress=243,
+                    started=ms(2026, 11, 1),
+                    completed=ms(2026, 11, 1) + 16082),
+            run_row("r2", model="unsloth/Ornith-1.5-122B-GGUF", progress=51,
+                    started=ms(2026, 11, 5), completed=ms(2026, 11, 5) + 4911),
+        ]), self.dest)
+
+    def test_query_runs_reports_progress_and_rate(self):
+        rows = query_runs(self.dest)
+        self.assertEqual([r["progress_tokens"] for r in rows], [243, 51])
+        # tok_s is rounded to one decimal (per the run-rate contract), so
+        # compare against the rounded rate, not the raw quotient.
+        self.assertAlmostEqual(rows[0]["tok_s"], round(243 / 16.082, 1))
+
+    def test_query_runs_blank_rate_when_no_duration(self):
+        import_unsloth_runs(make_runs_src([run_row("r3", model="rate-blank-probe",
+                                                   started=1_764_000_000_000,
+                                                   completed=None)]), self.dest)
+        rows = query_runs(self.dest, model="rate-blank-probe")
+        self.assertIsNone(rows[0]["tok_s"])
+
+    def test_daily_runs_groups_by_started_day(self):
+        days = daily_runs(self.dest)
+        self.assertEqual([d["date"] for d in days], ["2026-11-01", "2026-11-05"])
+
+    def test_total_runs_per_model(self):
+        rows = total_runs(self.dest, by_model=True)
+        self.assertEqual({r["model"] for r in rows},
+                         {"unsloth/Ornith-1.5-122B-GGUF",
+                          "unsloth/Qwen3.8-Flash-Next-GGUF"})
+
+
 class ImportUnslothTests(unittest.TestCase):
     def setUp(self):
         self.dest = make_dest()
@@ -569,6 +605,21 @@ class CliUnslothTests(unittest.TestCase):
              "--unsloth-db", self.udb, "--from-unsloth"])
         self.assertEqual(code, 0)
         self.assertIn(UNSLOTH_MODEL_ID, out)
+
+    def test_from_runs_renders_runs(self):
+        make_file_runs_db(self.udb, runs=[run_row("r1")])
+        code, out, _ = self.run_main(
+            ["--db", self.db, "--src", os.path.join(self.tmp.name, "none.db"),
+             "--unsloth-db", self.udb, "--from-runs"])
+        self.assertEqual(code, 0)
+        self.assertIn("TOK/S", out.splitlines()[0])
+
+    def test_from_runs_rejects_min_flags(self):
+        with self.assertRaises(SystemExit) as cm:
+            with contextlib.redirect_stderr(io.StringIO()):
+                main(["--db", self.db, "--src", os.path.join(self.tmp.name, "none.db"),
+                      "--unsloth-db", self.udb, "--from-runs", "--min-in", "10"])
+        self.assertEqual(cm.exception.code, 2)
 
     def test_reconcile_subcommand(self):
         make_file_unsloth_db(self.udb, [unsloth_event("e1")])

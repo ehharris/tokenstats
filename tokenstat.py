@@ -305,6 +305,105 @@ def total_events(dest, model=None, since_ms=None, until_ms=None,
     ]
 
 
+def _run_filters(model, since_ms, until_ms):
+    """WHERE clauses for unsloth_runs queries: `model` is a substring match
+    on the raw stored model string (LIKE metacharacters escaped), the date
+    window applies to started_at with the until-day inclusive."""
+    where, params = [], []
+    if model:
+        pattern = "%" + model.lower().replace("%", "\\%").replace("_", "\\_") + "%"
+        where.append("lower(model) LIKE ? ESCAPE '\\'")
+        params.append(pattern)
+    if since_ms is not None:
+        where.append("started_at >= ?")
+        params.append(since_ms)
+    if until_ms is not None:
+        where.append("started_at < ?")
+        params.append(_day_end_ms(until_ms))  # until-day inclusive
+    return where, params
+
+
+def _aggregate_rate(total, first_started, last_end):
+    """Runs-aggregate tokens/second over a bucket's whole span; None when
+    the span is under a second (rate would be meaningless)."""
+    span = (last_end - first_started) / 1000
+    return round(total / span, 1) if span >= 1 else None
+
+
+def query_runs(dest, model=None, since_ms=None, until_ms=None):
+    """Imported Unsloth generation runs matching all filters, oldest first.
+
+    tokens_input/total carry progress_tokens (runs have no in/out split);
+    tok_s is the run's true generation rate — progress over its wall-clock
+    seconds — and None for unfinished or sub-second runs."""
+    where, params = _run_filters(model, since_ms, until_ms)
+    sql = ("SELECT started_at, model, progress_tokens, completed_at"
+           " FROM unsloth_runs")
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY started_at ASC"
+    rows = []
+    for started, model_id, progress, completed in dest.execute(sql, params):
+        date = datetime.datetime.fromtimestamp(started / 1000).strftime(
+            "%Y-%m-%d")
+        tok_s = None
+        if completed is not None:
+            tok_s = _aggregate_rate(progress, started, completed)
+        rows.append({"date": date, "model": model_id,
+                     "progress_tokens": progress,
+                     "tokens_input": progress, "tokens_output": 0,
+                     "total": progress, "tok_s": tok_s,
+                     "cost": 0.0, "title": ""})
+    return rows
+
+
+def daily_runs(dest, model=None, since_ms=None, until_ms=None):
+    """Per-day run aggregates (sessions = run count), keyed on the run's
+    started day, oldest first. tok_s spans the bucket from its earliest
+    start to its latest end."""
+    where, params = _run_filters(model, since_ms, until_ms)
+    sql = ("SELECT date(started_at/1000, 'unixepoch', 'localtime') AS day,"
+           " COUNT(*), SUM(progress_tokens),"
+           " MIN(started_at), MAX(COALESCE(completed_at, started_at))"
+           " FROM unsloth_runs")
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " GROUP BY day ORDER BY day ASC"
+    return [
+        {"date": day, "sessions": n, "tokens_input": p or 0,
+         "tokens_output": 0, "total": p or 0,
+         "tok_s": _aggregate_rate(p or 0, first, last)}
+        for day, n, p, first, last in dest.execute(sql, params)
+    ]
+
+
+def total_runs(dest, model=None, since_ms=None, until_ms=None, by_model=False):
+    """All-time run aggregates: one grand-total row; per-run-model rows
+    (ordered by the raw stored model string) with a model filter or
+    by_model=True. Empty when no runs match. Mirrors total_events."""
+    where, params = _run_filters(model, since_ms, until_ms)
+    tail = " WHERE " + " AND ".join(where) if where else ""
+    sums = (" COUNT(*), SUM(progress_tokens),"
+            " MIN(started_at), MAX(COALESCE(completed_at, started_at))")
+    if not model and not by_model:
+        n, p, first, last = dest.execute(
+            "SELECT" + sums + " FROM unsloth_runs" + tail, params).fetchone()
+        if not n:
+            return []
+        p = p or 0
+        return [{"model": "(all)", "sessions": n, "tokens_input": p,
+                 "tokens_output": 0, "total": p,
+                 "tok_s": _aggregate_rate(p, first, last)}]
+    return [
+        {"model": m, "sessions": n, "tokens_input": p or 0,
+         "tokens_output": 0, "total": p or 0,
+         "tok_s": _aggregate_rate(p or 0, first, last)}
+        for m, n, p, first, last in dest.execute(
+            "SELECT model," + sums + " FROM unsloth_runs" + tail
+            + " GROUP BY model ORDER BY model ASC", params)
+    ]
+
+
 UNSLOTH_PROVIDER = "unsloth-studio"  # providerID OpenCode records for Studio traffic
 
 
@@ -436,6 +535,11 @@ TOTAL_COLUMNS = [
     ("IN", "tokens_input", "int"), ("OUT", "tokens_output", "int"),
     ("TOTAL", "total", "int"),
 ]
+RUNS_COLUMNS = [
+    ("DATE", "date", "text"), ("MODEL", "model", "text"),
+    ("IN", "progress_tokens", "int"), ("OUT", "tokens_output", "int"),
+    ("TOTAL", "total", "int"), ("TOK/S", "tok_s", "rate"),
+]
 SHARE_COLUMNS = TOTAL_COLUMNS + [
     ("SHARE", "share_str", "text"), ("BAR", "bar", "text"),
 ]
@@ -549,6 +653,8 @@ def render_table(rows, columns=None):
     def fmt(value, kind):
         if value is None:
             return ""
+        if kind == "rate":
+            return f"{value:.1f}"
         if kind == "int":
             return f"{value:,}"
         if kind == "title":
@@ -663,6 +769,9 @@ def main(argv):
     parser.add_argument("--from-unsloth", action="store_true", dest="from_unsloth",
                         help="report imported Unsloth request events instead of"
                              " OpenCode sessions (IN=prompt incl. cache, OUT=completion)")
+    parser.add_argument("--from-runs", action="store_true", dest="from_runs",
+                        help="report imported Unsloth generation runs with true"
+                             " tokens/second")
     args = parser.parse_args(argv)
 
     try:
@@ -722,12 +831,16 @@ def main(argv):
     want_total = args.total or (model_any and not args.daily)
     model = None if model_any else args.model
 
+    if args.from_runs and (args.min_in is not None or args.min_out is not None):
+        parser.error("--from-runs does not support --min-in/--min-out"
+                     " (runs store only progress tokens)")
     if args.command == "reconcile":
         unsupported = [flag for flag, val in (
             ("--since", args.since), ("--until", args.until),
             ("--min-in", args.min_in), ("--min-out", args.min_out))
             if val is not None] + (["--daily"] if args.daily else []) \
             + (["--from-unsloth"] if args.from_unsloth else []) \
+            + (["--from-runs"] if args.from_runs else []) \
             + (["--total"] if args.total else [])
         if unsupported:
             parser.error("reconcile supports only --model; unsupported:"
@@ -737,7 +850,10 @@ def main(argv):
     elif want_total and args.daily:
         parser.error("--total cannot be combined with --daily")
     elif want_total:
-        rows = (total_events(dest, model=model, since_ms=args.since,
+        rows = (total_runs(dest, model=model, since_ms=args.since,
+                           until_ms=args.until, by_model=model_any)
+                if args.from_runs else
+                total_events(dest, model=model, since_ms=args.since,
                              until_ms=args.until, min_in=args.min_in,
                              min_out=args.min_out, by_model=model_any)
                 if args.from_unsloth else
@@ -746,6 +862,12 @@ def main(argv):
                              min_out=args.min_out, by_model=model_any))
         rows = add_shares(rows)
         columns = SHARE_COLUMNS
+    elif args.from_runs:
+        rows = (daily_runs(dest, model=model, since_ms=args.since,
+                           until_ms=args.until) if args.daily else
+                query_runs(dest, model=model, since_ms=args.since,
+                           until_ms=args.until))
+        columns = DAILY_COLUMNS if args.daily else RUNS_COLUMNS
     elif args.from_unsloth:
         rows = (daily_events(dest, model=model, since_ms=args.since,
                              until_ms=args.until, min_in=args.min_in,

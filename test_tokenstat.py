@@ -5,6 +5,7 @@ import datetime
 import io
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -1388,6 +1389,19 @@ class DisplayAlignmentTests(unittest.TestCase):
         rows = [{"n": 5, "t": "x"}, {"n": 1000, "t": "y"}]
         self.assertEqual(render_table(rows, columns),
                          "N      T\n5      x\n1,000  y\n")
+
+    def test_render_table_pads_ansi_cells_by_visible_width(self):
+        # regression pin: --cost appends COST after painted BAR cells; width
+        # math must ignore SGR escape bytes so every row's next column lands
+        # at the same VISIBLE position (rows also differ by having no escapes
+        # at all — zero-total rows render a plain empty bar)
+        columns = [("BAR", "bar", "text"), ("COST", "c", "cost")]
+        rows = [{"bar": "\x1b[38;2;80;168;255m█\x1b[0m", "c": 0.5},
+                {"bar": "", "c": 1.25}]
+        strip = lambda ln: re.sub(r"\x1b\[[0-9;]*m", "", ln)
+        lines = [strip(ln) for ln in render_table(rows, columns).splitlines()]
+        self.assertEqual(lines[0].index("COST"), lines[1].index("$"))
+        self.assertEqual(lines[0].index("COST"), lines[2].index("$"))
 
     def test_report_tables_have_no_cost_column(self):
         # every displayed report (sessions, daily, total) drops COST...

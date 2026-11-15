@@ -15,6 +15,7 @@ import colorsys
 import datetime
 import json
 import os
+import re
 import sqlite3
 import sys
 import time
@@ -738,6 +739,15 @@ def paint_bars(rows, color):
     return out
 
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")  # SGR color sequences (painted bars)
+
+
+def _visible(cell):
+    """Display length of a cell: len() ignoring escape-sequence bytes, so
+    colored cells neither inflate column widths nor shift padded output."""
+    return len(_ANSI_RE.sub("", cell))
+
+
 def render_table(rows, columns=None):
     """Aligned report. `columns` is a list of (header, key, kind)."""
     if columns is None:
@@ -765,7 +775,7 @@ def render_table(rows, columns=None):
         if i == len(columns) - 1:
             widths.append(None)  # last column needs no padding
         else:
-            widths.append(max([len(name)] + [len(row[i]) for row in body]))
+            widths.append(max([len(name)] + [_visible(row[i]) for row in body]))
     out = []
     for line in [header] + body:
         parts = []
@@ -773,7 +783,8 @@ def render_table(rows, columns=None):
             if widths[i] is None:
                 parts.append(cell)
             else:
-                parts.append(cell.ljust(widths[i]))
+                # pad by visible length (ljust would count escape bytes)
+                parts.append(cell + " " * (widths[i] - _visible(cell)))
         out.append("  ".join(parts).rstrip())
     return "\n".join(out) + "\n"
 

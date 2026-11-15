@@ -1393,5 +1393,16 @@ class CliColorTests(unittest.TestCase):
         self.assertRegex(unsloth_line, r"\d+\.\d%   [█░▒▓ ]+$")
 
 
+class SchemaTests(unittest.TestCase):
+    def test_ensure_schema_creates_filter_indexes(self):
+        dest = make_dest()
+        created = dest.execute(
+            "PRAGMA index_info(idx_unsloth_events_created)").fetchall()
+        tcreated = dest.execute(
+            "PRAGMA index_info(idx_usage_time_created)").fetchall()
+        self.assertEqual(len(created), 1)
+        self.assertEqual(len(tcreated), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

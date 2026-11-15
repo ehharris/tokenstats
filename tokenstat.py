@@ -63,6 +63,15 @@ def ensure_schema(dest: sqlite3.Connection) -> None:
                completed_at INTEGER,
                status TEXT NOT NULL DEFAULT '')"""
     )
+    # Hot filter columns: date-windowed queries scan these first.
+    dest.execute(
+        """CREATE INDEX IF NOT EXISTS idx_unsloth_events_created
+               ON unsloth_events(created_at)"""
+    )
+    dest.execute(
+        """CREATE INDEX IF NOT EXISTS idx_usage_time_created
+               ON usage(time_created)"""
+    )
 
 
 def parse_model(raw):

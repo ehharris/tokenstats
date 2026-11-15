@@ -54,6 +54,15 @@ def ensure_schema(dest: sqlite3.Connection) -> None:
                total_tokens INTEGER NOT NULL DEFAULT 0,
                created_at INTEGER NOT NULL)"""
     )
+    dest.execute(
+        """CREATE TABLE IF NOT EXISTS unsloth_runs (
+               run_id TEXT PRIMARY KEY,
+               model TEXT NOT NULL DEFAULT '',
+               progress_tokens INTEGER NOT NULL DEFAULT 0,
+               started_at INTEGER NOT NULL,
+               completed_at INTEGER,
+               status TEXT NOT NULL DEFAULT '')"""
+    )
 
 
 def parse_model(raw):
@@ -150,6 +159,57 @@ def import_unsloth(src: sqlite3.Connection, dest: sqlite3.Connection) -> dict:
                     "UPDATE unsloth_events SET model = ?, prompt_tokens = ?,"
                     " completion_tokens = ?, total_tokens = ?"
                     " WHERE event_id = ?", [model or "", *merged, eid])
+                counts["updated" if changed else "unchanged"] += 1
+        except sqlite3.Error:
+            # One malformed source row must not abort (or roll back) the rest.
+            counts["skipped"] = counts.get("skipped", 0) + 1
+    dest.commit()
+    return counts
+
+
+def import_unsloth_runs(src: sqlite3.Connection,
+                        dest: sqlite3.Connection) -> dict:
+    """Upsert every chat_generation_runs row into our unsloth_runs table.
+
+    One row per Studio run id; progress_tokens is a monotonic max, so
+    re-importing can never double count. The model lives inside request_json
+    (no dedicated column); extract it in Python rather than SQLite JSON1 so
+    the query works on any build. A studio.db without the table (older
+    installs) reports zero runs instead of failing."""
+    counts = {"inserted": 0, "updated": 0, "unchanged": 0}
+    has_table = src.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'"
+        " AND name='chat_generation_runs'").fetchone()
+    if not has_table:
+        return counts
+    rows = src.execute(
+        "SELECT id, request_json, progress_tokens, started_at, completed_at,"
+        " status FROM chat_generation_runs").fetchall()
+    for rid, request_json, progress, started, completed, status in rows:
+        try:
+            try:
+                model = json.loads(request_json).get("model", "")
+            except (TypeError, ValueError):
+                model = ""
+            vals = [progress or 0]
+            existing = dest.execute(
+                "SELECT progress_tokens FROM unsloth_runs"
+                " WHERE run_id = ?", (rid,)).fetchone()
+            if existing is None:
+                dest.execute(
+                    "INSERT INTO unsloth_runs (run_id, model,"
+                    " progress_tokens, started_at, completed_at, status)"
+                    " VALUES (?,?,?,?,?,?)",
+                    [rid, str(model), *vals, started, completed, status or ""])
+                counts["inserted"] += 1
+            else:
+                merged = [max(e, v) for e, v in zip(existing, vals)]
+                changed = merged != list(existing)
+                dest.execute(
+                    "UPDATE unsloth_runs SET model = ?, progress_tokens = ?,"
+                    " started_at = ?, completed_at = ?, status = ?"
+                    " WHERE run_id = ?",
+                    [str(model), *merged, started, completed, status or "", rid])
                 counts["updated" if changed else "unchanged"] += 1
         except sqlite3.Error:
             # One malformed source row must not abort (or roll back) the rest.
@@ -641,7 +701,10 @@ def main(argv):
     if args.command == "import-unsloth":
         ok = _ingest(lambda: import_unsloth(_connect_src(args.unsloth_db), dest),
                      "unsloth", args.unsloth_db, verbose=True)
-        return 0 if ok else 1
+        runs_ok = _ingest(
+            lambda: import_unsloth_runs(_connect_src(args.unsloth_db), dest),
+            "unsloth runs", args.unsloth_db, verbose=True)
+        return 0 if (ok and runs_ok) else 1
 
     # Report modes: snapshot both sources first, degrade gracefully if
     # either is missing or locked.
@@ -649,6 +712,8 @@ def main(argv):
             "opencode", args.src, verbose=False)
     _ingest(lambda: import_unsloth(_connect_src(args.unsloth_db), dest),
             "unsloth", args.unsloth_db, verbose=False)
+    _ingest(lambda: import_unsloth_runs(_connect_src(args.unsloth_db), dest),
+            "unsloth runs", args.unsloth_db, verbose=False)
 
     model_any = args.model is MODEL_ANY
     # Bare --model is a shortcut for `--total --model`: totals per model.

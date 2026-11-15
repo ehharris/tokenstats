@@ -9,9 +9,10 @@ import sqlite3
 import unittest
 
 from tokenstat import (add_shares, daily_events, daily_totals, ensure_schema,
-                       import_unsloth, main, paint_bars, parse_date,
-                       parse_model, query_events, query_sessions, reconcile,
-                       record, render_table, total_events, total_totals)
+                       import_unsloth, import_unsloth_runs, main, paint_bars,
+                       parse_date, parse_model, query_events, query_sessions,
+                       reconcile, record, render_table, total_events,
+                       total_totals)
 
 LEMONADE_JSON = '{"id":"gpt-oss-120b","providerID":"lemonade"}'
 UNSLOTH_MODEL_ID = "unsloth/Qwen3.8-Flash-Next-GGUF"
@@ -374,6 +375,63 @@ def make_file_unsloth_db(path, rows=()):
     return conn
 
 
+def make_runs_src(rows=()):
+    """Fake Studio DB with the chat_generation_runs columns we read."""
+    conn = sqlite3.connect(":memory:")
+    conn.execute("""CREATE TABLE chat_generation_runs (
+           id TEXT PRIMARY KEY, request_json TEXT, progress_tokens INTEGER,
+           started_at INTEGER, completed_at INTEGER, status TEXT)""")
+    for r in rows:
+        conn.execute("INSERT INTO chat_generation_runs VALUES (?,?,?,?,?,?)", r)
+    return conn
+
+
+def run_row(rid="r1", model="unsloth/Ornith-1.5-122B-GGUF", progress=100,
+            started=1_764_000_000_000, completed=1_764_000_010_000,
+            status="completed"):
+    return (rid, json.dumps({"model": model}), progress, started, completed,
+            status)
+
+
+class ImportRunsTests(unittest.TestCase):
+    def setUp(self):
+        self.dest = make_dest()
+
+    def stored(self, rid="r1"):
+        return self.dest.execute(
+            "SELECT model, progress_tokens FROM unsloth_runs WHERE run_id = ?",
+            (rid,)).fetchone()
+
+    def test_ensure_schema_has_unsloth_runs(self):
+        cols = [c[1] for c in self.dest.execute("PRAGMA table_info(unsloth_runs)")]
+        self.assertEqual(cols, ["run_id", "model", "progress_tokens",
+                                "started_at", "completed_at", "status"])
+
+    def test_import_runs_inserts_then_is_idempotent(self):
+        src = make_runs_src([run_row("r1"), run_row("r2", progress=20)])
+        first = import_unsloth_runs(src, self.dest)
+        self.assertEqual(first, {"inserted": 2, "updated": 0, "unchanged": 0})
+        second = import_unsloth_runs(src, self.dest)
+        self.assertEqual(second, {"inserted": 0, "updated": 0, "unchanged": 2})
+
+    def test_import_runs_extracts_model_from_request_json(self):
+        import_unsloth_runs(make_runs_src([run_row("r1")]), self.dest)
+        self.assertEqual(self.stored()[0], "unsloth/Ornith-1.5-122B-GGUF")
+
+    def test_import_runs_never_shrinks_on_regression(self):
+        src = make_runs_src([run_row("r1", progress=100)])
+        import_unsloth_runs(src, self.dest)
+        src.execute("UPDATE chat_generation_runs SET progress_tokens = 50"
+                    " WHERE id = 'r1'")
+        import_unsloth_runs(src, self.dest)
+        self.assertEqual(self.stored()[1], 100)
+
+    def test_import_runs_missing_table_is_noop(self):
+        conn = sqlite3.connect(":memory:")  # no chat_generation_runs table
+        self.assertEqual(import_unsloth_runs(conn, self.dest),
+                         {"inserted": 0, "updated": 0, "unchanged": 0})
+
+
 class ImportUnslothTests(unittest.TestCase):
     def setUp(self):
         self.dest = make_dest()
@@ -451,6 +509,24 @@ class ImportUnslothTests(unittest.TestCase):
         self.assertEqual(r["gap_completion"], 150)  # 400 - (200 out + 50 reasoning)
 
 
+def make_file_runs_db(path, events=(), runs=()):
+    """On-disk fake Studio DB holding both tables we ingest."""
+    conn = sqlite3.connect(path)
+    conn.execute("""CREATE TABLE api_usage_events (
+           id TEXT PRIMARY KEY, subject TEXT, endpoint TEXT, model TEXT,
+           status TEXT, prompt_tokens INTEGER, completion_tokens INTEGER,
+           total_tokens INTEGER, created_at INTEGER)""")
+    conn.execute("""CREATE TABLE chat_generation_runs (
+           id TEXT PRIMARY KEY, request_json TEXT, progress_tokens INTEGER,
+           started_at INTEGER, completed_at INTEGER, status TEXT)""")
+    for r in events:
+        conn.execute("INSERT INTO api_usage_events VALUES (?,?,?,?,?,?,?,?,?)", r)
+    for r in runs:
+        conn.execute("INSERT INTO chat_generation_runs VALUES (?,?,?,?,?,?)", r)
+    conn.commit()
+    return conn
+
+
 class CliUnslothTests(unittest.TestCase):
     def setUp(self):
         import tempfile
@@ -475,6 +551,16 @@ class CliUnslothTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertRegex(out.strip(),
                          r"inserted=\d+ updated=\d+ unchanged=\d+")
+
+    def test_import_unsloth_subcommand_also_imports_runs(self):
+        make_file_runs_db(self.udb, events=[unsloth_event("e1")],
+                          runs=[run_row("r1")])
+        code, out, _ = self.run_main(
+            ["import-unsloth", "--db", self.db, "--unsloth-db", self.udb])
+        self.assertEqual(code, 0)
+        stored = sqlite3.connect(self.db).execute(
+            "SELECT COUNT(*) FROM unsloth_runs").fetchone()[0]
+        self.assertEqual(stored, 1)
 
     def test_from_unsloth_query_renders_events(self):
         make_file_unsloth_db(self.udb, [unsloth_event("e1")])

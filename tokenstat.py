@@ -377,6 +377,7 @@ def daily_runs(dest, model=None, since_ms=None, until_ms=None):
     sql += " GROUP BY day ORDER BY day ASC"
     return [
         {"date": day, "sessions": n, "tokens_input": p or 0,
+         "progress_tokens": p or 0,
          "tokens_output": 0, "total": p or 0,
          "tok_s": _aggregate_rate(p or 0, first, last)}
         for day, n, p, first, last in dest.execute(sql, params)
@@ -398,10 +399,12 @@ def total_runs(dest, model=None, since_ms=None, until_ms=None, by_model=False):
             return []
         p = p or 0
         return [{"model": "(all)", "sessions": n, "tokens_input": p,
+                 "progress_tokens": p,
                  "tokens_output": 0, "total": p,
                  "tok_s": _aggregate_rate(p, first, last)}]
     return [
         {"model": m, "sessions": n, "tokens_input": p or 0,
+         "progress_tokens": p or 0,
          "tokens_output": 0, "total": p or 0,
          "tok_s": _aggregate_rate(p or 0, first, last)}
         for m, n, p, first, last in dest.execute(

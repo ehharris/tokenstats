@@ -1055,6 +1055,21 @@ class CostTests(unittest.TestCase):
         rows = [{"progress_tokens": 1_000_000, "tokens_input": 1_000_000}]
         self.assertAlmostEqual(annotate_cost(rows, "sonnet")[0]["cost_est"], 15.0)
 
+    def test_run_aggregate_rows_carry_progress_tokens(self):
+        # regression pin (task-4 review): --cost prices by key presence, so
+        # run AGGREGATE rows must carry progress_tokens — without it they
+        # silently price via the event branch at the input rate.
+        from tokenstat import annotate_cost
+        dest = make_dest()
+        import_unsloth_runs(make_runs_src([
+            run_row("r1", progress=100), run_row("r2", progress=400)]), dest)
+        self.assertIn("progress_tokens", daily_runs(dest)[0])
+        (row,) = total_runs(dest, by_model=True)  # both runs share one model
+        self.assertIn("progress_tokens", row)
+        # output-only pricing: (100 + 400) * 15 / 1e6
+        (priced,) = annotate_cost(total_runs(dest, by_model=True), "sonnet")
+        self.assertAlmostEqual(priced["cost_est"], 0.0075)
+
     def test_annotate_cost_does_not_mutate_input_rows(self):
         from tokenstat import annotate_cost
         rows = [{"tokens_input": 10, "tokens_output": 10}]

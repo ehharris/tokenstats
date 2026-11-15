@@ -1422,5 +1422,52 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(len(tcreated), 1)
 
 
+class LikeEscapingTests(unittest.TestCase):
+    """LIKE metacharacters in --model patterns are escaped before wrapping,
+    so they match literally and can never act as wildcards."""
+
+    def setUp(self):
+        self.dest = make_dest()
+        record(make_src([src_row(sid="a", model='{"id":"50%off","providerID":"x"}'),
+                         src_row(sid="b", model=LEMONADE_JSON)]), self.dest, now_ms=1)
+
+    def test_model_percent_is_literal(self):
+        # "gpt-50-mini" contains the digit pair "50": an unescaped `%`
+        # (pattern %50%%) would match it too. Only a literal "50%" may match.
+        record(make_src([src_row(sid="p2",
+                                 model='{"id":"gpt-50-mini","providerID":"z"}')]),
+               self.dest, now_ms=1)
+        rows = query_sessions(self.dest, model="50%")
+        self.assertEqual([r["model"] for r in rows],
+                         ["x/50%off"])   # only the literal-percent model
+
+    def test_model_underscore_is_literal(self):
+        record(make_src([src_row(sid="c", model='{"id":"a_b","providerID":"y"}')]),
+               self.dest, now_ms=2)
+        # "axb" matches when `_` is a wildcard (pattern %a_b%) but does not
+        # contain the literal "a_b".
+        record(make_src([src_row(sid="u2", model='{"id":"axb","providerID":"w"}')]),
+               self.dest, now_ms=2)
+        rows = query_sessions(self.dest, model="a_b")
+        self.assertEqual([r["model"] for r in rows], ["y/a_b"])
+
+    def test_event_percent_is_literal(self):
+        # The event filter has two LIKE clauses sharing one pattern param; if
+        # either lacked ESCAPE '\', the OR would let "gpt-50-mini" leak in.
+        import_unsloth(make_unsloth_src([unsloth_event("e1", model="x/50%off"),
+                                         unsloth_event("e2", model="gpt-50-mini")]),
+                       self.dest)
+        rows = query_events(self.dest, model="50%")
+        self.assertEqual([r["model"] for r in rows], ["x/50%off"])
+
+    def test_run_percent_is_literal(self):
+        # Run-path pin: _run_filters was already escaping when this test was
+        # added — regression guard, not a RED demonstration.
+        import_unsloth_runs(make_runs_src([run_row("rp", model="x/50%off"),
+                                           run_row("rd")]), self.dest)
+        rows = query_runs(self.dest, model="50%")
+        self.assertEqual([r["model"] for r in rows], ["x/50%off"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -2041,8 +2041,12 @@ class PanelEmptyTitleTests(unittest.TestCase):
         rows = [{"total": 300, "tokens_input": 200, "tokens_output": 100,
                  "date": "2026-11-15"}]
         hero = report_header("x", rows)[1]
-        r, g, b = SUNSET["num"]
-        self.assertIn(f"\x1b[1;38;2;{r};{g};{b}m300\x1b[0m tokens", hero)
+        # grand total: blue->orange per-glyph gradient (the bar motif), split
+        # at the row's in/out share — first glyph pure IN blue, last OUT orange
+        rin, gin, bin_ = tokenstat._token_rgb(0.0)
+        rout, gout, bout = tokenstat._token_rgb(1.0)
+        self.assertIn(f"\x1b[38;2;{rin};{gin};{bin_}m3", hero)
+        self.assertIn(f"\x1b[38;2;{rout};{gout};{bout}m0\x1b[0m tokens", hero)
         r, g, b = SUNSET["tin"]
         self.assertIn(f"\x1b[38;2;{r};{g};{b}m200\x1b[0m in", hero)
         r, g, b = SUNSET["tout"]

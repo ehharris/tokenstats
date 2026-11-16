@@ -839,15 +839,11 @@ def report_header(title, rows, theme=SUNSET):
     def sum_of(key):
         return sum(r.get(key) or 0 for r in rows)
 
-    # IN/OUT tinted like the table columns (tin blue / tout orange); the grand
-    # total wears the bars' blue->orange gradient, split at the report's real
-    # in/out share. panel() measures visible width, so escapes never rag it.
+    # IN/OUT tinted like the table columns (tin blue / tout orange); panel()
+    # measures visible width, so the escape bytes never rag the frame.
     ri, gi, bi = theme["tin"]
     ro, go, bo = theme["tout"]
-    total_sum = sum_of("total")
-    frac_in = (sum_of("tokens_input") / total_sum) if total_sum else 1.0
-    hero = (_paint_gradient(compact(total_sum), frac_in)
-            + f" tokens · {len(rows)} rows"
+    hero = (f"{compact(sum_of('total'))} tokens · {len(rows)} rows"
             f" · \x1b[38;2;{ri};{gi};{bi}m{compact(sum_of('tokens_input'))}"
             f"\x1b[0m in"
             f" · \x1b[38;2;{ro};{go};{bo}m{compact(sum_of('tokens_output'))}"

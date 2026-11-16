@@ -839,11 +839,14 @@ def report_header(title, rows, theme=SUNSET):
     def sum_of(key):
         return sum(r.get(key) or 0 for r in rows)
 
-    # IN/OUT tinted like the table columns (tin blue / tout orange); panel()
-    # measures visible width, so the escape bytes never rag the frame.
+    # IN/OUT tinted like the table columns (tin blue / tout orange) and the
+    # grand total bolded like their TOTAL column (num); panel() measures
+    # visible width, so the escape bytes never rag the frame.
+    rn, gn, bn = theme["num"]
     ri, gi, bi = theme["tin"]
     ro, go, bo = theme["tout"]
-    hero = (f"{compact(sum_of('total'))} tokens · {len(rows)} rows"
+    hero = (f"\x1b[1;38;2;{rn};{gn};{bn}m{compact(sum_of('total'))}"
+            f"\x1b[0m tokens · {len(rows)} rows"
             f" · \x1b[38;2;{ri};{gi};{bi}m{compact(sum_of('tokens_input'))}"
             f"\x1b[0m in"
             f" · \x1b[38;2;{ro};{go};{bo}m{compact(sum_of('tokens_output'))}"

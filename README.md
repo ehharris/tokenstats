@@ -78,19 +78,25 @@ Per-model `--total` reports end with two extra columns: `SHARE`, the row's
 percent of the overall total across the displayed rows, and `BAR`, a smooth
 Unicode bar (full blocks `█` plus one shade block `░▒▓` for the fraction —
 deliberately no eighth-block glyphs like `▁`, whose different vertical
-metrics rag the bottom edge in many fonts) scaled to the largest row so the
-mix is visible at a glance. When output is a terminal the bars
-are colored (a per-glyph true-color gradient, blue for input tokens into
-orange for output — set
-`NO_COLOR` to opt out; piped or `--json` output stays plain), and every bar
-is padded with a space on either side. The color itself is a gradient: blue
-across the row's input-token portion blending into orange across its output
-portion, so the transition point marks the in/out split. The gradient is
-interpolated in HSL (blue through purple/magenta to orange) at full
-saturation, so it never passes through a washed-out gray. Rows sort by
-`SHARE` descending — biggest share first, ties alphabetical by model —
-in both the table and `--json`; session and daily views keep their
-chronological order.
+metrics rag the bottom edge in many fonts) padded with a space on either
+side and scaled to the largest row so the mix is visible at a glance. Piped
+output, `NO_COLOR`, and `--json` keep that plain bar exactly as before; on a
+terminal `BAR` renders instead as truecolor background blocks — the row's
+input share as a blue run followed by its output share as an orange run,
+over a dark track, at the same scale (runs in `--from-runs` have no in/out
+split, so their bars are solid orange). Rows sort by `SHARE` descending —
+biggest share first, ties alphabetical by model — in both the table and
+`--json`; session and daily views keep their chronological order.
+
+Terminal output also wears the sunset theme. Above the table a hero header
+panel summarizes the report — grand total tokens, row count, the in/out
+split in compact form (`7.77M`, `12.3k`), and the date range — and the table
+itself sits in a rounded border panel titled `tokenstat · <view>` (for
+example `tokenstat · sessions` or `tokenstat · daily`). The table header row
+is dimmed, and the token columns are colored by class: `IN` blue, `OUT`
+orange, `CACHE` amber, `TOTAL` bold. `reconcile` gets the panel but no hero
+header — its rows carry no summed token classes. All of this is decoration
+only: piped output, `NO_COLOR`, and `--json` stay plain.
 
 Every report table except `reconcile` also has a `TOK/S` column. In
 session, daily, and total views it is a **wall-clock average** — tokens

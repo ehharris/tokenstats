@@ -2018,5 +2018,23 @@ class NoResourceWarningTests(unittest.TestCase):
         self.assertNotIn("ResourceWarning", proc.stderr)
 
 
+class PanelEmptyTitleTests(unittest.TestCase):
+    def test_empty_title_drops_the_separator(self):
+        first = _ANSI_RE.sub("", panel("", ["content here"])[0])
+        self.assertTrue(first.startswith("\u256d tokenstat "))
+        self.assertNotIn("\u00b7", first)
+
+    def test_empty_title_keeps_uniform_width(self):
+        lines = panel("", ["a", "longer content line"])
+        self.assertEqual(len({_visible(ln) for ln in lines}), 1)
+
+    def test_report_header_forwards_empty_title(self):
+        rows = [{"total": 100, "tokens_input": 60, "tokens_output": 40,
+                 "date": "2026-11-15"}]
+        lines = report_header("", rows)
+        self.assertNotIn("\u00b7", _ANSI_RE.sub("", lines[0]))
+        self.assertIn("100 tokens", _ANSI_RE.sub("", lines[1]))
+
+
 if __name__ == "__main__":
     unittest.main()

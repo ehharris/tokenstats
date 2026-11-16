@@ -793,11 +793,12 @@ def panel(title, lines, theme=SUNSET):
         r, g, b = theme[role]
         return f"\x1b[{'1;' if bold else ''}38;2;{r};{g};{b}m{text}\x1b[0m"
 
-    strip = f" tokenstat · {title} "
+    head = " tokenstat · "
+    strip = f"{head}{title} "
     widest = max((_visible(ln) for ln in lines), default=0)
     # one space inset either side, but never narrower than the title strip
     inner = max(len(strip), widest + 2)
-    top = ("╭" + paint(strip, "accent", bold=True)
+    top = ("╭" + paint(head, "accent", bold=True) + paint(title + " ", "label")
            + paint("─" * (inner - len(strip)), "border") + paint("╮", "border"))
     body = [paint("│", "border") + " " + ln + " " * (inner - 1 - _visible(ln))
             + paint("│", "border") for ln in lines]

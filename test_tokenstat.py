@@ -1726,6 +1726,16 @@ class PanelTests(unittest.TestCase):
         lines = panel("t", [])
         self.assertEqual(len(lines), 2)   # top + bottom only
 
+    def test_title_carries_label_role_after_accent_prefix(self):
+        # the strip is two runs: accent-bold " tokenstat · ", then the title
+        # itself in the label role (roles are the spec of the redesign)
+        accent = "\x1b[1;38;2;{};{};{}m".format(*SUNSET["accent"])
+        label = "\x1b[38;2;{};{};{}m".format(*SUNSET["label"])
+        top = panel("sessions", ["x"])[0]
+        self.assertIn(accent + " tokenstat · " + "\x1b[0m" + label + "sessions ",
+                      top)
+        self.assertNotIn(label, panel("sessions", ["x"])[1])   # body: no title
+
 
 class ColorEnabledTests(unittest.TestCase):
     def test_color_requires_tty_and_no_no_color(self):

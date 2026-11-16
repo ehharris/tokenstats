@@ -17,7 +17,8 @@ from tokenstat import (_ANSI_RE, _visible, SUNSET, SESSION_COLUMNS, add_shares,
                        import_unsloth_runs, main, paint_bars, paint_cells,
                        panel, parse_date, parse_model, query_events,
                        query_runs, query_sessions, reconcile, record,
-                       render_table, total_events, total_runs, total_totals)
+                       render_table, report_header, total_events,
+                       total_runs, total_totals)
 
 LEMONADE_JSON = '{"id":"gpt-oss-120b","providerID":"lemonade"}'
 UNSLOTH_MODEL_ID = "unsloth/Qwen3.8-Flash-Next-GGUF"
@@ -1764,6 +1765,30 @@ class PanelTests(unittest.TestCase):
         self.assertIn(accent + " tokenstat · " + "\x1b[0m" + label + "sessions ",
                       top)
         self.assertNotIn(label, panel("sessions", ["x"])[1])   # body: no title
+
+
+class ReportHeaderTests(unittest.TestCase):
+    """report_header: hero panel with grand totals and the date span."""
+
+    def test_hero_line_totals_and_row_count(self):
+        rows = [{"total": 5_000_000, "tokens_input": 4_000_000,
+                 "tokens_output": 1_000_000, "date": "2026-11-15"},
+                {"total": 3_000_000, "tokens_input": 2_000_000,
+                 "tokens_output": 1_000_000, "date": "2026-11-06"}]
+        text = _ANSI_RE.sub("", "\n".join(report_header("sessions", rows)))
+        self.assertIn("8.00M tokens", text)
+        self.assertIn("2 rows", text)
+        self.assertIn("2026-11-06", text)
+        self.assertIn("2026-11-15", text)
+
+    def test_runs_rows_without_input_keys_are_safe(self):
+        rows = [{"total": 10, "date": None}]
+        text = _ANSI_RE.sub("", "\n".join(report_header("runs", rows)))
+        self.assertIn("10 tokens", text)      # compact() falls through to str
+
+    def test_empty_rows_still_frames(self):
+        lines = report_header("x", [])
+        self.assertTrue(lines[0].lstrip().startswith("╭"))
 
 
 class ColorEnabledTests(unittest.TestCase):

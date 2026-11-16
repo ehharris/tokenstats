@@ -842,6 +842,25 @@ def panel(title, lines, theme=SUNSET):
     return [top] + body + [bottom]
 
 
+def report_header(title, rows, theme=SUNSET):
+    """Hero panel for a report: one grand-total line over a dim date span.
+    Safe for rows that carry no tokens_input/tokens_output keys and for rows
+    whose date is missing or None (the span is omitted when none is dated)."""
+    def sum_of(key):
+        return sum(r.get(key) or 0 for r in rows)
+
+    hero = (f"{compact(sum_of('total'))} tokens · {len(rows)} rows"
+            f" · {compact(sum_of('tokens_input'))} in"
+            f" · {compact(sum_of('tokens_output'))} out")
+    lines = [hero]
+    dates = sorted(d for d in (r.get("date") for r in rows) if d)
+    if dates:
+        span = dates[0] if dates[0] == dates[-1] else f"{dates[0]} → {dates[-1]}"
+        r, g, b = theme["label"]
+        lines.append(f"\x1b[38;2;{r};{g};{b}m{span}\x1b[0m")
+    return panel(title, lines, theme)
+
+
 def render_table(rows, columns=None):
     """Aligned report. `columns` is a list of (header, key, kind)."""
     if columns is None:

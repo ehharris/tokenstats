@@ -759,21 +759,6 @@ def compact(n):
     return str(n)
 
 
-def block_bar(total, tin, scale_total, width, theme=SUNSET):
-    """True-color background-block bar: exactly `width` visible cells, the
-    IN share first then the OUT share, over the track fill. One background
-    sequence per cell, so the IN/OUT split lands on exact cell boundaries."""
-    n = round(width * total / scale_total) if scale_total else 0
-    n = min(max(n, 1), width) if total else 0   # never all-track, never long
-    n_in = round(n * tin / total) if total else 0
-    cells = []
-    for count, role in ((n_in, "tin"), (n - n_in, "tout"), (width - n, "track")):
-        if count:
-            r, g, b = theme[role]
-            cells.append(f"\x1b[48;2;{r};{g};{b}m " * count)
-    return "".join(cells) + "\x1b[0m"
-
-
 # per painted key: (cell kind as in render_table.fmt, color role, bold)
 _PAINT_CELLS = {
     "tokens_input": ("int", "tin", False),
@@ -1193,21 +1178,11 @@ def main(argv):
         else:
             color = _color_enabled(sys.stdout, os.environ)
             if share_view:
-                if color:
-                    # Background-block bars replace the gradient glyphs on
-                    # tty output; scale to the largest displayed row, same
-                    # as add_shares does. Runs have no in/out split, so
-                    # their bars render solid OUT-orange (spec): their IN
-                    # share is pinned to 0 rather than their all-input
-                    # progress_tokens total.
-                    biggest = max((r["total"] for r in rows), default=0)
-                    rows = [{**r, "bar": " " + block_bar(
-                                 r["total"],
-                                 0 if "progress_tokens" in r
-                                 else r["tokens_input"],
-                                 biggest, 30) + " "} for r in rows]
-                else:
-                    rows = paint_bars(rows, color=False)  # padding only
+                # Style A bars on every path: the plain glyphs padded by
+                # paint_bars, plus its per-glyph blue->orange gradient when
+                # this is a terminal (a direct master-behavior restoration —
+                # master called paint_bars(rows, color=_color_enabled(...))).
+                rows = paint_bars(rows, color=color)
             table = render_table(paint_cells(rows) if color else rows,
                                  columns)
             if color and table != "no sessions match\n":

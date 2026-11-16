@@ -2046,6 +2046,15 @@ class PanelEmptyTitleTests(unittest.TestCase):
         r, g, b = SUNSET["tout"]
         self.assertIn(f"\x1b[38;2;{r};{g};{b}m100\x1b[0m out", hero)
 
+    def test_hero_appends_cost_only_when_given(self):
+        rows = [{"total": 300, "tokens_input": 200, "tokens_output": 100,
+                 "date": "2026-11-15"}]
+        plain = _ANSI_RE.sub("", report_header("x", rows)[1])
+        self.assertNotIn("~$", plain)
+        r, g, b = SUNSET["num"]
+        hero = report_header("x", rows, cost_est=123.456)[1]
+        self.assertIn(f"\x1b[38;2;{r};{g};{b}m~$123.46\x1b[0m", hero)
+
 
 class DefaultDashboardTests(unittest.TestCase):
     """Bare tokenstat run: hero + top-5 models + 5 most recent sessions."""
@@ -2154,6 +2163,16 @@ class DefaultDashboardTests(unittest.TestCase):
         self.assertRegex(plain, r"OUT\s+CACHE\s+TOTAL")
         self.assertEqual(sum(1 for ln in plain.splitlines()
                              if ln.rstrip(" │").endswith("COST")), 2)
+
+    def test_hero_shows_total_estimate_only_with_cost(self):
+        # 6 default src_rows est (tin*3+tout*15+tcr*.3+tcw*3.75)/1e6 = .008375
+        # each, plus s4 (5M in, 900k out) = 28.5 -> grand total ~$28.55 —
+        # computed over ALL sessions, not the truncated model table.
+        code, out, _ = self.bare(["--cost"])
+        self.assertEqual(code, 0)
+        self.assertIn("~$28.55", _ANSI_RE.sub("", out))
+        _, plain_out, _ = self.bare()
+        self.assertNotIn("~$", plain_out)
 
     def test_fewer_than_five_shows_all(self):
         small = os.path.join(self.tmp.name, "small.db")

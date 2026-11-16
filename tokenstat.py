@@ -739,6 +739,26 @@ def paint_bars(rows, color):
     return out
 
 
+# Sunset palette for the visual redesign: warm dusk chrome around the report,
+# plus a mirrored input-blue / output-orange pair for the token columns and
+# amber for cache reads. Every value is a true-color (r, g, b) triple.
+SUNSET = {
+    "border": (87, 69, 62), "accent": (251, 146, 60),
+    "label": (181, 153, 138), "num": (245, 235, 229),
+    "tin": (96, 165, 250), "tout": (251, 146, 60),
+    "tcach": (250, 204, 21), "track": (41, 34, 30),
+}
+
+
+def compact(n):
+    """Token count in report form: 7.77M, 12.3k, 999."""
+    if n >= 1_000_000:
+        return f"{n / 1e6:.2f}M"
+    if n >= 1_000:
+        return f"{n / 1e3:.1f}k"
+    return str(n)
+
+
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")  # SGR color sequences (painted bars)
 
 

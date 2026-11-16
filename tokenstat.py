@@ -774,6 +774,42 @@ def block_bar(total, tin, scale_total, width, theme=SUNSET):
     return "".join(cells) + "\x1b[0m"
 
 
+# per painted key: (cell kind as in render_table.fmt, color role, bold)
+_PAINT_CELLS = {
+    "tokens_input": ("int", "tin", False),
+    "tokens_output": ("int", "tout", False),
+    "cache": ("int", "tcach", False),
+    "cost_est": ("cost", "num", False),
+    "total": ("int", "num", True),
+}
+
+
+def paint_cells(rows, theme=SUNSET):
+    """Copy of `rows` whose token/cost cells are wrapped in their class color.
+    Values arrive raw (ints) or already rendered (strings); numbers are
+    formatted exactly as `render_table.fmt` would, so painting never changes
+    a cell's visible width. The input rows are left untouched."""
+    def render(value, kind):
+        if isinstance(value, str):
+            return value                     # already a rendered cell
+        if kind == "int":
+            return f"{value:,}"
+        return f"${value:.4f}"               # cost_est
+
+    out = []
+    for row in rows:
+        painted = dict(row)                  # shallow copy: never mutate input
+        for key, (kind, role, bold) in _PAINT_CELLS.items():
+            value = painted.get(key)
+            if value is None or value == "":
+                continue
+            r, g, b = theme[role]
+            painted[key] = (f"\x1b[{'1;' if bold else ''}38;2;{r};{g};{b}m"
+                            f"{render(value, kind)}\x1b[0m")
+        out.append(painted)
+    return out
+
+
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")  # SGR color sequences (painted bars)
 
 
@@ -816,6 +852,8 @@ def render_table(rows, columns=None):
     def fmt(value, kind):
         if value is None:
             return ""
+        if isinstance(value, str) and kind in ("int", "cost", "rate"):
+            return value          # already numeric-formatted (paint_cells)
         if kind == "rate":
             return f"{value:.1f}"
         if kind == "cost":

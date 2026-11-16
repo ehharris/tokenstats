@@ -783,6 +783,28 @@ def _visible(cell):
     return len(_ANSI_RE.sub("", cell))
 
 
+def panel(title, lines, theme=SUNSET):
+    """Rounded frame around `lines`, headed by a ` tokenstat · {title} ` strip.
+    Every returned line shares one visible width: the widest content line or
+    the title strip, whichever is longer, plus the two border cells."""
+    def paint(text, role, bold=False):
+        if not text:
+            return ""
+        r, g, b = theme[role]
+        return f"\x1b[{'1;' if bold else ''}38;2;{r};{g};{b}m{text}\x1b[0m"
+
+    strip = f" tokenstat · {title} "
+    widest = max((_visible(ln) for ln in lines), default=0)
+    # one space inset either side, but never narrower than the title strip
+    inner = max(len(strip), widest + 2)
+    top = ("╭" + paint(strip, "accent", bold=True)
+           + paint("─" * (inner - len(strip)), "border") + paint("╮", "border"))
+    body = [paint("│", "border") + " " + ln + " " * (inner - 1 - _visible(ln))
+            + paint("│", "border") for ln in lines]
+    bottom = "╰" + paint("─" * inner, "border") + paint("╯", "border")
+    return [top] + body + [bottom]
+
+
 def render_table(rows, columns=None):
     """Aligned report. `columns` is a list of (header, key, kind)."""
     if columns is None:

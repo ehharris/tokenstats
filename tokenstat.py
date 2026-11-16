@@ -832,10 +832,12 @@ def panel(title, lines, theme=SUNSET):
     return [top] + body + [bottom]
 
 
-def report_header(title, rows, theme=SUNSET):
+def report_header(title, rows, theme=SUNSET, cost_est=None):
     """Hero panel for a report: one grand-total line over a dim date span.
     Safe for rows that carry no tokens_input/tokens_output keys and for rows
-    whose date is missing or None (the span is omitted when none is dated)."""
+    whose date is missing or None (the span is omitted when none is dated).
+    `cost_est` (float USD, precomputed by the caller) appends a `~$X.XX`
+    reference-estimate tail; omitted means no cost shown."""
     def sum_of(key):
         return sum(r.get(key) or 0 for r in rows)
 
@@ -847,7 +849,10 @@ def report_header(title, rows, theme=SUNSET):
             f" · \x1b[38;2;{ri};{gi};{bi}m{compact(sum_of('tokens_input'))}"
             f"\x1b[0m in"
             f" · \x1b[38;2;{ro};{go};{bo}m{compact(sum_of('tokens_output'))}"
-            f"\x1b[0m out")
+            f"\x1b[0m out"
+            + (f" · \x1b[38;2;{theme['num'][0]};{theme['num'][1]};"
+               f"{theme['num'][2]}m~${cost_est:,.2f}\x1b[0m"
+               if cost_est is not None else ""))
     lines = [hero]
     dates = sorted(d for d in (r.get("date") for r in rows) if d)
     if dates:
@@ -1117,15 +1122,21 @@ def main(argv):
             model_rows = model_rows[:5]
             color = _color_enabled(sys.stdout, os.environ)
             m_cols, s_cols = SHARE_COLUMNS, SESSION_COLUMNS
+            hero_cost = None
             if args.cost:
                 model_rows = annotate_cost(model_rows, args.cost_tier)
                 sess_rows = annotate_cost(sess_rows, args.cost_tier)
                 m_cols, s_cols = m_cols + [COST_COLUMN], s_cols + [COST_COLUMN]
+                # Hero total spans ALL sessions — the model table truncates
+                # to five rows, so its COST column can't sum to the truth.
+                hero_cost = sum(r["cost_est"]
+                                for r in annotate_cost(all_rows,
+                                                       args.cost_tier))
             if args.cache:
                 model_rows = annotate_cache(model_rows)
                 sess_rows = annotate_cache(sess_rows)
                 m_cols, s_cols = with_cache(m_cols), with_cache(s_cols)
-            lines = report_header("", all_rows)
+            lines = report_header("", all_rows, cost_est=hero_cost)
             lines += _table_panel("usage by model \u00b7 top 5 by share",
                                   model_rows, m_cols, True, color)
             lines += _table_panel("sessions \u00b7 5 most recent",

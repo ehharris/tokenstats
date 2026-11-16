@@ -11,11 +11,12 @@ import subprocess
 import sys
 import unittest
 
-from tokenstat import (add_shares, daily_events, daily_runs, daily_totals,
-                       ensure_schema, import_unsloth, import_unsloth_runs,
-                       main, paint_bars, parse_date, parse_model, query_events,
-                       query_runs, query_sessions, reconcile, record,
-                       render_table, total_events, total_runs, total_totals)
+from tokenstat import (SUNSET, add_shares, compact, daily_events, daily_runs,
+                       daily_totals, ensure_schema, import_unsloth,
+                       import_unsloth_runs, main, paint_bars, parse_date,
+                       parse_model, query_events, query_runs, query_sessions,
+                       reconcile, record, render_table, total_events,
+                       total_runs, total_totals)
 
 LEMONADE_JSON = '{"id":"gpt-oss-120b","providerID":"lemonade"}'
 UNSLOTH_MODEL_ID = "unsloth/Qwen3.8-Flash-Next-GGUF"
@@ -1692,6 +1693,20 @@ class ColorEnabledTests(unittest.TestCase):
         self.assertTrue(_color_enabled(Tty(), {}))
         self.assertFalse(_color_enabled(Tty(), {"NO_COLOR": "1"}))
         self.assertFalse(_color_enabled(Pipe(), {}))
+
+
+class SunsetThemeTests(unittest.TestCase):
+    def test_sunset_palette_has_all_roles(self):
+        for key in ("border", "accent", "label", "num",
+                    "tin", "tout", "tcach", "track"):
+            self.assertEqual(len(SUNSET[key]), 3)
+            self.assertTrue(all(0 <= v <= 255 for v in SUNSET[key]))
+
+    def test_compact_formats_millions_thousands_plain(self):
+        self.assertEqual(compact(7_770_000), "7.77M")
+        self.assertEqual(compact(12_340), "12.3k")
+        self.assertEqual(compact(999), "999")
+        self.assertEqual(compact(0), "0")
 
 
 class CliColorTests(unittest.TestCase):

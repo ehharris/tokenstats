@@ -79,12 +79,13 @@ percent of the overall total across the displayed rows, and `BAR`, a smooth
 Unicode bar (full blocks `█` plus one shade block `░▒▓` for the fraction —
 deliberately no eighth-block glyphs like `▁`, whose different vertical
 metrics rag the bottom edge in many fonts) padded with a space on either
-side and scaled to the largest row so the mix is visible at a glance. Piped
-output, `NO_COLOR`, and `--json` keep that plain bar exactly as before; on a
-terminal `BAR` renders instead as truecolor background blocks — the row's
-input share as a blue run followed by its output share as an orange run,
-over a dark track, at the same scale (runs in `--from-runs` have no in/out
-split, so their bars are solid orange). Rows sort by `SHARE` descending —
+side and scaled to the largest row so the mix is visible at a glance. On a
+terminal the same glyph bar is additionally colored truecolor, one color per
+glyph: a blue→orange gradient whose transition sits at the row's
+input/output split (runs in `--from-runs` have no in/out split, so their
+bars ride the pure input-blue end, like any other all-input row). Piped
+output, `NO_COLOR`, and `--json` render the same bar without the coloring —
+exactly as before. Rows sort by `SHARE` descending —
 biggest share first, ties alphabetical by model — in both the table and
 `--json`; session and daily views keep their chronological order.
 

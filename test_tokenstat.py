@@ -14,7 +14,7 @@ import unittest
 import unittest.mock
 
 from tokenstat import (_ANSI_RE, _visible, SUNSET, SESSION_COLUMNS, add_shares,
-                       block_bar, compact, daily_events, daily_runs,
+                       compact, daily_events, daily_runs,
                        daily_totals, ensure_schema, import_unsloth,
                        import_unsloth_runs, main, paint_bars, paint_cells,
                        panel, parse_date, parse_model, query_events,
@@ -1713,33 +1713,6 @@ class PaintCellsTests(unittest.TestCase):
                          [_visible(l) for l in plain.splitlines()])
 
 
-class BlockBarTests(unittest.TestCase):
-    """block_bar: truecolor background-block bar, exactly `width` cells wide."""
-
-    def test_full_width_row_splits_at_in_ratio(self):
-        bar = block_bar(100, 60, 100, 20)              # 60% in
-        self.assertEqual(_visible(bar), 20)            # exactly width cells
-        bg = re.findall(r"\x1b\[48;2;\d+;\d+;\d+m", bar)
-        tin = f"\x1b[48;2;{SUNSET['tin'][0]};{SUNSET['tin'][1]};{SUNSET['tin'][2]}m"
-        runs = [c for c in bg if c == tin]
-        self.assertEqual(len(runs), 12)                # round(20 * 0.6)
-
-    def test_zero_total_is_all_track(self):
-        bar = block_bar(0, 0, 100, 10)
-        self.assertEqual(_visible(bar), 10)
-        track = f"\x1b[48;2;{SUNSET['track'][0]};{SUNSET['track'][1]};{SUNSET['track'][2]}m"
-        self.assertEqual(bar, (track + " ") * 10 + "\x1b[0m")
-
-    def test_tiny_nonzero_row_gets_at_least_one_cell(self):
-        bar = block_bar(1, 1, 1_000_000, 20)
-        self.assertEqual(_visible(bar), 20)
-        tin = f"\x1b[48;2;{SUNSET['tin'][0]};{SUNSET['tin'][1]};{SUNSET['tin'][2]}m"
-        self.assertIn(tin + " ", bar)                    # never all-track
-
-    def test_scale_zero_safety(self):
-        self.assertEqual(_visible(block_bar(5, 3, 0, 8)), 8)
-
-
 class PanelTests(unittest.TestCase):
     """panel: rounded frame with a title strip, all lines equal visible width."""
 
@@ -1858,8 +1831,8 @@ class CliColorTests(unittest.TestCase):
 
 
 class CliSunsetTests(unittest.TestCase):
-    """tty-colored CLI output: sunset header/panels, background-block bars,
-    painted cells. Color is forced by patching the _color_enabled gate."""
+    """tty-colored CLI output: sunset header/panels, per-glyph gradient glyph
+    bars, painted cells. Color is forced by patching the _color_enabled gate."""
 
     def setUp(self):
         import tempfile
@@ -1888,16 +1861,18 @@ class CliSunsetTests(unittest.TestCase):
                                         return_value=True):
             return self.run_main(argv)
 
-    def test_runs_view_bars_render_solid_out_orange(self):
-        # spec pin: runs have no in/out split, so their bars render solid
-        # OUT-orange — no IN-blue background cells anywhere in the view
+    def test_runs_share_rows_render_gradient_glyph_bars(self):
+        # runs have no in/out split (all-input rows), but on a terminal their
+        # share bars are the SAME per-glyph gradient glyph bars as any other
+        # share row — an all-input row renders the pure input-blue endpoint
         self.addCleanup(make_file_runs_db(self.udb,
                                           runs=[run_row("r1")]).close)
         _, out, _ = self.colored_main(
             ["--db", self.db, "--src", os.path.join(self.tmp.name, "none.db"),
              "--unsloth-db", self.udb, "--from-runs", "--total", "--model"])
-        self.assertIn("48;2;251;146;60", out)     # tout fill on the BAR cells
-        self.assertNotIn("48;2;96;165;250", out)  # no tin cells in a runs view
+        self.assertIn("█", out)                       # glyph bars, not blocks
+        self.assertIn("38;2;80;168;255", out)         # input-blue glyphs (fg)
+        self.assertNotIn("48;2;", out)                # no background blocks
 
     def test_reconcile_colored_skips_hero_header(self):
         # compare view pin: no hero "tokens ·" line — reconcile rows carry
@@ -1910,13 +1885,16 @@ class CliSunsetTests(unittest.TestCase):
         self.assertIn("tokenstat · reconcile", plain)
         self.assertNotIn("tokens ·", plain)
 
-    def test_share_view_uses_block_bars_not_glyphs(self):
+    def test_share_view_colored_uses_gradient_glyph_bars(self):
         code, out, _ = self.colored_main(
             ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
              "--total", "--model"])
         self.assertEqual(code, 0)
-        self.assertIn("48;2;", out)                       # background blocks
-        self.assertNotIn("█", out)                        # glyph bars gone
+        self.assertIn("█", out)                           # glyph bars remain
+        self.assertIn("38;2;", out)                       # gradient foreground
+        self.assertNotIn("48;2;", out)                    # no background blocks
+        self.assertIn("38;2;80;168;255", out)   # input-blue endpoint glyphs
+        self.assertIn("38;2;255;136;90", out)   # output-orange endpoint glyphs
         # panel() paints the title strip in two roles, so the title is
         # asserted on ANSI-stripped output (paint splits the substring)
         self.assertIn("tokenstat · usage by model", _ANSI_RE.sub("", out))

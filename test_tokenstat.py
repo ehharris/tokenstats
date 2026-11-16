@@ -2046,6 +2046,15 @@ class PanelEmptyTitleTests(unittest.TestCase):
         r, g, b = SUNSET["tout"]
         self.assertIn(f"\x1b[38;2;{r};{g};{b}m100\x1b[0m out", hero)
 
+    def test_hero_unit_label_is_configurable(self):
+        rows = [{"total": 300, "tokens_input": 200, "tokens_output": 100,
+                 "date": "2026-11-15"},
+                {"total": 100, "tokens_input": 40, "tokens_output": 60,
+                 "date": "2026-11-16"}]
+        self.assertIn("2 rows", _ANSI_RE.sub("", report_header("x", rows)[1]))
+        self.assertIn("2 sessions", _ANSI_RE.sub(
+            "", report_header("x", rows, unit="sessions")[1]))
+
     def test_hero_appends_cost_only_when_given(self):
         rows = [{"total": 300, "tokens_input": 200, "tokens_output": 100,
                  "date": "2026-11-15"}]
@@ -2096,13 +2105,20 @@ class DefaultDashboardTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("usage by model \u00b7 top 5 by share", out)
         self.assertIn("sessions \u00b7 5 most recent", out)
-        self.assertLess(out.index("usage by model"), out.index("sessions \u00b7"))
+        # "sessions ·" alone now also occurs in the hero ("N sessions · ..."),
+        # so pin the model panel against the sessions PANEL TITLE specifically.
+        self.assertLess(out.index("usage by model"),
+                        out.index("sessions \u00b7 5 most recent"))
 
     def test_bare_hero_has_no_section_name(self):
         code, out, _ = self.bare()
         first = _ANSI_RE.sub("", out.splitlines()[0])
         self.assertTrue(first.startswith("\u256d tokenstat "))
         self.assertNotIn("\u00b7", first)
+
+    def test_bare_hero_counts_sessions_not_rows(self):
+        _, plain, _ = self.bare()
+        self.assertIn("7 sessions", _ANSI_RE.sub("", plain))
 
     def test_sessions_capped_at_five_newest_first(self):
         code, out, _ = self.bare()

@@ -9,7 +9,9 @@ import re
 import sqlite3
 import subprocess
 import sys
+import tokenstat
 import unittest
+import unittest.mock
 
 from tokenstat import (_ANSI_RE, _visible, SUNSET, SESSION_COLUMNS, add_shares,
                        block_bar, compact, daily_events, daily_runs,
@@ -1853,6 +1855,75 @@ class CliColorTests(unittest.TestCase):
         unsloth_line = next(ln for ln in out.splitlines() if "unsloth" in ln)
         # SHARE value then a space-gap before the bar starts
         self.assertRegex(unsloth_line, r"\d+\.\d%   [█░▒▓ ]+$")
+
+
+class CliSunsetTests(unittest.TestCase):
+    """tty-colored CLI output: sunset header/panels, background-block bars,
+    painted cells. Color is forced by patching the _color_enabled gate."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = os.path.join(self.tmp.name, "usage.db")
+        qwen_lemonade = '{"id":"qwen-mini","providerID":"lemonade"}'
+        self.src = os.path.join(self.tmp.name, "src.db")
+        self.addCleanup(make_file_db(self.src, [
+            src_row(sid="s1", tin=9000, tout=1000),
+            src_row(sid="s2", model=qwen_lemonade, tin=4500, tout=500),
+        ]).close)
+        self.no_udb = os.path.join(self.tmp.name, "no-studio.db")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_main(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(argv)
+        return code, out.getvalue(), err.getvalue()
+
+    def colored_main(self, argv):
+        with unittest.mock.patch.object(tokenstat, "_color_enabled",
+                                        return_value=True):
+            return self.run_main(argv)
+
+    def test_share_view_uses_block_bars_not_glyphs(self):
+        code, out, _ = self.colored_main(
+            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+             "--total", "--model"])
+        self.assertEqual(code, 0)
+        self.assertIn("48;2;", out)                       # background blocks
+        self.assertNotIn("█", out)                        # glyph bars gone
+        # panel() paints the title strip in two roles, so the title is
+        # asserted on ANSI-stripped output (paint splits the substring)
+        self.assertIn("tokenstat · usage by model", _ANSI_RE.sub("", out))
+        self.assertIn("sorted by share", _ANSI_RE.sub("", out))
+
+    def test_cache_overlay_column_is_amber_under_color(self):
+        _, out, _ = self.colored_main(
+            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+             "--total", "--model", "--cache"])
+        self.assertIn("38;2;250;204;21", out)   # tcach on the CACHE column
+
+    def test_header_panel_prints(self):
+        _, out, _ = self.colored_main(
+            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+             "--total", "--model"])
+        self.assertIn("tokens", out.splitlines()[0] + out.splitlines()[1])
+        self.assertIn("╭", out)
+
+    def test_empty_result_plain_even_when_color_enabled(self):
+        _, out, _ = self.colored_main(
+            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+             "--model", "zzz-nothing"])
+        self.assertEqual(out, "no sessions match\n")      # Review Focus pin
+
+    def test_piped_cli_still_byte_identical(self):
+        _, out, _ = self.run_main(
+            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+             "--total", "--model"])                       # no patch: piped
+        self.assertNotIn("\x1b", out)
+        self.assertIn("█", out)                           # glyphs remain plain-path
 
 
 class SchemaTests(unittest.TestCase):

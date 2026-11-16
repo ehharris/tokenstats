@@ -1278,7 +1278,11 @@ def main(argv):
                 # Reconcile rows carry no summed token classes, so a hero
                 # header would imply zeros the view never computed — the
                 # compare view gets the table panel only.
+                # A total view narrowed to a single aggregate row already
+                # shows the grand total in-table — the hero would be a pure
+                # echo (reconcile skips its own for the same kind of reason).
                 head = ([] if args.command == "reconcile"
+                        or (want_total and len(rows) == 1)
                         else report_header(title, rows, unit=hero_unit))
                 print("\n".join(head + panel(title, lines)))
             else:

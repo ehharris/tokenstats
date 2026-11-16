@@ -2262,8 +2262,18 @@ class HeroUnitTests(unittest.TestCase):
     def test_daily_counts_days(self):
         self.assertIn("2 days", self.run_hero("--daily"))
 
-    def test_grand_total_is_one_total(self):
-        self.assertIn("1 total", self.run_hero("--total"))
+    def test_grand_total_drops_its_echo_hero(self):
+        # The lone "(all)" row already IS the grand total: hero would be a
+        # pure echo, so --total renders table-only even on a tty.
+        plain = self.run_hero("--total")
+        self.assertIn("(all)", plain)
+        self.assertNotIn("tokens ·", plain)
+
+    def test_single_match_per_model_view_drops_hero(self):
+        # Same redundancy when the per-model filter matches exactly one row.
+        plain = self.run_hero("--total", "--model", "lemonade")
+        self.assertIn("lemonade/gpt-oss-120b", plain)
+        self.assertNotIn("tokens ·", plain)
 
     def test_per_model_totals_count_models(self):
         self.assertIn("2 models", self.run_hero("--total", "--model"))

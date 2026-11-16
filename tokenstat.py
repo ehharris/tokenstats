@@ -1160,6 +1160,21 @@ def main(argv):
         # is captured BEFORE appending COST_COLUMN — the append creates a new
         # list, and paint_bars below must still recognize the share view.
         share_view = columns is SHARE_COLUMNS
+        # Panel title, derived from the same flags that picked `columns`
+        # (a daily share view cannot occur: --total rejects --daily).
+        if args.command == "reconcile":
+            title = "reconcile"
+        elif share_view:
+            title = ("usage by model · sorted by share"
+                     if args.model is not None else "totals")
+        elif args.daily:
+            title = "daily"
+        elif args.from_runs:
+            title = "studio runs"
+        elif args.from_unsloth:
+            title = "unsloth events"
+        else:
+            title = "sessions"
         if args.cost and columns is not RECON_COLUMNS:
             rows = annotate_cost(rows, args.cost_tier)
             columns = columns + [COST_COLUMN]
@@ -1176,10 +1191,34 @@ def main(argv):
                                if k not in ("bar", "share_str", "cache")}
                               for r in rows], indent=2))
         else:
+            color = _color_enabled(sys.stdout, os.environ)
             if share_view:
-                rows = paint_bars(rows, color=_color_enabled(sys.stdout,
-                                                             os.environ))
-            print(render_table(rows, columns), end="")
+                if color:
+                    # Background-block bars replace the gradient glyphs on
+                    # tty output; scale to the largest displayed row, same
+                    # as add_shares does. tin defaults to the row's input
+                    # side (runs carry it as tokens_input/progress_tokens),
+                    # so single-source bars come out single-hue.
+                    biggest = max((r["total"] for r in rows), default=0)
+                    rows = [{**r, "bar": " " + block_bar(
+                                 r["total"],
+                                 r.get("tokens_input",
+                                       r.get("progress_tokens", 0)),
+                                 biggest, 30) + " "} for r in rows]
+                else:
+                    rows = paint_bars(rows, color=False)  # padding only
+            table = render_table(paint_cells(rows) if color else rows,
+                                 columns)
+            if color and table != "no sessions match\n":
+                lines = table.splitlines()
+                # Header row dimmed to the label role (column names recede
+                # behind the painted numbers below them).
+                r, g, b = SUNSET["label"]
+                lines[0] = f"\x1b[38;2;{r};{g};{b}m{lines[0]}\x1b[0m"
+                print("\n".join(report_header(title, rows)
+                                + panel(title, lines)))
+            else:
+                print(table, end="")
         return 0
     finally:
         if dest is not None:

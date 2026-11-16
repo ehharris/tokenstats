@@ -1196,14 +1196,15 @@ def main(argv):
                 if color:
                     # Background-block bars replace the gradient glyphs on
                     # tty output; scale to the largest displayed row, same
-                    # as add_shares does. tin defaults to the row's input
-                    # side (runs carry it as tokens_input/progress_tokens),
-                    # so single-source bars come out single-hue.
+                    # as add_shares does. Runs have no in/out split, so
+                    # their bars render solid OUT-orange (spec): their IN
+                    # share is pinned to 0 rather than their all-input
+                    # progress_tokens total.
                     biggest = max((r["total"] for r in rows), default=0)
                     rows = [{**r, "bar": " " + block_bar(
                                  r["total"],
-                                 r.get("tokens_input",
-                                       r.get("progress_tokens", 0)),
+                                 0 if "progress_tokens" in r
+                                 else r["tokens_input"],
                                  biggest, 30) + " "} for r in rows]
                 else:
                     rows = paint_bars(rows, color=False)  # padding only
@@ -1215,8 +1216,12 @@ def main(argv):
                 # behind the painted numbers below them).
                 r, g, b = SUNSET["label"]
                 lines[0] = f"\x1b[38;2;{r};{g};{b}m{lines[0]}\x1b[0m"
-                print("\n".join(report_header(title, rows)
-                                + panel(title, lines)))
+                # Reconcile rows carry no summed token classes, so a hero
+                # header would imply zeros the view never computed — the
+                # compare view gets the table panel only.
+                head = ([] if args.command == "reconcile"
+                        else report_header(title, rows))
+                print("\n".join(head + panel(title, lines)))
             else:
                 print(table, end="")
         return 0

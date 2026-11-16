@@ -1872,6 +1872,7 @@ class CliSunsetTests(unittest.TestCase):
             src_row(sid="s2", model=qwen_lemonade, tin=4500, tout=500),
         ]).close)
         self.no_udb = os.path.join(self.tmp.name, "no-studio.db")
+        self.udb = os.path.join(self.tmp.name, "studio.db")
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -1886,6 +1887,28 @@ class CliSunsetTests(unittest.TestCase):
         with unittest.mock.patch.object(tokenstat, "_color_enabled",
                                         return_value=True):
             return self.run_main(argv)
+
+    def test_runs_view_bars_render_solid_out_orange(self):
+        # spec pin: runs have no in/out split, so their bars render solid
+        # OUT-orange — no IN-blue background cells anywhere in the view
+        self.addCleanup(make_file_runs_db(self.udb,
+                                          runs=[run_row("r1")]).close)
+        _, out, _ = self.colored_main(
+            ["--db", self.db, "--src", os.path.join(self.tmp.name, "none.db"),
+             "--unsloth-db", self.udb, "--from-runs", "--total", "--model"])
+        self.assertIn("48;2;251;146;60", out)     # tout fill on the BAR cells
+        self.assertNotIn("48;2;96;165;250", out)  # no tin cells in a runs view
+
+    def test_reconcile_colored_skips_hero_header(self):
+        # compare view pin: no hero "tokens ·" line — reconcile rows carry
+        # no summed token classes, and a zero hero would imply values the
+        # view never computed
+        _, out, _ = self.colored_main(
+            ["reconcile", "--db", self.db, "--src", self.src,
+             "--unsloth-db", self.no_udb])
+        plain = _ANSI_RE.sub("", out)
+        self.assertIn("tokenstat · reconcile", plain)
+        self.assertNotIn("tokens ·", plain)
 
     def test_share_view_uses_block_bars_not_glyphs(self):
         code, out, _ = self.colored_main(

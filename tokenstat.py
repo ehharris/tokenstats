@@ -839,9 +839,15 @@ def report_header(title, rows, theme=SUNSET):
     def sum_of(key):
         return sum(r.get(key) or 0 for r in rows)
 
+    # IN/OUT tinted like the table columns (tin blue / tout orange); panel()
+    # measures visible width, so the escape bytes never rag the frame.
+    ri, gi, bi = theme["tin"]
+    ro, go, bo = theme["tout"]
     hero = (f"{compact(sum_of('total'))} tokens · {len(rows)} rows"
-            f" · {compact(sum_of('tokens_input'))} in"
-            f" · {compact(sum_of('tokens_output'))} out")
+            f" · \x1b[38;2;{ri};{gi};{bi}m{compact(sum_of('tokens_input'))}"
+            f"\x1b[0m in"
+            f" · \x1b[38;2;{ro};{go};{bo}m{compact(sum_of('tokens_output'))}"
+            f"\x1b[0m out")
     lines = [hero]
     dates = sorted(d for d in (r.get("date") for r in rows) if d)
     if dates:

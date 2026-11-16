@@ -11,12 +11,13 @@ import subprocess
 import sys
 import unittest
 
-from tokenstat import (_visible, SUNSET, add_shares, block_bar, compact,
-                       daily_events, daily_runs, daily_totals, ensure_schema,
-                       import_unsloth, import_unsloth_runs, main, paint_bars,
-                       parse_date, parse_model, query_events, query_runs,
-                       query_sessions, reconcile, record, render_table,
-                       total_events, total_runs, total_totals)
+from tokenstat import (_ANSI_RE, _visible, SUNSET, add_shares, block_bar,
+                       compact, daily_events, daily_runs, daily_totals,
+                       ensure_schema, import_unsloth, import_unsloth_runs,
+                       main, paint_bars, panel, parse_date, parse_model,
+                       query_events, query_runs, query_sessions, reconcile,
+                       record, render_table, total_events, total_runs,
+                       total_totals)
 
 LEMONADE_JSON = '{"id":"gpt-oss-120b","providerID":"lemonade"}'
 UNSLOTH_MODEL_ID = "unsloth/Qwen3.8-Flash-Next-GGUF"
@@ -1705,6 +1706,25 @@ class BlockBarTests(unittest.TestCase):
 
     def test_scale_zero_safety(self):
         self.assertEqual(_visible(block_bar(5, 3, 0, 8)), 8)
+
+
+class PanelTests(unittest.TestCase):
+    """panel: rounded frame with a title strip, all lines equal visible width."""
+
+    def test_all_lines_share_visible_width(self):
+        lines = panel("sessions", ["plain", "\x1b[38;2;96;165;250mcolored\x1b[0m"])
+        widths = {_visible(ln) for ln in lines}
+        self.assertEqual(len(widths), 1)
+
+    def test_border_glyphs_present(self):
+        lines = panel("t", ["x"])
+        self.assertTrue(lines[0].lstrip().startswith("╭"))
+        self.assertTrue(lines[-1].lstrip().startswith("╰"))
+        self.assertIn("tokenstat · t", _ANSI_RE.sub("", lines[0]))
+
+    def test_empty_lines_list_still_frames(self):
+        lines = panel("t", [])
+        self.assertEqual(len(lines), 2)   # top + bottom only
 
 
 class ColorEnabledTests(unittest.TestCase):

@@ -2037,10 +2037,12 @@ class PanelEmptyTitleTests(unittest.TestCase):
         self.assertNotIn("\u00b7", _ANSI_RE.sub("", lines[0]))
         self.assertIn("100 tokens", _ANSI_RE.sub("", lines[1]))
 
-    def test_hero_tints_in_and_out_like_the_tables(self):
+    def test_hero_tints_total_in_and_out_like_the_tables(self):
         rows = [{"total": 300, "tokens_input": 200, "tokens_output": 100,
                  "date": "2026-11-15"}]
         hero = report_header("x", rows)[1]
+        r, g, b = SUNSET["num"]
+        self.assertIn(f"\x1b[1;38;2;{r};{g};{b}m300\x1b[0m tokens", hero)
         r, g, b = SUNSET["tin"]
         self.assertIn(f"\x1b[38;2;{r};{g};{b}m200\x1b[0m in", hero)
         r, g, b = SUNSET["tout"]

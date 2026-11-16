@@ -81,10 +81,17 @@ Store `usage.db` holds full recoverable history: ~73 OpenCode
 sessions, ~1,850 Unsloth request events, and a handful of generation runs
 back to 2026-11-06.
 
+Default-dashboard increment (2026-11-15): bare run renders hero + top-5-by-share
+model panel + 5 most-recent sessions (newest first); trigger is a truly bare
+invocation (`--cost`/`--cache` overlays allowed; `--json` and every flagged view
+unchanged); SHARE computed over all models then truncated to 5. Two stale pins
+updated per spec: CliCacheTests bare+--cache header pin (line-0 → whole-output
+regex) and CliShareTests bare leg dropped (bare now shows SHARE by design).
+
 ## Commands (run from this directory)
 
 ```bash
-python3 tokenstat.py                                   # snapshot both + report sessions
+python3 tokenstat.py                                   # snapshot both + compact dashboard (top-5 models, 5 newest sessions)
 python3 tokenstat.py --model unsloth --since 2026-11-01 --until 2026-11-13
 python3 tokenstat.py --min-in 10000 --daily            # thresholds apply to daily mode too
 python3 tokenstat.py --total                           # all-time grand total, one row

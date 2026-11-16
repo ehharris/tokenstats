@@ -805,7 +805,8 @@ def _visible(cell):
 
 
 def panel(title, lines, theme=SUNSET):
-    """Rounded frame around `lines`, headed by a ` tokenstat · {title} ` strip.
+    """Rounded frame around `lines`, headed by a ` tokenstat · {title} ` strip;
+    an empty title renders the plain ` tokenstat ` strip (no separator).
     Every returned line shares one visible width: the widest content line or
     the title strip, whichever is longer, plus the two border cells."""
     def paint(text, role, bold=False):

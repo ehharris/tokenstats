@@ -1297,7 +1297,7 @@ class CliCacheTests(unittest.TestCase):
     def test_cache_flag_adds_column_to_session_view(self):
         code, out, _ = self.base("--cache")
         self.assertEqual(code, 0)
-        self.assertRegex(out.splitlines()[0], r"OUT\s+CACHE\s+TOTAL")
+        self.assertRegex(out, r"OUT\s+CACHE\s+TOTAL")
         self.assertIn("7,100", out)   # per seeded session: 7000 read + 100 write
 
     def test_cache_daily_view_shows_combined(self):
@@ -1560,8 +1560,10 @@ class CliShareTests(unittest.TestCase):
         self.assertIn("1,000", out)  # unsloth total renders
         self.assertIn("35.5%", out)  # other-model = 550/1,550
 
+    # Superseded for bare runs on 2026-11-15 by the compact default dashboard
+    # (bare now shows the share panel; daily remains SHARE/BAR-free).
     def test_session_and_daily_tables_unchanged(self):
-        for extra in ([], ["--daily"]):
+        for extra in (["--daily"],):
             with self.subTest(extra=extra):
                 code, out, _ = self.run_main(
                     ["--db", self.db, "--src", self.src,
@@ -2034,6 +2036,127 @@ class PanelEmptyTitleTests(unittest.TestCase):
         lines = report_header("", rows)
         self.assertNotIn("\u00b7", _ANSI_RE.sub("", lines[0]))
         self.assertIn("100 tokens", _ANSI_RE.sub("", lines[1]))
+
+
+class DefaultDashboardTests(unittest.TestCase):
+    """Bare tokenstat run: hero + top-5 models + 5 most recent sessions."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = os.path.join(self.tmp.name, "usage.db")
+        self.no_udb = os.path.join(self.tmp.name, "no-studio.db")
+        other = '{"id":"m3","providerID":"prov3"}'
+        # 7 sessions, 3 models, increasing time_created (s1 oldest).
+        self.src = os.path.join(self.tmp.name, "src.db")
+        self.addCleanup(make_file_db(self.src, [
+            src_row(sid="s1", title="t-s1", created=ms(2026, 11, 1)),
+            src_row(sid="s2", title="t-s2", model=LEMONADE_JSON,
+                    created=ms(2026, 11, 2)),
+            src_row(sid="s3", title="t-s3", created=ms(2026, 11, 3)),
+            src_row(sid="s4", title="t-s4", model=other, tin=5_000_000,
+                    tout=900_000, tcr=0, created=ms(2026, 11, 4)),
+            src_row(sid="s5", title="t-s5", created=ms(2026, 11, 5)),
+            src_row(sid="s6", title="t-s6", model=LEMONADE_JSON,
+                    created=ms(2026, 11, 6)),
+            src_row(sid="s7", title="t-s7", created=ms(2026, 11, 7)),
+        ]).close)
+
+    def run_main(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(argv)
+        return code, out.getvalue(), err.getvalue()
+
+    def bare(self, extra=()):
+        return self.run_main(["--db", self.db, "--src", self.src,
+                              "--unsloth-db", self.no_udb] + list(extra))
+
+    def test_bare_shows_both_panels_model_first(self):
+        code, out, _ = self.bare()
+        self.assertEqual(code, 0)
+        self.assertIn("usage by model \u00b7 top 5 by share", out)
+        self.assertIn("sessions \u00b7 5 most recent", out)
+        self.assertLess(out.index("usage by model"), out.index("sessions \u00b7"))
+
+    def test_bare_hero_has_no_section_name(self):
+        code, out, _ = self.bare()
+        first = _ANSI_RE.sub("", out.splitlines()[0])
+        self.assertTrue(first.startswith("\u256d tokenstat "))
+        self.assertNotIn("\u00b7", first)
+
+    def test_sessions_capped_at_five_newest_first(self):
+        code, out, _ = self.bare()
+        for gone in ("t-s1", "t-s2"):
+            self.assertNotIn(gone, out)
+        for kept in ("t-s3", "t-s4", "t-s5", "t-s6", "t-s7"):
+            self.assertIn(kept, out)
+        self.assertLess(out.index("t-s7"), out.index("t-s3"))
+
+    def test_model_panel_top_five_by_share(self):
+        code, out, _ = self.bare()
+        self.assertIn("SHARE", out)
+        # 3 models only exist here: all show, unsloth-studio dominates.
+        self.assertIn(f"unsloth-studio/{UNSLOTH_MODEL_ID}", out)
+        self.assertIn("prov3/m3", out)
+        self.assertIn("lemonade/gpt-oss-120b", out)
+
+    def test_model_panel_truncates_to_five(self):
+        six = os.path.join(self.tmp.name, "six.db")
+        rows = [src_row(sid=f"m{i}", title=f"t-m{i}",
+                        model='{"id":"mod%d","providerID":"p"}' % i,
+                        tin=1000 * (i + 2), tcr=0,
+                        created=ms(2026, 11, i + 1)) for i in range(6)]
+        self.addCleanup(make_file_db(six, rows).close)
+        code, out, _ = self.run_main(
+            ["--db", os.path.join(self.tmp.name, "u4.db"),
+             "--src", six, "--unsloth-db", self.no_udb])
+        self.assertEqual(code, 0)
+        # mod0 has the smallest total (2000+200=2200 vs larger tin): dropped.
+        self.assertNotIn("p/mod0", out)
+        for i in range(1, 6):
+            self.assertIn(f"p/mod{i}", out)
+
+    def test_bare_json_unchanged_all_sessions(self):
+        code, out, _ = self.bare(["--json"])
+        rows = json.loads(out)
+        self.assertEqual(len(rows), 7)
+        self.assertNotIn("SHARE", out)
+
+    def test_flagged_views_keep_full_tables(self):
+        code, out, _ = self.run_main(
+            ["--db", self.db, "--src", self.src,
+             "--unsloth-db", self.no_udb, "--since", "2026-11-01"])
+        self.assertEqual(code, 0)
+        self.assertNotIn("5 most recent", out)
+        self.assertIn("t-s1", out)  # full (unfiltered-by-cap) table
+
+    def test_cost_and_cache_overlays_on_both_panels(self):
+        code, out, _ = self.bare(["--cost", "--cache"])
+        self.assertEqual(code, 0)
+        plain = _ANSI_RE.sub("", out)
+        self.assertGreaterEqual(plain.count("CACHE"), 2)
+        self.assertGreaterEqual(plain.count("COST"), 2)
+
+    def test_fewer_than_five_shows_all(self):
+        small = os.path.join(self.tmp.name, "small.db")
+        self.addCleanup(make_file_db(small, [
+            src_row(sid="only", title="t-only")]).close)
+        code, out, _ = self.run_main(
+            ["--db", os.path.join(self.tmp.name, "u2.db"),
+             "--src", small, "--unsloth-db", self.no_udb])
+        self.assertEqual(code, 0)
+        self.assertIn("t-only", out)
+
+    def test_empty_store_plain_no_match(self):
+        empty = os.path.join(self.tmp.name, "empty-src.db")
+        self.addCleanup(make_file_db(empty, []).close)
+        code, out, _ = self.run_main(
+            ["--db", os.path.join(self.tmp.name, "u3.db"),
+             "--src", empty, "--unsloth-db", self.no_udb])
+        self.assertEqual(code, 0)
+        self.assertEqual(out.strip(), "no sessions match")
 
 
 if __name__ == "__main__":

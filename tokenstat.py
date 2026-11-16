@@ -850,6 +850,19 @@ def report_header(title, rows, theme=SUNSET):
     return panel(title, lines, theme)
 
 
+def _table_panel(title, rows, columns, share_view, color):
+    """Panel of the rendered table; share views get padded (and colored)
+    bars first; the header row dims to the label role only in color."""
+    if share_view:
+        rows = paint_bars(rows, color=color)
+    table = render_table(paint_cells(rows) if color else rows, columns)
+    lines = table.splitlines()
+    if color:
+        r, g, b = SUNSET["label"]
+        lines[0] = f"\x1b[38;2;{r};{g};{b}m{lines[0]}\x1b[0m"
+    return panel(title, lines)
+
+
 def render_table(rows, columns=None):
     """Aligned report. `columns` is a list of (header, key, kind)."""
     if columns is None:
@@ -1075,6 +1088,43 @@ def main(argv):
                 verbose=False)
         _ingest(args.unsloth_db, lambda src: import_unsloth_runs(src, dest),
                 verbose=False)
+
+        # Compact default dashboard (design 2026-11-15): a truly bare run —
+        # no command, no view/filter flags (--cost/--cache are overlays, not
+        # views) — renders hero + top-5 models + 5 most recent sessions.
+        # --json keeps the full flat array (display-only limits).
+        compact_dash = (args.command is None and args.model is None
+                        and not args.daily and not args.total
+                        and not args.from_unsloth and not args.from_runs
+                        and args.since is None and args.until is None
+                        and args.min_in is None and args.min_out is None)
+        if compact_dash and not args.as_json:
+            all_rows = query_sessions(dest)
+            if not all_rows:
+                print("no sessions match")
+                return 0
+            model_rows = add_shares(total_totals(dest, by_model=True))
+            model_rows.sort(key=lambda r: -r["share"])  # stable: ties keep
+            # SQL's alphabetical-by-model order (mirrors the share view).
+            sess_rows = list(reversed(all_rows))[:5]
+            model_rows = model_rows[:5]
+            color = _color_enabled(sys.stdout, os.environ)
+            m_cols, s_cols = SHARE_COLUMNS, SESSION_COLUMNS
+            if args.cost:
+                model_rows = annotate_cost(model_rows, args.cost_tier)
+                sess_rows = annotate_cost(sess_rows, args.cost_tier)
+                m_cols, s_cols = m_cols + [COST_COLUMN], s_cols + [COST_COLUMN]
+            if args.cache:
+                model_rows = annotate_cache(model_rows)
+                sess_rows = annotate_cache(sess_rows)
+                m_cols, s_cols = with_cache(m_cols), with_cache(s_cols)
+            lines = report_header("", all_rows)
+            lines += _table_panel("usage by model \u00b7 top 5 by share",
+                                  model_rows, m_cols, True, color)
+            lines += _table_panel("sessions \u00b7 5 most recent",
+                                  sess_rows, s_cols, False, color)
+            print("\n".join(lines))
+            return 0
 
         model_any = args.model is MODEL_ANY
         # Bare --model is a shortcut for `--total --model`: totals per model.

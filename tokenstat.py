@@ -759,6 +759,21 @@ def compact(n):
     return str(n)
 
 
+def block_bar(total, tin, scale_total, width, theme=SUNSET):
+    """True-color background-block bar: exactly `width` visible cells, the
+    IN share first then the OUT share, over the track fill. One background
+    sequence per cell, so the IN/OUT split lands on exact cell boundaries."""
+    n = round(width * total / scale_total) if scale_total else 0
+    n = min(max(n, 1), width) if total else 0   # never all-track, never long
+    n_in = round(n * tin / total) if total else 0
+    cells = []
+    for count, role in ((n_in, "tin"), (n - n_in, "tout"), (width - n, "track")):
+        if count:
+            r, g, b = theme[role]
+            cells.append(f"\x1b[48;2;{r};{g};{b}m " * count)
+    return "".join(cells) + "\x1b[0m"
+
+
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")  # SGR color sequences (painted bars)
 
 

@@ -11,12 +11,12 @@ import subprocess
 import sys
 import unittest
 
-from tokenstat import (SUNSET, add_shares, compact, daily_events, daily_runs,
-                       daily_totals, ensure_schema, import_unsloth,
-                       import_unsloth_runs, main, paint_bars, parse_date,
-                       parse_model, query_events, query_runs, query_sessions,
-                       reconcile, record, render_table, total_events,
-                       total_runs, total_totals)
+from tokenstat import (_visible, SUNSET, add_shares, block_bar, compact,
+                       daily_events, daily_runs, daily_totals, ensure_schema,
+                       import_unsloth, import_unsloth_runs, main, paint_bars,
+                       parse_date, parse_model, query_events, query_runs,
+                       query_sessions, reconcile, record, render_table,
+                       total_events, total_runs, total_totals)
 
 LEMONADE_JSON = '{"id":"gpt-oss-120b","providerID":"lemonade"}'
 UNSLOTH_MODEL_ID = "unsloth/Qwen3.8-Flash-Next-GGUF"
@@ -1678,6 +1678,33 @@ class PaintBarsTests(unittest.TestCase):
                  "tokens_input": 0, "tokens_output": 0}]
         out = paint_bars(rows, color=True)
         self.assertNotIn("\x1b", out[0]["bar"])
+
+
+class BlockBarTests(unittest.TestCase):
+    """block_bar: truecolor background-block bar, exactly `width` cells wide."""
+
+    def test_full_width_row_splits_at_in_ratio(self):
+        bar = block_bar(100, 60, 100, 20)              # 60% in
+        self.assertEqual(_visible(bar), 20)            # exactly width cells
+        bg = re.findall(r"\x1b\[48;2;\d+;\d+;\d+m", bar)
+        tin = f"\x1b[48;2;{SUNSET['tin'][0]};{SUNSET['tin'][1]};{SUNSET['tin'][2]}m"
+        runs = [c for c in bg if c == tin]
+        self.assertEqual(len(runs), 12)                # round(20 * 0.6)
+
+    def test_zero_total_is_all_track(self):
+        bar = block_bar(0, 0, 100, 10)
+        self.assertEqual(_visible(bar), 10)
+        track = f"\x1b[48;2;{SUNSET['track'][0]};{SUNSET['track'][1]};{SUNSET['track'][2]}m"
+        self.assertEqual(bar, (track + " ") * 10 + "\x1b[0m")
+
+    def test_tiny_nonzero_row_gets_at_least_one_cell(self):
+        bar = block_bar(1, 1, 1_000_000, 20)
+        self.assertEqual(_visible(bar), 20)
+        tin = f"\x1b[48;2;{SUNSET['tin'][0]};{SUNSET['tin'][1]};{SUNSET['tin'][2]}m"
+        self.assertIn(tin + " ", bar)                    # never all-track
+
+    def test_scale_zero_safety(self):
+        self.assertEqual(_visible(block_bar(5, 3, 0, 8)), 8)
 
 
 class ColorEnabledTests(unittest.TestCase):

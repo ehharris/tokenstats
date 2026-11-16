@@ -11,13 +11,13 @@ import subprocess
 import sys
 import unittest
 
-from tokenstat import (_ANSI_RE, _visible, SUNSET, add_shares, block_bar,
-                       compact, daily_events, daily_runs, daily_totals,
-                       ensure_schema, import_unsloth, import_unsloth_runs,
-                       main, paint_bars, panel, parse_date, parse_model,
-                       query_events, query_runs, query_sessions, reconcile,
-                       record, render_table, total_events, total_runs,
-                       total_totals)
+from tokenstat import (_ANSI_RE, _visible, SUNSET, SESSION_COLUMNS, add_shares,
+                       block_bar, compact, daily_events, daily_runs,
+                       daily_totals, ensure_schema, import_unsloth,
+                       import_unsloth_runs, main, paint_bars, paint_cells,
+                       panel, parse_date, parse_model, query_events,
+                       query_runs, query_sessions, reconcile, record,
+                       render_table, total_events, total_runs, total_totals)
 
 LEMONADE_JSON = '{"id":"gpt-oss-120b","providerID":"lemonade"}'
 UNSLOTH_MODEL_ID = "unsloth/Qwen3.8-Flash-Next-GGUF"
@@ -1679,6 +1679,35 @@ class PaintBarsTests(unittest.TestCase):
                  "tokens_input": 0, "tokens_output": 0}]
         out = paint_bars(rows, color=True)
         self.assertNotIn("\x1b", out[0]["bar"])
+
+
+class PaintCellsTests(unittest.TestCase):
+    """paint_cells: per-class truecolor on the rendered token/cost cells."""
+
+    def test_class_colors_applied(self):
+        rows = paint_cells([{"tokens_input": "10", "tokens_output": "5",
+                             "total": "15"}])
+        self.assertIn("38;2;96;165;250", rows[0]["tokens_input"])   # tin
+        self.assertIn("38;2;251;146;60", rows[0]["tokens_output"])  # tout
+        self.assertIn("38;2;245;235;229", rows[0]["total"])         # num
+
+    def test_untouched_keys_and_missing_keys(self):
+        rows = paint_cells([{"model": "m", "date": "d"}])
+        self.assertEqual(rows[0], {"model": "m", "date": "d"})
+
+    def test_original_rows_not_mutated(self):
+        src = [{"total": "15"}]
+        paint_cells(src)
+        self.assertEqual(src[0]["total"], "15")
+
+    def test_table_alignment_survives_coloring(self):
+        rows = [{"date": "2026-11-15", "model": "m", "tokens_input": 100,
+                 "tokens_output": 50, "total": 150, "tok_s": None,
+                 "title": ""}]
+        table = render_table(paint_cells(rows), SESSION_COLUMNS)
+        plain = render_table(rows, SESSION_COLUMNS)
+        self.assertEqual([_visible(l) for l in table.splitlines()],
+                         [_visible(l) for l in plain.splitlines()])
 
 
 class BlockBarTests(unittest.TestCase):

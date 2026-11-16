@@ -587,7 +587,7 @@ RUNS_COLUMNS = [
     ("TOTAL", "total", "int"), ("TOK/S", "tok_s", "rate"),
 ]
 SHARE_COLUMNS = TOTAL_COLUMNS + [
-    ("SHARE", "share_str", "text"), ("BAR", "bar", "text"),
+    ("SHARE", "share_str", "text"), ("", "bar", "text"),  # bar unlabeled
 ]
 COST_COLUMN = ("COST", "cost_est", "cost")  # opt-in --cost estimate overlay
 CACHE_COLUMN = ("CACHE", "cache", "int")  # opt-in --cache display overlay
@@ -846,7 +846,10 @@ def report_header(title, rows, theme=SUNSET, cost_est=None, unit="rows"):
     # measures visible width, so the escape bytes never rag the frame.
     ri, gi, bi = theme["tin"]
     ro, go, bo = theme["tout"]
-    hero = (f"{compact(sum_of('total'))} tokens · {len(rows)} {unit}"
+    # "1 sessions" would read wrong: singularize a count of one.
+    n_rows = len(rows)
+    unit1 = unit[:-1] if n_rows == 1 and unit.endswith("s") else unit
+    hero = (f"{compact(sum_of('total'))} tokens · {n_rows} {unit1}"
             f" · \x1b[38;2;{ri};{gi};{bi}m{compact(sum_of('tokens_input'))}"
             f"\x1b[0m in"
             f" · \x1b[38;2;{ro};{go};{bo}m{compact(sum_of('tokens_output'))}"
@@ -1223,17 +1226,24 @@ def main(argv):
         # (a daily share view cannot occur: --total rejects --daily).
         if args.command == "reconcile":
             title = "reconcile"
+            hero_unit = "rows"  # reconcile gets no hero; value unused
         elif share_view:
+            # Rows here are per-model totals, or the single grand total.
             title = ("usage by model · sorted by share"
                      if args.model is not None else "totals")
+            hero_unit = "models" if args.model is not None else "totals"
         elif args.daily:
             title = "daily"
+            hero_unit = "days"
         elif args.from_runs:
             title = "studio runs"
+            hero_unit = "runs"
         elif args.from_unsloth:
             title = "unsloth events"
+            hero_unit = "requests"
         else:
             title = "sessions"
+            hero_unit = "sessions"
         if args.cost and columns is not RECON_COLUMNS:
             rows = annotate_cost(rows, args.cost_tier)
             columns = columns + [COST_COLUMN]
@@ -1269,7 +1279,7 @@ def main(argv):
                 # header would imply zeros the view never computed — the
                 # compare view gets the table panel only.
                 head = ([] if args.command == "reconcile"
-                        else report_header(title, rows))
+                        else report_header(title, rows, unit=hero_unit))
                 print("\n".join(head + panel(title, lines)))
             else:
                 print(table, end="")

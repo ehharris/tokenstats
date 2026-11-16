@@ -1509,7 +1509,8 @@ class CliShareTests(unittest.TestCase):
         self.assertEqual(code, 0)
         lines = out.splitlines()
         self.assertIn("SHARE", lines[0])
-        self.assertIn("BAR", lines[0])
+        # BAR header label dropped: the bars speak for themselves.
+        self.assertNotIn("BAR", lines[0])
         unsloth_line = next(ln for ln in lines if "unsloth-studio" in ln)
         lemonade_line = next(ln for ln in lines if "lemonade" in ln)
         self.assertIn("66.7%", unsloth_line)
@@ -2055,6 +2056,12 @@ class PanelEmptyTitleTests(unittest.TestCase):
         self.assertIn("2 sessions", _ANSI_RE.sub(
             "", report_header("x", rows, unit="sessions")[1]))
 
+    def test_hero_unit_singularizes_for_one_row(self):
+        rows = [{"total": 100, "tokens_input": 60, "tokens_output": 40,
+                 "date": "2026-11-15"}]
+        self.assertIn("1 session", _ANSI_RE.sub(
+            "", report_header("x", rows, unit="sessions")[1]))
+
     def test_hero_appends_cost_only_when_given(self):
         rows = [{"total": 300, "tokens_input": 200, "tokens_output": 100,
                  "date": "2026-11-15"}]
@@ -2115,6 +2122,12 @@ class DefaultDashboardTests(unittest.TestCase):
         first = _ANSI_RE.sub("", out.splitlines()[0])
         self.assertTrue(first.startswith("\u256d tokenstat "))
         self.assertNotIn("\u00b7", first)
+
+    def test_dashboard_shares_have_no_bar_header_label(self):
+        _, plain, _ = self.bare()
+        plain = _ANSI_RE.sub("", plain)
+        self.assertIn("SHARE", plain)      # share keeps its label...
+        self.assertNotIn("BAR", plain)     # ...the bars do not
 
     def test_bare_hero_counts_sessions_not_rows(self):
         _, plain, _ = self.bare()
@@ -2208,6 +2221,58 @@ class DefaultDashboardTests(unittest.TestCase):
              "--src", empty, "--unsloth-db", self.no_udb])
         self.assertEqual(code, 0)
         self.assertEqual(out.strip(), "no sessions match")
+
+
+class HeroUnitTests(unittest.TestCase):
+    """Flagged-view heroes name their rows: days/sessions/models/
+    requests/runs (heroes only print on a tty, so _color_enabled is faked)."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = os.path.join(self.tmp.name, "usage.db")
+        self.src = os.path.join(self.tmp.name, "src.db")
+        self.addCleanup(make_file_db(self.src, [
+            src_row(sid="s1", created=ms(2026, 11, 1)),
+            src_row(sid="s2", model=LEMONADE_JSON, created=ms(2026, 11, 2)),
+        ]).close)
+        self.udb = os.path.join(self.tmp.name, "studio.db")
+        runs = [(f"r{i}", '{"model":"m"}', 500, ms(2026, 11, 1) + i * 1000,
+                 ms(2026, 11, 1) + i * 1000 + 500, "completed")
+                for i in (0, 1)]
+        self.addCleanup(make_file_runs_db(
+            self.udb, [unsloth_event("e1"), unsloth_event("e2"),
+                       unsloth_event("e3")], runs).close)
+
+    def run_hero(self, *flags):
+        out, err = io.StringIO(), io.StringIO()
+        with unittest.mock.patch("tokenstat._color_enabled",
+                                 lambda *a: True), \
+                contextlib.redirect_stdout(out), \
+                contextlib.redirect_stderr(err):
+            code = main(["--db", self.db, "--src", self.src,
+                         "--unsloth-db", self.udb] + list(flags))
+        self.assertEqual(code, 0)
+        return _ANSI_RE.sub("", out.getvalue())
+
+    def test_flagged_session_view_counts_sessions(self):
+        self.assertIn("2 sessions", self.run_hero("--since", "2026-11-01"))
+
+    def test_daily_counts_days(self):
+        self.assertIn("2 days", self.run_hero("--daily"))
+
+    def test_grand_total_is_one_total(self):
+        self.assertIn("1 total", self.run_hero("--total"))
+
+    def test_per_model_totals_count_models(self):
+        self.assertIn("2 models", self.run_hero("--total", "--model"))
+
+    def test_unsloth_events_count_requests(self):
+        self.assertIn("3 requests", self.run_hero("--from-unsloth"))
+
+    def test_runs_count_runs(self):
+        self.assertIn("2 runs", self.run_hero("--from-runs"))
 
 
 if __name__ == "__main__":

@@ -97,7 +97,15 @@ example `tokenstat · sessions` or `tokenstat · daily`). The table header row
 is dimmed, and the token columns are colored by class: `IN` blue, `OUT`
 orange, `CACHE` amber, `TOTAL` bold. `reconcile` gets the panel but no hero
 header — its rows carry no summed token classes. All of this is decoration
-only: piped output, `NO_COLOR`, and `--json` stay plain.
+only: `NO_COLOR` strips the colors and `--json` stays plain. Flagged views
+print a plain table when their output is piped; the bare dashboard keeps its
+panel framing even down a pipe (without color).
+
+A bare run renders a compact **dashboard** instead of one table: a hero
+panel with grand totals over all sessions, a `usage by model · top 5 by
+share` panel (shares computed over ALL models before truncating to five),
+and a `sessions · 5 most recent` panel (newest first). Any view/filter flag
+restores the ordinary full table; `--json` always emits every session row.
 
 Every report table except `reconcile` also has a `TOK/S` column. In
 session, daily, and total views it is a **wall-clock average** — tokens

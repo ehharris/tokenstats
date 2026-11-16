@@ -2117,6 +2117,10 @@ class DefaultDashboardTests(unittest.TestCase):
         self.assertNotIn("p/mod0", out)
         for i in range(1, 6):
             self.assertIn(f"p/mod{i}", out)
+        # shares are over ALL six models (grand total 28,200): mod5 renders
+        # 7200/28200 = 25.5%. Computing shares AFTER truncating to five would
+        # render 27.7% — this pins the spec's share-over-all decision.
+        self.assertIn("25.5%", out)
 
     def test_bare_json_unchanged_all_sessions(self):
         code, out, _ = self.bare(["--json"])
@@ -2138,6 +2142,9 @@ class DefaultDashboardTests(unittest.TestCase):
         plain = _ANSI_RE.sub("", out)
         self.assertGreaterEqual(plain.count("CACHE"), 2)
         self.assertGreaterEqual(plain.count("COST"), 2)
+        self.assertRegex(plain, r"OUT\s+CACHE\s+TOTAL")
+        self.assertEqual(sum(1 for ln in plain.splitlines()
+                             if ln.rstrip(" │").endswith("COST")), 2)
 
     def test_fewer_than_five_shows_all(self):
         small = os.path.join(self.tmp.name, "small.db")

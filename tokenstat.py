@@ -828,12 +828,13 @@ _PAINT_CELLS = {
     "cost_est": ("cost", "num", False),
     "total": ("int", "ttotal", True),
     "share_str": ("text", "tshare", False),
+    "tok_s": ("rate", "accent", False),   # same hue as the hero's TOK/S stat
 }
 
 
 def paint_cells(rows, theme=NEON):
-    """Copy of `rows` whose token/cost cells are wrapped in their class color.
-    Values arrive raw (ints) or already rendered (strings); numbers are
+    """Copy of `rows` whose token/cost/rate cells are wrapped in their class
+    color. Values arrive raw (ints) or already rendered (strings); numbers are
     formatted exactly as `render_table.fmt` would, so painting never changes
     a cell's visible width. The input rows are left untouched."""
     def render(value, kind):
@@ -841,6 +842,8 @@ def paint_cells(rows, theme=NEON):
             return value                     # already a rendered cell
         if kind == "int":
             return f"{value:,}"
+        if kind == "rate":
+            return f"{value:.1f}"
         return f"${value:.4f}"               # cost_est
 
     out = []
@@ -930,13 +933,15 @@ def report_header(title, rows, theme=NEON, cost_est=None, unit="rows",
     # IN/OUT tinted like the table columns; the grand total glows at the
     # gradient midpoint (bold); the row-count is a derived stat like SHARE,
     # so it wears the same teal; TOK/S takes the accent hue, the token-column
-    # hues being claimed by the tables. panel() measures visible width, so
-    # the escape bytes never rag the frame.
+    # hues being claimed by the tables. Only the NUMBERS are painted — every
+    # unit word ("tokens", "in", "out", " tok/s", the row-count unit) stays in
+    # the terminal's own color. panel() measures visible width, so the escape
+    # bytes never rag the frame.
     hero = (paint(compact(sum_of('total')), theme["ttotal"], bold=True)
-            + " tokens · " + paint(f"{n_rows} {unit1}", theme["tshare"])
+            + " tokens · " + paint(str(n_rows), theme["tshare"]) + " " + unit1
             + " · " + paint(compact(sum_of('tokens_input')), theme["tin"]) + " in"
             + " · " + paint(compact(sum_of('tokens_output')), theme["tout"]) + " out"
-            + (" · " + paint(f"{rate:.1f} tok/s", theme["accent"])
+            + (" · " + paint(f"{rate:.1f}", theme["accent"]) + " tok/s"
                if rate is not None else "")
             + (" · " + paint(f"~${cost_est:,.2f}", theme["num"])
                if cost_est is not None else ""))

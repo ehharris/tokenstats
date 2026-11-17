@@ -2074,6 +2074,17 @@ class PanelEmptyTitleTests(unittest.TestCase):
         r, g, b = NEON["tout"]
         self.assertIn(f"\x1b[38;2;{r};{g};{b}m100\x1b[0m out", hero)
 
+    def test_hero_grand_total_painted_ttotal(self):
+        rows = [{"total": 7300000, "tokens_input": 5900000,
+                 "tokens_output": 1400000}]
+        hero = "\n".join(report_header("all models", rows))
+        self.assertIn("1;38;2;{};{};{}m7.30M".format(*NEON["ttotal"]), hero)
+
+    def test_hero_row_count_painted_tshare(self):
+        rows = [{"total": 1, "tokens_input": 1, "tokens_output": 0}]
+        hero = "\n".join(report_header("all models", rows, unit="models"))
+        self.assertIn("38;2;{};{};{}m1 model".format(*NEON["tshare"]), hero)
+
     def test_hero_unit_label_is_configurable(self):
         rows = [{"total": 300, "tokens_input": 200, "tokens_output": 100,
                  "date": "2026-11-15"},

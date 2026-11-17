@@ -853,7 +853,12 @@ def report_header(title, rows, theme=NEON, cost_est=None, unit="rows"):
     # "1 sessions" would read wrong: singularize a count of one.
     n_rows = len(rows)
     unit1 = unit[:-1] if n_rows == 1 and unit.endswith("s") else unit
-    hero = (f"{compact(sum_of('total'))} tokens · {n_rows} {unit1}"
+    # the grand total glows at the gradient midpoint (bold); the row-count
+    # is a derived stat like SHARE, so it wears the same teal
+    vt, gt, bt = theme["ttotal"]
+    vs, gs, bs = theme["tshare"]
+    hero = (f"\x1b[1;38;2;{vt};{gt};{bt}m{compact(sum_of('total'))}\x1b[0m"
+            f" tokens · \x1b[38;2;{vs};{gs};{bs}m{n_rows} {unit1}\x1b[0m"
             f" · \x1b[38;2;{ri};{gi};{bi}m{compact(sum_of('tokens_input'))}"
             f"\x1b[0m in"
             f" · \x1b[38;2;{ro};{go};{bo}m{compact(sum_of('tokens_output'))}"

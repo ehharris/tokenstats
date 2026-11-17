@@ -1930,6 +1930,15 @@ class CliNeonTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertNotIn("\x1b", out)
 
+    def test_piped_bare_dashboard_has_no_escapes(self):
+        # the dashboard path renders hero + panels unconditionally, so the
+        # panel/header painters must honor the color gate too: piped stays
+        # byte-plain (spec non-goal: piped/NO_COLOR output is plain text)
+        code, out, _ = self.run_main(
+            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb])
+        self.assertEqual(code, 0)
+        self.assertNotIn("\x1b", out)
+
     def test_cache_overlay_column_is_lime_under_color(self):
         _, out, _ = self.colored_main(
             ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,

@@ -808,14 +808,17 @@ def _visible(cell):
     return len(_ANSI_RE.sub("", cell))
 
 
-def panel(title, lines, theme=NEON):
+def panel(title, lines, theme=NEON, color=True):
     """Rounded frame around `lines`, headed by a ` tokenstat · {title} ` strip;
     an empty title renders the plain ` tokenstat ` strip (no separator).
+    `color=False` emits the same frame characters with no escape bytes.
     Every returned line shares one visible width: the widest content line or
     the title strip, whichever is longer, plus the two border cells."""
     def paint(text, role, bold=False):
         if not text:
             return ""
+        if not color:
+            return text
         r, g, b = theme[role]
         return f"\x1b[{'1;' if bold else ''}38;2;{r};{g};{b}m{text}\x1b[0m"
 
@@ -836,43 +839,44 @@ def panel(title, lines, theme=NEON):
     return [top] + body + [bottom]
 
 
-def report_header(title, rows, theme=NEON, cost_est=None, unit="rows"):
+def report_header(title, rows, theme=NEON, cost_est=None, unit="rows",
+                  color=True):
     """Hero panel for a report: one grand-total line over a dim date span.
     Safe for rows that carry no tokens_input/tokens_output keys and for rows
     whose date is missing or None (the span is omitted when none is dated).
     `cost_est` (float USD, precomputed by the caller) appends a `~$X.XX`
     reference-estimate tail; omitted means no cost shown. `unit` names what
-    one row means in this view (the dashboard passes "sessions")."""
+    one row means in this view (the dashboard passes "sessions").
+    `color=False` renders the same text with no escape bytes."""
     def sum_of(key):
         return sum(r.get(key) or 0 for r in rows)
 
-    # IN/OUT tinted like the table columns (tin blue / tout orange); panel()
-    # measures visible width, so the escape bytes never rag the frame.
-    ri, gi, bi = theme["tin"]
-    ro, go, bo = theme["tout"]
+    def paint(text, rgb, bold=False):
+        if not color:
+            return text
+        r, g, b = rgb
+        return (f"\x1b[{'1;' if bold else ''}38;2;{r};{g};{b}m"
+                f"{text}\x1b[0m")
+
     # "1 sessions" would read wrong: singularize a count of one.
     n_rows = len(rows)
     unit1 = unit[:-1] if n_rows == 1 and unit.endswith("s") else unit
-    # the grand total glows at the gradient midpoint (bold); the row-count
-    # is a derived stat like SHARE, so it wears the same teal
-    vt, gt, bt = theme["ttotal"]
-    vs, gs, bs = theme["tshare"]
-    hero = (f"\x1b[1;38;2;{vt};{gt};{bt}m{compact(sum_of('total'))}\x1b[0m"
-            f" tokens · \x1b[38;2;{vs};{gs};{bs}m{n_rows} {unit1}\x1b[0m"
-            f" · \x1b[38;2;{ri};{gi};{bi}m{compact(sum_of('tokens_input'))}"
-            f"\x1b[0m in"
-            f" · \x1b[38;2;{ro};{go};{bo}m{compact(sum_of('tokens_output'))}"
-            f"\x1b[0m out"
-            + (f" · \x1b[38;2;{theme['num'][0]};{theme['num'][1]};"
-               f"{theme['num'][2]}m~${cost_est:,.2f}\x1b[0m"
+    # IN/OUT tinted like the table columns; the grand total glows at the
+    # gradient midpoint (bold); the row-count is a derived stat like SHARE,
+    # so it wears the same teal. panel() measures visible width, so the
+    # escape bytes never rag the frame.
+    hero = (paint(compact(sum_of('total')), theme["ttotal"], bold=True)
+            + " tokens · " + paint(f"{n_rows} {unit1}", theme["tshare"])
+            + " · " + paint(compact(sum_of('tokens_input')), theme["tin"]) + " in"
+            + " · " + paint(compact(sum_of('tokens_output')), theme["tout"]) + " out"
+            + (" · " + paint(f"~${cost_est:,.2f}", theme["num"])
                if cost_est is not None else ""))
     lines = [hero]
     dates = sorted(d for d in (r.get("date") for r in rows) if d)
     if dates:
         span = dates[0] if dates[0] == dates[-1] else f"{dates[0]} → {dates[-1]}"
-        r, g, b = theme["label"]
-        lines.append(f"\x1b[38;2;{r};{g};{b}m{span}\x1b[0m")
-    return panel(title, lines, theme)
+        lines.append(paint(span, theme["label"]))
+    return panel(title, lines, theme, color=color)
 
 
 def _table_panel(title, rows, columns, share_view, color):
@@ -885,7 +889,7 @@ def _table_panel(title, rows, columns, share_view, color):
     if color:
         r, g, b = NEON["label"]
         lines[0] = f"\x1b[38;2;{r};{g};{b}m{lines[0]}\x1b[0m"
-    return panel(title, lines)
+    return panel(title, lines, color=color)
 
 
 def render_table(rows, columns=None):
@@ -1150,7 +1154,7 @@ def main(argv):
                 sess_rows = annotate_cache(sess_rows)
                 m_cols, s_cols = with_cache(m_cols), with_cache(s_cols)
             lines = report_header("", all_rows, cost_est=hero_cost,
-                                  unit="sessions")
+                                  unit="sessions", color=color)
             lines += _table_panel("usage by model \u00b7 top 5 by share",
                                   model_rows, m_cols, True, color)
             lines += _table_panel("sessions \u00b7 5 most recent",

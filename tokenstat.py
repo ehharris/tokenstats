@@ -69,6 +69,15 @@ def ensure_schema(dest: sqlite3.Connection) -> None:
                completed_at INTEGER,
                status TEXT NOT NULL DEFAULT '')"""
     )
+    dest.execute(
+        """CREATE TABLE IF NOT EXISTS opencode_steps (
+               message_id TEXT PRIMARY KEY,
+               session_id TEXT NOT NULL,
+               turn INTEGER NOT NULL DEFAULT 0,
+               step_ms INTEGER,
+               tokens_generated INTEGER NOT NULL DEFAULT 0,
+               time_created INTEGER NOT NULL)"""
+    )
     # Hot filter columns: date-windowed queries scan these first.
     dest.execute(
         """CREATE INDEX IF NOT EXISTS idx_unsloth_events_created
@@ -77,6 +86,10 @@ def ensure_schema(dest: sqlite3.Connection) -> None:
     dest.execute(
         """CREATE INDEX IF NOT EXISTS idx_usage_time_created
                ON usage(time_created)"""
+    )
+    dest.execute(
+        """CREATE INDEX IF NOT EXISTS idx_opencode_steps_session_turn
+               ON opencode_steps(session_id, turn)"""
     )
 
 
@@ -89,6 +102,27 @@ def parse_model(raw):
     if not isinstance(data, dict):
         return ("", "")
     return (str(data.get("providerID", "")), str(data.get("id", "")))
+
+
+def _turn_index(types, end, legacy):
+    """Index of the input message opening the turn ending at `end` (exclusive).
+
+    Port of OpenCode's inputIndex: walk back from `end`, remembering the last
+    user/synthetic message, and stop at the first `idle` — so a mid-turn
+    `synthetic` never splits a turn. legacy (a session with no `idle` rows at
+    all) returns the nearest input instead of walking past one. -1 when the
+    session has no input message before `end`."""
+    found = -1
+    for i in range(end - 1, -1, -1):
+        kind = types[i]
+        if kind == "idle":
+            return found
+        if kind not in ("user", "synthetic"):
+            continue
+        if legacy:
+            return i
+        found = i
+    return found
 
 
 def record(src: sqlite3.Connection, dest: sqlite3.Connection, now_ms: int) -> dict:

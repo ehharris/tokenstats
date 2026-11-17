@@ -95,12 +95,12 @@ split in compact form (`7.77M`, `12.3k`), and the date range — and the table
 itself sits in a rounded border panel titled `tokenstat · <view>` (for
 example `tokenstat · sessions` or `tokenstat · daily`). The table header row
 is dimmed, and the token columns are colored by class: `IN` blue, `OUT`
-orange, `CACHE` amber, `TOTAL` bold, `TOK/S` magenta (the hero's TOK/S stat
-wears that same hue). `reconcile` gets the panel but no hero
-header — its rows carry no summed token classes. All of this is decoration
-only: `NO_COLOR` strips the colors and `--json` stays plain. Flagged views
-print a plain table when their output is piped; the bare dashboard keeps its
-panel framing even down a pipe (without color).
+orange, `CACHE` amber, `TOTAL` bold, `TOK/S` magenta and `SESSIONS` teal (the
+hero's TOK/S and row-count stats wear those same hues). `reconcile` gets the
+panel but no hero header — its rows carry no summed token classes. All of this
+is decoration only: `NO_COLOR` strips the colors and `--json` stays plain.
+Flagged views print a plain table when their output is piped; the bare
+dashboard keeps its panel framing even down a pipe (without color).
 
 A bare run renders a compact **dashboard** instead of one table: a hero
 panel with grand totals over all sessions, a `usage by model · top 5 by

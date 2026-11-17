@@ -272,7 +272,7 @@ Signature: `import_opencode_steps(src, dest) -> dict`. Place it after `record`. 
 - Parse `data` with `json.loads`; a `TypeError`/`ValueError` bumps `skipped` and continues (mirror `parse_model`'s tolerance — a non-dict blob is an extraction failure, not a row error, so it stores `step_ms=None, tokens_generated=0`).
 - `step_ms = max(0, streamed - (firstToken if firstToken is not None else created))` when `streamed` is present, else `None`. `tokens_generated = (output or 0) + (reasoning or 0)`.
 - Upsert by `message_id` with the same `existing is None` / `merged = [max(e, v) ...]` / `changed` pattern as `import_unsloth_runs`. `step_ms` merges as `max(existing, new)` treating `None` as "no information": keep the stored value when the new one is `None`, and take the new value when the stored one is `None`. `turn` and `time_created` are written from the freshly computed value.
-- Commit once at the end; wrap each row in `try/except sqlite3.Error` bumping `skipped`.
+- Commit once at the end. Wrap each row's **entire** body — ordinal registration, blob parse, arithmetic, and the upsert — in `try/except (sqlite3.Error, TypeError, ValueError)` bumping `skipped`. A narrow `except sqlite3.Error` is not sufficient: a well-formed blob holding non-numeric `streamed`/`firstToken`/`output`/`reasoning` raises `TypeError` in the arithmetic, and per the spec's error-isolation constraint that row must bump `skipped` rather than abort the snapshot. A row that fails must also not consume a turn ordinal, so a skipped row cannot leave the stored turns starting at 1.
 
 - [ ] **Step 5: Call it from `record()`**
 

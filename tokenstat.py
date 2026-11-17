@@ -828,6 +828,7 @@ _PAINT_CELLS = {
     "cost_est": ("cost", "num", False),
     "total": ("int", "ttotal", True),
     "share_str": ("text", "tshare", False),
+    "sessions": ("int", "tshare", False),  # row count: the hero's other stat
     "tok_s": ("rate", "accent", False),   # same hue as the hero's TOK/S stat
 }
 

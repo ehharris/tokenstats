@@ -125,9 +125,9 @@ whole when no displayed row has a rate, so `--from-unsloth` per-event and
 `reconcile` heroes are unchanged. Only hero NUMBERS are painted: every unit
 word ("tokens", "in", "out", "tok/s", the row-count unit) stays in the
 terminal's own color, so the teal row-count and magenta rate read like the
-rest. The table TOK/S column wears that same accent hue (`tok_s` joined
-`_PAINT_CELLS` with a "rate" kind formatted exactly as `render_table` would,
-so column widths never shift). The event aggregates keep the
+rest. The table TOK/S and SESSIONS columns wear those same accent/teal hues
+(`tok_s` and `sessions` joined `_PAINT_CELLS`, the rate with a "rate" kind
+formatted exactly as `render_table` would, so column widths never shift). The event aggregates keep the
 created_at-span rate: per-event rows carry no duration to weight (documented
 in their docstrings). `_aggregate_rate` is now a per-row helper only —
 aggregate callers use `_weighted_mean_rate`. Spec:

@@ -1906,6 +1906,13 @@ class PaintCellsTests(unittest.TestCase):
         self.assertIn("38;2;{};{};{}m240.0".format(*NEON["accent"]),
                       str(rows[0]["tok_s"]))
 
+    def test_sessions_column_painted_tshare(self):
+        # Same teal the hero's row-count stat wears; the key carries runs in
+        # --from-runs and requests in --from-unsloth, and follows everywhere.
+        rows = paint_cells([{"sessions": 54, "total": 100}])
+        self.assertIn("38;2;{};{};{}m54".format(*NEON["tshare"]),
+                      str(rows[0]["sessions"]))
+
     def test_blank_tok_s_stays_blank(self):
         rows = paint_cells([{"total": 100, "tok_s": None}])
         self.assertIsNone(rows[0]["tok_s"])

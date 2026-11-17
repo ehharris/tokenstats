@@ -179,6 +179,115 @@ def record(src: sqlite3.Connection, dest: sqlite3.Connection, now_ms: int) -> di
         except sqlite3.Error:
             # One malformed source row must not abort (or roll back) the rest.
             counts["skipped"] = counts.get("skipped", 0) + 1
+    steps = import_opencode_steps(src, dest)
+    for key, value in steps.items():
+        counts[key] = counts.get(key, 0) + value
+    dest.commit()
+    return counts
+
+
+def import_opencode_steps(src: sqlite3.Connection,
+                          dest: sqlite3.Connection) -> dict:
+    """Snapshot OpenCode assistant steps into our opencode_steps table.
+
+    One row per session_message.id; step_ms and tokens_generated are monotonic
+    max, so re-recording can never double count and a pruned source can never
+    shrink history. A source without session_message imports as zero steps,
+    mirroring the chat_generation_runs no-op in import_unsloth_runs.
+
+    `step_ms` is a duration, not a running total: NULL means "no information"
+    (the step never streamed), so it is deliberately NOT folded into max() as
+    a zero — unlike the other numeric columns. Keep the stored value when the
+    new reading is NULL, take the new value when none was stored. The spec's
+    turn rule requires this: a never-streamed step contributes no duration.
+
+    Turn numbers are dense 0-based ORDINALS, not raw message indices. The
+    boundary walk (_turn_index) returns the index of the input message opening
+    the turn; distinct boundary indices are numbered in first-appearance order
+    so the first turn's steps get 0, the next turn's get 1, and so on. This
+    keeps _turn_index's raw-index contract intact (Task 1 pins it) while the
+    stored turn stays a small, stable label.
+    """
+    counts = {"inserted": 0, "updated": 0, "unchanged": 0}
+    has_table = src.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'"
+        " AND name='session_message'").fetchone()
+    if not has_table:
+        return counts
+    rows = src.execute(
+        "SELECT id, session_id, type, time_created, data FROM session_message"
+        " ORDER BY session_id, time_created").fetchall()
+    # ORDER BY keeps each session's messages contiguous and in time order.
+    sessions = {}
+    for row in rows:
+        sessions.setdefault(row[1], []).append(row)
+    for msgs in sessions.values():
+        types = [m[2] for m in msgs]
+        legacy = not any(kind == "idle" for kind in types)
+        turn_ordinals = {}
+        for i, (mid, sid, kind, created, data) in enumerate(msgs):
+            if kind != "assistant":
+                continue
+            try:
+                boundary = _turn_index(types, i + 1, legacy)
+                # Register the boundary even for a row whose blob is bad, so
+                # later turns in this session keep stable ordinals.
+                if boundary not in turn_ordinals:
+                    turn_ordinals[boundary] = len(turn_ordinals)
+                turn = turn_ordinals[boundary]
+                try:
+                    data_obj = json.loads(data)
+                except (TypeError, ValueError):
+                    counts["skipped"] = counts.get("skipped", 0) + 1
+                    continue
+                # Non-dict JSON is an extraction failure, not a row error
+                # (mirrors parse_model): the step still inserts, with no
+                # duration and no generated tokens.
+                if not isinstance(data_obj, dict):
+                    data_obj = {}
+                timing = data_obj.get("time")
+                tokens = data_obj.get("tokens")
+                timing = timing if isinstance(timing, dict) else {}
+                tokens = tokens if isinstance(tokens, dict) else {}
+                streamed = timing.get("streamed")
+                if streamed is None:
+                    step_ms = None
+                else:
+                    first = timing.get("firstToken")
+                    start = first if first is not None else created
+                    step_ms = max(0, streamed - start)
+                tokens_generated = ((tokens.get("output") or 0)
+                                    + (tokens.get("reasoning") or 0))
+                existing = dest.execute(
+                    "SELECT step_ms, tokens_generated FROM opencode_steps"
+                    " WHERE message_id = ?", (mid,)).fetchone()
+                if existing is None:
+                    dest.execute(
+                        "INSERT INTO opencode_steps (message_id, session_id,"
+                        " turn, step_ms, tokens_generated, time_created)"
+                        " VALUES (?,?,?,?,?,?)",
+                        [mid, sid, turn, step_ms, tokens_generated, created])
+                    counts["inserted"] += 1
+                else:
+                    old_step, old_tokens = existing
+                    # NULL is "no information", never a zero to max against.
+                    if step_ms is None:
+                        merged_step = old_step
+                    elif old_step is None:
+                        merged_step = step_ms
+                    else:
+                        merged_step = max(old_step, step_ms)
+                    merged = [merged_step, max(old_tokens, tokens_generated)]
+                    changed = merged != list(existing)
+                    dest.execute(
+                        "UPDATE opencode_steps SET turn = ?, step_ms = ?,"
+                        " tokens_generated = ?, time_created = ?"
+                        " WHERE message_id = ?",
+                        [turn, *merged, created, mid])
+                    counts["updated" if changed else "unchanged"] += 1
+            except sqlite3.Error:
+                # One malformed source row must not abort (or roll back) the rest.
+                counts["skipped"] = counts.get("skipped", 0) + 1
     dest.commit()
     return counts
 

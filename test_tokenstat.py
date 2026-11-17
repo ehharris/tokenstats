@@ -52,6 +52,30 @@ def make_src(rows=()):
     return conn
 
 
+def step_msg(mid="m1", sid="s1", kind="assistant", created=1_764_000_000_000,
+             first=None, streamed=None, out=100, reasoning=50, data=None):
+    """One session_message row. `data` defaults to a timing+tokens blob."""
+    if data is None:
+        data = json.dumps({
+            "time": {"created": created,
+                     **({"firstToken": first} if first is not None else {}),
+                     **({"streamed": streamed} if streamed is not None else {})},
+            "tokens": {"output": out, "reasoning": reasoning},
+        })
+    return (mid, sid, kind, created, data)
+
+
+def make_step_src(session_rows=(), messages=()):
+    """Fake OpenCode source with session_v2 AND session_message."""
+    src = make_src(session_rows)
+    src.execute("""CREATE TABLE session_message (
+                       id TEXT PRIMARY KEY, session_id TEXT, type TEXT,
+                       time_created INTEGER, data TEXT)""")
+    for row in messages:
+        src.execute("INSERT INTO session_message VALUES (?,?,?,?,?)", row)
+    return src
+
+
 def src_row(sid="s1", model=UNSLOTH_JSON, tin=1000, tout=200, treas=50,
             tcr=7000, tcw=100, cost=0.01, title="a session", directory="/tmp/d",
             agent="build", created=1_764_000_000_000, updated=1_764_000_005_000):
@@ -147,6 +171,142 @@ class RecordIsolationTests(unittest.TestCase):
             1000)
         self.assertEqual(self.dest.execute(
             "SELECT COUNT(*) FROM usage WHERE session_id='bad'").fetchone()[0], 0)
+
+
+class ImportStepsTests(unittest.TestCase):
+    BASE = 1_764_000_000_000
+
+    def dest_for(self, messages, rows=(src_row(),)):
+        dest = make_dest()
+        self.addCleanup(dest.close)
+        src = make_step_src(list(rows), list(messages))
+        self.addCleanup(src.close)
+        record(src, dest, now_ms=1)
+        return dest
+
+    def rows(self, dest):
+        return dest.execute("SELECT message_id, session_id, turn, step_ms,"
+                            " tokens_generated FROM opencode_steps"
+                            " ORDER BY message_id").fetchall()
+
+    def test_step_tokens_are_output_plus_reasoning(self):
+        dest = self.dest_for([step_msg(out=100, reasoning=50)])
+        rows = self.rows(dest)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][4], 150)
+
+    def test_step_ms_is_streamed_minus_first_token(self):
+        dest = self.dest_for([step_msg(first=self.BASE + 100,
+                                       streamed=self.BASE + 1100)])
+        rows = self.rows(dest)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][3], 1000)
+
+    def test_step_ms_falls_back_to_created_without_first_token(self):
+        dest = self.dest_for([step_msg(created=self.BASE,
+                                       streamed=self.BASE + 900)])
+        rows = self.rows(dest)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][3], 900)
+
+    def test_never_streamed_step_stores_null_step_ms(self):
+        dest = self.dest_for([step_msg(streamed=None)])
+        rows = self.rows(dest)
+        self.assertEqual(len(rows), 1)
+        self.assertIsNone(rows[0][3])
+
+    def test_turn_index_matches_opencode_boundaries(self):
+        messages = [
+            step_msg(mid="u1", kind="user", created=self.BASE + 1),
+            step_msg(mid="a1", created=self.BASE + 2),
+            step_msg(mid="x1", kind="synthetic", created=self.BASE + 3),
+            step_msg(mid="a2", created=self.BASE + 4),
+            step_msg(mid="i1", kind="idle", created=self.BASE + 5),
+            step_msg(mid="u2", kind="user", created=self.BASE + 6),
+            step_msg(mid="a3", created=self.BASE + 7),
+            step_msg(mid="a4", created=self.BASE + 8),
+        ]
+        dest = self.dest_for(messages)
+        stored = {r[0]: r[2] for r in self.rows(dest)}
+        self.assertEqual(stored, {"a1": 0, "a2": 0, "a3": 1, "a4": 1})
+
+    def test_non_assistant_messages_are_not_stored(self):
+        messages = [
+            step_msg(mid="u1", kind="user"),
+            step_msg(mid="i1", kind="idle"),
+            step_msg(mid="x1", kind="synthetic"),
+        ]
+        dest = self.dest_for(messages)
+        self.assertEqual(self.rows(dest), [])
+
+    def test_rerun_is_a_noop(self):
+        dest = make_dest()
+        self.addCleanup(dest.close)
+        src = make_step_src([src_row()],
+                            [step_msg(first=self.BASE + 100,
+                                      streamed=self.BASE + 1100)])
+        self.addCleanup(src.close)
+        record(src, dest, now_ms=1)
+        before = self.rows(dest)
+        self.assertEqual(before[0][3], 1000)
+        self.assertEqual(before[0][4], 150)
+        counts = record(src, dest, now_ms=2)
+        self.assertEqual(counts["inserted"], 0)
+        self.assertEqual(counts["unchanged"], 2)  # the session and the step
+        self.assertEqual(self.rows(dest), before)
+
+    def test_pruned_source_cannot_shrink_stored_values(self):
+        dest = make_dest()
+        self.addCleanup(dest.close)
+        src = make_step_src(
+            [src_row()],
+            [step_msg(first=self.BASE, streamed=self.BASE + 1000)])
+        self.addCleanup(src.close)
+        record(src, dest, now_ms=1)
+        self.assertEqual(self.rows(dest)[0][3], 1000)
+        # Same step id, shorter stream and fewer tokens: a pruned/rewritten
+        # source must not shrink either stored total.
+        src.execute("DELETE FROM session_message")
+        src.execute("INSERT INTO session_message VALUES (?,?,?,?,?)",
+                    step_msg(first=self.BASE, streamed=self.BASE + 500,
+                             out=10, reasoning=5))
+        record(src, dest, now_ms=2)
+        row = self.rows(dest)[0]
+        self.assertEqual(row[3], 1000)
+        self.assertEqual(row[4], 150)
+
+    def test_missing_session_message_table_is_a_noop(self):
+        dest = make_dest()
+        self.addCleanup(dest.close)
+        src = make_src([src_row()])  # session_v2 only, no session_message
+        self.addCleanup(src.close)
+        counts = record(src, dest, now_ms=1)
+        self.assertEqual(counts, {"inserted": 1, "updated": 0, "unchanged": 0})
+        self.assertEqual(self.rows(dest), [])
+
+    def test_malformed_blob_bumps_skipped_and_continues(self):
+        dest = make_dest()
+        self.addCleanup(dest.close)
+        messages = [
+            step_msg(mid="good1", out=100),
+            step_msg(mid="bad", data="{not json"),
+            step_msg(mid="good2", out=200),
+        ]
+        src = make_step_src([src_row()], messages)
+        self.addCleanup(src.close)
+        counts = record(src, dest, now_ms=1)
+        self.assertEqual(counts["skipped"], 1)
+        stored = {r[0]: r[4] for r in self.rows(dest)}
+        self.assertEqual(stored, {"good1": 150, "good2": 250})
+
+    def test_record_counts_include_steps(self):
+        dest = make_dest()
+        self.addCleanup(dest.close)
+        src = make_step_src([src_row()],
+                            [step_msg(mid="a1"), step_msg(mid="a2")])
+        self.addCleanup(src.close)
+        counts = record(src, dest, now_ms=1)
+        self.assertEqual(counts["inserted"], 3)
 
 
 class ParseModelTests(unittest.TestCase):

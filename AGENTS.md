@@ -52,9 +52,9 @@ runs have no in/out split; `--daily` buckets by started_at; `--total`/bare
 `--model` give per-model aggregates with the usual SHARE/BAR treatment;
 supports `--model`, `--since`, `--until`; rejects `--min-in`/`--min-out`);
 derived `tok_s` on every report-view row plus a `TOK/S` column (reconcile
-excepted — session/daily/total views show a WALL-CLOCK average — tokens
-over the created→updated span, idle drags it down, blank when the span is
-unknown or < 1 s; per-event rows have no
+excepted — session rows show a WALL-CLOCK average — tokens over their own
+created→updated span, idle drags it down, blank when the span is unknown
+or < 1 s; per-event rows have no
 duration so their TOK/S is blank while daily/total event aggregates rate
 over their created_at span; `--json` rows carry `tok_s`); opt-in `--cost`
 overlay plus `--cost-tier haiku|sonnet|opus` (default sonnet) adding a
@@ -102,6 +102,22 @@ well as hue (UP sweep, blue→violet→pink) and lightness — forcing S=1 only
 round-tripped the old fully-saturated endpoints. Piped/`NO_COLOR` output
 remains byte-plain (pinned). Spec + plan in docs/superpowers/{specs,plans}/
 2026-11-16-neon-midnight-theme*.
+
+Aggregate TOK/S increment (2026-11-17): daily/total aggregates stopped being
+"tokens over the group's calendar span" and became the **mean of the rates of
+the rows they fold up** (`_mean_rate` over `_session_rate_groups` /
+`_run_rate_groups`, which reuse `query_sessions`/`query_runs`' own formula, so
+an aggregate row is provably the average of the rates displayed above it).
+The old denominator was `MIN(created)→MAX(updated)` across the group, which
+counts every idle second between and inside sessions: `--model` for a model
+whose only long session sat open overnight read 2.4 tok/s while its four
+session rows read 1.8/595/118/77. Rows whose rate is None (session with no
+`time_updated`, unfinished/failed run) are dropped from the mean rather than
+counting as 0; a group where no row has a rate renders blank. Applies to
+`total_totals`/`daily_totals` and `total_runs`/`daily_runs`; the event
+aggregates keep the created_at-span rate because per-event rows carry no
+duration to average (documented in their docstrings). `_aggregate_rate` is
+now a per-row helper only — aggregate callers use `_mean_rate`.
 
 ## Commands (run from this directory)
 

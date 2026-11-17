@@ -285,6 +285,131 @@ class EventTokSTests(unittest.TestCase):
         self.assertAlmostEqual(r["tok_s"], 100.0, places=2)
 
 
+class AggregateMeanRateTests(unittest.TestCase):
+    """Aggregate TOK/S is the MEAN of the per-row rates of the rows it folds
+    up, not tokens over the group's calendar span. A model used in one
+    long-lived session plus three short fast ones must report the average of
+    what the sessions view shows, not a number diluted by every idle second
+    between and inside those sessions."""
+
+    BASE = 1_764_000_000_000
+
+    def session_dest(self, *rows):
+        dest = make_dest()
+        self.addCleanup(dest.close)
+        src = make_src(list(rows))
+        self.addCleanup(src.close)
+        record(src, dest, now_ms=1)
+        return dest
+
+    def test_total_totals_rate_is_mean_of_session_rates(self):
+        dest = self.session_dest(
+            src_row(sid="s1", tin=1000, tout=200, created=self.BASE,
+                    updated=self.BASE + 5_000),        # 1200 tok / 5 s = 240.0
+            src_row(sid="s2", model=LEMONADE_JSON, tin=500, tout=50,
+                    created=self.BASE + 60_000,
+                    updated=self.BASE + 65_000))       # 550 tok / 5 s = 110.0
+        # mean(240.0, 110.0) = 175.0; the calendar span (65 s) would say 26.9
+        self.assertAlmostEqual(total_totals(dest)[0]["tok_s"], 175.0, places=2)
+
+    def test_total_totals_per_model_rate_is_that_models_mean(self):
+        dest = self.session_dest(
+            src_row(sid="s1", tin=1000, tout=200, created=self.BASE,
+                    updated=self.BASE + 5_000),        # 240.0
+            src_row(sid="s2", tin=500, tout=50, created=self.BASE + 60_000,
+                    updated=self.BASE + 65_000),       # 110.0
+            src_row(sid="s3", model=LEMONADE_JSON, tin=90, tout=10,
+                    created=self.BASE, updated=self.BASE + 10_000),   # 10.0
+            src_row(sid="s4", model=LEMONADE_JSON, tin=190, tout=10,
+                    created=self.BASE + 30_000,
+                    updated=self.BASE + 50_000))       # 10.0
+        rows = {r["model"]: r["tok_s"]
+                for r in total_totals(dest, by_model=True)}
+        self.assertAlmostEqual(rows["unsloth-studio/" + UNSLOTH_MODEL_ID],
+                               175.0, places=2)
+        self.assertAlmostEqual(rows["lemonade/gpt-oss-120b"], 10.0, places=2)
+
+    def test_daily_totals_rate_is_mean_of_that_days_session_rates(self):
+        day = ms(2026, 11, 1)
+        dest = self.session_dest(
+            src_row(sid="s1", tin=1000, tout=200, created=day + 1_000,
+                    updated=day + 6_000),              # 1200 tok / 5 s = 240.0
+            src_row(sid="s2", tin=4800, tout=200, created=day + 20_000,
+                    updated=day + 70_000))             # 5000 tok / 50 s = 100.0
+        # mean(240.0, 100.0) = 170.0; the day's span (69 s) would say 89.9
+        self.assertAlmostEqual(daily_totals(dest)[0]["tok_s"], 170.0, places=2)
+
+    def test_sessions_without_a_rate_are_excluded_from_the_mean(self):
+        # A NULL time_updated has no rate: it must not contribute a 0 that
+        # halves the average of the sessions that do have one.
+        dest = self.session_dest(
+            src_row(sid="s1", tin=1000, tout=200, created=self.BASE,
+                    updated=self.BASE + 5_000),        # 240.0
+            src_row(sid="s2", model=LEMONADE_JSON, tin=9999, tout=9999,
+                    created=self.BASE + 60_000, updated=None))
+        self.assertAlmostEqual(total_totals(dest)[0]["tok_s"], 240.0, places=2)
+
+    def test_group_without_any_rate_has_no_rate(self):
+        dest = self.session_dest(
+            src_row(sid="s1", created=self.BASE, updated=None),
+            src_row(sid="s2", model=LEMONADE_JSON, created=self.BASE + 60_000,
+                    updated=None))
+        self.assertIsNone(total_totals(dest)[0]["tok_s"])
+        self.assertIsNone(daily_totals(dest)[0]["tok_s"])
+
+    def test_total_totals_rate_matches_the_sessions_view(self):
+        # The number on the --model row must be reproducible from the numbers
+        # on the sessions rows, awkward quotients and all.
+        dest = self.session_dest(
+            src_row(sid="s1", tin=163585, tout=65564, created=self.BASE,
+                    updated=self.BASE + 125_924_000),
+            src_row(sid="s2", tin=10150, tout=108, created=self.BASE + 1000,
+                    updated=self.BASE + 18_240),
+            src_row(sid="s3", model=LEMONADE_JSON, tin=46813, tout=6550,
+                    created=self.BASE + 90_000, updated=self.BASE + 550_000))
+        rates = [r["tok_s"] for r in query_sessions(dest)]
+        self.assertEqual(len(rates), 3)
+        self.assertAlmostEqual(total_totals(dest)[0]["tok_s"],
+                               round(sum(rates) / len(rates), 1), places=2)
+
+    def runs_dest(self, *rows):
+        dest = make_dest()
+        self.addCleanup(dest.close)
+        src = make_runs_src(list(rows))
+        self.addCleanup(src.close)
+        import_unsloth_runs(src, dest)
+        return dest
+
+    def test_total_runs_rate_is_mean_of_run_rates(self):
+        dest = self.runs_dest(
+            run_row("r1", progress=200, started=self.BASE,
+                    completed=self.BASE + 10_000),     # 20.0
+            run_row("r2", progress=100, started=self.BASE + 30_000,
+                    completed=self.BASE + 31_000))     # 100.0
+        # mean(20.0, 100.0) = 60.0; the calendar span (31 s) would say 9.7
+        self.assertAlmostEqual(total_runs(dest)[0]["tok_s"], 60.0, places=2)
+        self.assertAlmostEqual(total_runs(dest, by_model=True)[0]["tok_s"],
+                               60.0, places=2)
+
+    def test_daily_runs_rate_is_mean_of_run_rates(self):
+        day = ms(2026, 11, 1)
+        dest = self.runs_dest(
+            run_row("r1", progress=200, started=day, completed=day + 10_000),
+            run_row("r2", progress=100, started=day + 30_000,
+                    completed=day + 31_000))
+        self.assertAlmostEqual(daily_runs(dest)[0]["tok_s"], 60.0, places=2)
+
+    def test_runs_without_a_rate_are_excluded_from_the_mean(self):
+        dest = self.runs_dest(
+            run_row("r1", progress=200, started=self.BASE,
+                    completed=self.BASE + 10_000),     # 20.0
+            run_row("r2", progress=100, started=self.BASE + 30_000,
+                    completed=self.BASE + 31_000),     # 100.0
+            run_row("r3", progress=9999, started=self.BASE + 60_000,
+                    completed=None))                   # unfinished: no rate
+        self.assertAlmostEqual(total_runs(dest)[0]["tok_s"], 60.0, places=2)
+
+
 class ParseDateTests(unittest.TestCase):
     def test_parse_date_accepts_good_value(self):
         self.assertEqual(parse_date("2026-11-01"), ms(2026, 11, 1))

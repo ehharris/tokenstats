@@ -8,10 +8,10 @@ filtered by model, date, and token counts. Built 2026-11-13 via spec →
 plan → TDD; design doc in `docs/superpowers/specs/`, implementation plan
 in `docs/superpowers/plans/`.
 
-**State at handoff (2026-11-14):** current work sits on branch
-`tokens-per-second-and-cost` (no remote configured — local-only repo, no
-push; branch workflow used for increments, fast-forward merged after clean
-review rounds). 124 tests green. Connection hygiene (2026-11-15): every sqlite
+**State at handoff (2026-11-17):** work sits on `master` (no remote
+configured — local-only repo, no push; branch workflow used for increments,
+fast-forward merged after clean review rounds). 218 tests green. Connection
+hygiene (2026-11-15): every sqlite
 connection main() opens is now closed — the store via try/finally and each
 read-only source by `_ingest` owning its open/close; `NoResourceWarningTests`
 subprocess-pins a `-W error::ResourceWarning` CLI run (suite runs warning-free
@@ -38,7 +38,7 @@ unchanged. `--json` `--total` rows carry a float `share` field (no bar).
 Share views (`--total --model`, bare `--model`) now sort rows by `SHARE`
 descending — ties keep alphabetical-by-model order (stable sort) and
 `--json` rows carry the same order — session/daily views unchanged.
-Tokens-per-second increment (branch `tokens-per-second-and-cost`): new store
+Tokens-per-second increment (2026-11-14): new store
 table `unsloth_runs` (run_id PK, model extracted in Python from Studio's
 `request_json` — no JSON1 dependency; `progress_tokens` monotonic max;
 `started_at`/`completed_at`/`status`; a studio.db without
@@ -77,9 +77,9 @@ Cache-column increment (2026-11-15): opt-in `--cache` adds one combined
 views only; informational — TOTAL stays IN+OUT, `--json` gains no field
 (both classes already carried), rejected for reconcile/--from-unsloth/
 --from-runs (no cache split there); primitives `annotate_cache`/`with_cache`.
-Store `usage.db` holds full recoverable history: ~73 OpenCode
-sessions, ~1,850 Unsloth request events, and a handful of generation runs
-back to 2026-11-06.
+Store `usage.db` holds full recoverable history: 117 OpenCode
+sessions, 2,539 Unsloth request events, and 5 generation runs back to
+2026-11-06.
 
 Default-dashboard increment (2026-11-15): bare run renders hero + top-5-by-share
 model panel + 5 most-recent sessions (newest first); trigger is a truly bare
@@ -127,10 +127,10 @@ word ("tokens", "in", "out", "tok/s", the row-count unit) stays in the
 terminal's own color, so the teal row-count and magenta rate read like the
 rest. The table TOK/S and SESSIONS columns wear those same accent/teal hues
 (`tok_s` and `sessions` joined `_PAINT_CELLS`, the rate with a "rate" kind
-formatted exactly as `render_table` would, so column widths never shift). The event aggregates keep the
-created_at-span rate: per-event rows carry no duration to weight (documented
-in their docstrings). `_aggregate_rate` is now a per-row helper only —
-aggregate callers use `_weighted_mean_rate`. Spec:
+formatted exactly as `render_table` would, so column widths never shift). The
+event aggregates keep the created_at-span rate: per-event rows carry no
+duration to weight (documented in their docstrings). `_aggregate_rate` is now
+a per-row helper only — aggregate callers use `_weighted_mean_rate`. Spec:
 docs/superpowers/specs/2026-11-17-token-weighted-tok-s-design.md.
 
 ## Commands (run from this directory)

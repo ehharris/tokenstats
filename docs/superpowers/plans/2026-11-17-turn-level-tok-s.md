@@ -340,7 +340,7 @@ class SessionTurnRateTests(unittest.TestCase):
 Pins to fill in as tests on `query_sessions(dest)[0]`:
 
 - **Two turns average their rates.** Turn 1: one step, `first_off=0, stream_off=1000, out=100` → 100.0 tok/s. Turn 2 (after an `idle` + `user`): one step, `first_off=0, stream_off=2000, out=100` → 50.0 tok/s. Session `tok_s == 75.0`.
-- **Steps inside one turn pool before dividing.** Two steps in one turn, each `stream_off=1000`, `out=100` and `out=300` → `(400 / 2.0) == 200.0`, not the mean of 100.0 and 300.0.
+- **Steps inside one turn pool before dividing.** Two steps in one turn, each `stream_off=1000`, `out=100` and `out=300` → `(400 / 2.0) == 200.0`, not the mean of 100.0 and 300.0. (Task 3 review: equal spans make this degenerate — it cannot distinguish pooling from per-step averaging. Task 4 Step 6 repairs the fixture.)
 - **A turn with a never-streamed step contributes nothing.** One valid turn at 100.0 plus a second turn containing a `streamed=None` step → `tok_s == 100.0` and the bad turn is dropped, not averaged as 0.
 - **A session with no steps has `tok_s is None`.**
 - **Sub-second turns are dropped.** A turn whose `Σ step_ms < 1000` → excluded; if it is the only turn, `tok_s is None`.
@@ -454,6 +454,11 @@ In `query_runs`, add `"rate_weight": progress` to the row dict. The value equals
 - [ ] **Step 6: Update the stale weight pins**
 
 `AggregateWeightedRateTests` and `HeroTokSTests` assert the in+out weighting. Update their fixtures to add steps (or restate their expected values) so they pin the generated-token weight. Keep their structural assertions — that aggregates are weighted means, not calendar spans, and that rate-less rows drop out of both sides.
+
+Two test-discrimination repairs carried in from the Task 3 review, both in this area and both required here:
+
+- Re-point `test_total_totals_rate_matches_the_sessions_view` at genuinely turn-shaped data. Task 3 had to repair it to stay green, and each of its sessions now has exactly one step engineered so its turn rate equals its old wall-clock rate — so it passes under both bases and cannot detect an aggregate that drifts away from the sessions view. Give its sessions multi-turn data whose turn-mean differs from `tokens/(updated - created)`, so a wrong-basis aggregate fails it.
+- Fix `test_steps_in_one_turn_pool_before_dividing`: its two steps are both 1 s, so pooled-within-turn (`400/2 = 200.0`) coincides with treating each step as its own turn (`mean(100.0, 300.0) = 200.0`) and the test cannot catch a `GROUP BY step` regression. Use unequal spans — step 1 `stream_off=1000, out=100`; step 2 `stream_off=4000, out=300` — so the correct pooled answer is `400/5.0 == 80.0` while the per-step mistake gives `mean(100.0, 75.0) == 87.5`.
 
 - [ ] **Step 7: Run the tests to verify they pass**
 

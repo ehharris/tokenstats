@@ -88,6 +88,21 @@ unchanged); SHARE computed over all models then truncated to 5. Two stale pins
 updated per spec: CliCacheTests bare+--cache header pin (line-0 → whole-output
 regex) and CliShareTests bare leg dropped (bare now shows SHARE by design).
 
+Neon Midnight theme increment (2026-11-17): the sunset palette is retired —
+`NEON` dict (renamed from `SUNSET`) is the single theme: near-black indigo
+chrome (border `(76,58,120)`, track `(30,23,48)`, label `(169,156,201)`,
+num `(244,240,255)`, accent `(232,121,249)`), IN `(96,165,250)`, OUT
+`(244,114,182)`, CACHE lime `(163,230,53)`, plus two new roles: `ttotal`
+violet `(167,139,250)` — the gradient midpoint — on the TOTAL column (bold)
+and the hero grand total, and `tshare` teal `(94,234,212)` on the SHARE
+column and the hero row-count stat (derived stats share the hue). Bar
+mechanism unchanged (per-glyph `█`+`░▒▓` blocks); `TOKEN_IN_RGB`/`TOKEN_OUT_RGB`
+now DERIVE from `NEON["tin"]/["tout"]` and `_token_rgb` lerps saturation as
+well as hue (UP sweep, blue→violet→pink) and lightness — forcing S=1 only
+round-tripped the old fully-saturated endpoints. Piped/`NO_COLOR` output
+remains byte-plain (pinned). Spec + plan in docs/superpowers/{specs,plans}/
+2026-11-16-neon-midnight-theme*.
+
 ## Commands (run from this directory)
 
 ```bash

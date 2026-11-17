@@ -120,9 +120,14 @@ unfinished/failed run) or no tokens drop out of BOTH sides of the average; a
 group with nothing left renders blank. Applies to
 `total_totals`/`daily_totals` and `total_runs`/`daily_runs`, and the hero
 (`report_header`) now computes the same weighted mean over the rows it
-summarizes and appends `· NNN.N tok/s` in the `accent` hue before the `--cost`
-tail — omitted whole when no displayed row has a rate, so `--from-unsloth`
-per-event and `reconcile` heroes are unchanged. The event aggregates keep the
+summarizes and appends `· NNN.N tok/s` before the `--cost` tail — omitted
+whole when no displayed row has a rate, so `--from-unsloth` per-event and
+`reconcile` heroes are unchanged. Only hero NUMBERS are painted: every unit
+word ("tokens", "in", "out", "tok/s", the row-count unit) stays in the
+terminal's own color, so the teal row-count and magenta rate read like the
+rest. The table TOK/S column wears that same accent hue (`tok_s` joined
+`_PAINT_CELLS` with a "rate" kind formatted exactly as `render_table` would,
+so column widths never shift). The event aggregates keep the
 created_at-span rate: per-event rows carry no duration to weight (documented
 in their docstrings). `_aggregate_rate` is now a per-row helper only —
 aggregate callers use `_weighted_mean_rate`. Spec:

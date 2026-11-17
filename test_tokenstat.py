@@ -461,7 +461,15 @@ class HeroTokSTests(unittest.TestCase):
     def test_hero_tok_s_painted_accent(self):
         hero = report_header("x", self.ROWS)[1]
         r, g, b = NEON["accent"]
-        self.assertIn(f"\x1b[38;2;{r};{g};{b}m199.1 tok/s\x1b[0m", hero)
+        self.assertIn(f"\x1b[38;2;{r};{g};{b}m199.1\x1b[0m", hero)
+
+    def test_hero_unit_words_are_not_painted(self):
+        # "tokens"/"in"/"out" render in the terminal's own color; the unit
+        # words of the newer stats must join them, not wear their number's hue.
+        hero = report_header("x", self.ROWS)[1]
+        self.assertIn("\x1b[0m tok/s", hero)
+        self.assertNotIn("tok/s\x1b[0m", hero)
+        self.assertIn("\x1b[0m rows", hero)
 
     def test_hero_tok_s_stays_plain_when_color_is_off(self):
         lines = report_header("x", self.ROWS, color=False)
@@ -1892,6 +1900,16 @@ class PaintCellsTests(unittest.TestCase):
         rows = paint_cells([{"total": 7300000, "share_str": "58.7%"}])
         self.assertIn("38;2;{};{};{}m".format(*NEON["tshare"]), rows[0]["share_str"])
 
+    def test_tok_s_column_painted_accent(self):
+        # Same magenta the hero's TOK/S stat wears.
+        rows = paint_cells([{"total": 100, "tok_s": 240.0}])
+        self.assertIn("38;2;{};{};{}m240.0".format(*NEON["accent"]),
+                      str(rows[0]["tok_s"]))
+
+    def test_blank_tok_s_stays_blank(self):
+        rows = paint_cells([{"total": 100, "tok_s": None}])
+        self.assertIsNone(rows[0]["tok_s"])
+
     def test_untouched_keys_and_missing_keys(self):
         rows = paint_cells([{"model": "m", "date": "d"}])
         self.assertEqual(rows[0], {"model": "m", "date": "d"})
@@ -2276,7 +2294,15 @@ class PanelEmptyTitleTests(unittest.TestCase):
     def test_hero_row_count_painted_tshare(self):
         rows = [{"total": 1, "tokens_input": 1, "tokens_output": 0}]
         hero = "\n".join(report_header("all models", rows, unit="models"))
-        self.assertIn("38;2;{};{};{}m1 model".format(*NEON["tshare"]), hero)
+        self.assertIn("38;2;{};{};{}m1\x1b[0m model".format(*NEON["tshare"]),
+                      hero)
+
+    def test_hero_row_count_unit_word_is_not_painted(self):
+        # the count wears the SHARE teal; the word joins the other unit words
+        # in the terminal's own color
+        rows = [{"total": 1, "tokens_input": 1, "tokens_output": 0}]
+        hero = "\n".join(report_header("all models", rows, unit="models"))
+        self.assertNotIn("model\x1b[0m", hero)
 
     def test_hero_unit_label_is_configurable(self):
         rows = [{"total": 300, "tokens_input": 200, "tokens_output": 100,

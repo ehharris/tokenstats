@@ -5,10 +5,10 @@ Snapshots three tables from two sources (read-only) into our own SQLite
 store — OpenCode's per-session totals, plus Unsloth Studio's per-request
 events and generation runs — and reports them filtered by model, date, and
 token thresholds. Reporting views carry a TOK/S column (reconcile
-excepted): sessions and daily/total aggregates show a wall-clock average
-over their time span (idle drags it down); --from-runs shows each run's
-true generation rate. Opt-in --cost overlays a reference Claude-tier dollar
-estimate. See README.md.
+excepted): each session row is a wall-clock average over its own span (idle
+drags it down), aggregate rows are the mean of the rates they fold up, and
+--from-runs shows each run's true generation rate. Opt-in --cost overlays a
+reference Claude-tier dollar estimate. See README.md.
 """
 import argparse
 import colorsys
@@ -289,7 +289,8 @@ def query_events(dest, model=None, since_ms=None, until_ms=None,
 def daily_events(dest, model=None, since_ms=None, until_ms=None,
                  min_in=None, min_out=None):
     """Per-day event aggregates (sessions = request count), oldest first.
-    tok_s spans the bucket's created_at range."""
+    Events carry no duration, so there is no per-row rate to average: tok_s
+    spans the bucket's created_at range instead."""
     where, params = _event_filters(model, since_ms, until_ms, min_in, min_out)
     sql = ("SELECT date(created_at/1000, 'unixepoch', 'localtime') AS day,"
            " COUNT(*), SUM(prompt_tokens), SUM(completion_tokens),"
@@ -310,7 +311,8 @@ def total_events(dest, model=None, since_ms=None, until_ms=None,
     """All-time event aggregates: one grand-total row; per-event-model rows
     (ordered by it) with a model filter or by_model=True. Empty when no
     events match. Mirrors total_totals; cost is always 0.0 (daily_events);
-    tok_s spans each row's created_at range."""
+    with no per-event duration to average, tok_s spans each row's created_at
+    range."""
     where, params = _event_filters(model, since_ms, until_ms, min_in, min_out)
     tail = " WHERE " + " AND ".join(where) if where else ""
     sums = (" COUNT(*), SUM(prompt_tokens), SUM(completion_tokens),"
@@ -353,10 +355,56 @@ def _run_filters(model, since_ms, until_ms):
 
 
 def _aggregate_rate(total, first_started, last_end):
-    """Runs-aggregate tokens/second over a bucket's whole span; None when
-    the span is under a second (rate would be meaningless)."""
+    """Tokens/second over one row's own span; None when the span is under a
+    second (rate would be meaningless)."""
     span = (last_end - first_started) / 1000
     return round(total / span, 1) if span >= 1 else None
+
+
+def _mean_rate(rates):
+    """Arithmetic mean of a group's per-row rates, rounded to one decimal like
+    every other rate; None when no row in the group has one.
+
+    Aggregates average their rows' rates instead of dividing their token sum
+    by the group's calendar span: that span counts every idle second between
+    and inside sessions, so one session left open overnight dragged a model's
+    average far below every session row above it."""
+    known = [r for r in rates if r is not None]
+    return round(sum(known) / len(known), 1) if known else None
+
+
+def _session_rate_groups(dest, key_sql, where, params):
+    """{group key: [per-session wall-clock rates]} for sessions matching
+    `where`, using the formula query_sessions shows so an aggregate row is
+    exactly the mean of the rates the sessions view displays. A rate is None
+    when that session's span is unknown or under a second; `_mean_rate` drops
+    those. `key_sql` is the SQL expression to group on."""
+    sql = ("SELECT " + key_sql + ", time_created, time_updated,"
+           " tokens_input + tokens_output FROM usage")
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    groups = {}
+    for key, created, updated, total in dest.execute(sql, params):
+        groups.setdefault(key, []).append(
+            _aggregate_rate(total, created, updated)
+            if updated is not None else None)
+    return groups
+
+
+def _run_rate_groups(dest, key_sql, where, params):
+    """{group key: [per-run true generation rates]} for runs matching `where`,
+    using query_runs' formula: progress over the run's wall-clock seconds.
+    A rate is None for runs that haven't completed (blank in that view)."""
+    sql = ("SELECT " + key_sql + ", started_at, progress_tokens, completed_at,"
+           " status FROM unsloth_runs")
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    groups = {}
+    for key, started, progress, completed, status in dest.execute(sql, params):
+        groups.setdefault(key, []).append(
+            _aggregate_rate(progress, started, completed)
+            if completed is not None and status == "completed" else None)
+    return groups
 
 
 def query_runs(dest, model=None, since_ms=None, until_ms=None):
@@ -391,12 +439,11 @@ def query_runs(dest, model=None, since_ms=None, until_ms=None):
 
 def daily_runs(dest, model=None, since_ms=None, until_ms=None):
     """Per-day run aggregates (sessions = run count), keyed on the run's
-    started day, oldest first. tok_s spans the bucket from its earliest
-    start to its latest end."""
+    started day, oldest first. TOK/S is the mean of the day's per-run rates."""
     where, params = _run_filters(model, since_ms, until_ms)
-    sql = ("SELECT date(started_at/1000, 'unixepoch', 'localtime') AS day,"
-           " COUNT(*), SUM(progress_tokens),"
-           " MIN(started_at), MAX(COALESCE(completed_at, started_at))"
+    day_sql = "date(started_at/1000, 'unixepoch', 'localtime')"
+    rates = _run_rate_groups(dest, day_sql, where, params)
+    sql = ("SELECT " + day_sql + " AS day, COUNT(*), SUM(progress_tokens)"
            " FROM unsloth_runs")
     if where:
         sql += " WHERE " + " AND ".join(where)
@@ -405,21 +452,22 @@ def daily_runs(dest, model=None, since_ms=None, until_ms=None):
         {"date": day, "sessions": n, "tokens_input": p or 0,
          "progress_tokens": p or 0,
          "tokens_output": 0, "total": p or 0,
-         "tok_s": _aggregate_rate(p or 0, first, last)}
-        for day, n, p, first, last in dest.execute(sql, params)
+         "tok_s": _mean_rate(rates.get(day, []))}
+        for day, n, p in dest.execute(sql, params)
     ]
 
 
 def total_runs(dest, model=None, since_ms=None, until_ms=None, by_model=False):
     """All-time run aggregates: one grand-total row; per-run-model rows
     (ordered by the raw stored model string) with a model filter or
-    by_model=True. Empty when no runs match. Mirrors total_events."""
+    by_model=True. Empty when no runs match. Mirrors total_events; TOK/S is
+    the mean of the group's per-run rates."""
     where, params = _run_filters(model, since_ms, until_ms)
     tail = " WHERE " + " AND ".join(where) if where else ""
-    sums = (" COUNT(*), SUM(progress_tokens),"
-            " MIN(started_at), MAX(COALESCE(completed_at, started_at))")
+    sums = " COUNT(*), SUM(progress_tokens)"
     if not model and not by_model:
-        n, p, first, last = dest.execute(
+        rates = _run_rate_groups(dest, "'(all)'", where, params)
+        n, p = dest.execute(
             "SELECT" + sums + " FROM unsloth_runs" + tail, params).fetchone()
         if not n:
             return []
@@ -427,13 +475,14 @@ def total_runs(dest, model=None, since_ms=None, until_ms=None, by_model=False):
         return [{"model": "(all)", "sessions": n, "tokens_input": p,
                  "progress_tokens": p,
                  "tokens_output": 0, "total": p,
-                 "tok_s": _aggregate_rate(p, first, last)}]
+                 "tok_s": _mean_rate(rates.get("(all)", []))}]
+    rates = _run_rate_groups(dest, "model", where, params)
     return [
         {"model": m, "sessions": n, "tokens_input": p or 0,
          "progress_tokens": p or 0,
          "tokens_output": 0, "total": p or 0,
-         "tok_s": _aggregate_rate(p or 0, first, last)}
-        for m, n, p, first, last in dest.execute(
+         "tok_s": _mean_rate(rates.get(m, []))}
+        for m, n, p in dest.execute(
             "SELECT model," + sums + " FROM unsloth_runs" + tail
             + " GROUP BY model ORDER BY model ASC", params)
     ]
@@ -937,27 +986,25 @@ def render_table(rows, columns=None):
 
 def daily_totals(dest, model=None, since_ms=None, until_ms=None,
                  min_in=None, min_out=None):
-    """Per-day aggregates matching the filters, oldest day first. tok_s
-    spans the bucket from its earliest session creation to its latest
-    update (None when no row in it has a time_updated)."""
-    sql = ("SELECT date(time_created/1000, 'unixepoch', 'localtime') AS day,"
-           " COUNT(*), SUM(tokens_input), SUM(tokens_output), SUM(cost),"
-           " SUM(tokens_cache_read), SUM(tokens_cache_write),"
-           " MIN(time_created), MAX(time_updated) FROM usage")
+    """Per-day aggregates matching the filters, oldest day first. TOK/S is the
+    mean of the day's per-session rates."""
     where, params = _session_filters(model, since_ms, until_ms, min_in, min_out)
+    day_sql = "date(time_created/1000, 'unixepoch', 'localtime')"
+    rates = _session_rate_groups(dest, day_sql, where, params)
+    sql = ("SELECT " + day_sql + " AS day,"
+           " COUNT(*), SUM(tokens_input), SUM(tokens_output), SUM(cost),"
+           " SUM(tokens_cache_read), SUM(tokens_cache_write) FROM usage")
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " GROUP BY day ORDER BY day ASC"
     rows = []
-    for (day, n, tin, tout, cost, tcr, tcw, first, last) in dest.execute(
-            sql, params):
+    for (day, n, tin, tout, cost, tcr, tcw) in dest.execute(sql, params):
         total = (tin or 0) + (tout or 0)
         rows.append({"date": day, "sessions": n, "tokens_input": tin or 0,
                      "tokens_output": tout or 0, "total": total,
                      "cost": cost or 0.0, "tokens_cache_read": tcr or 0,
                      "tokens_cache_write": tcw or 0,
-                     "tok_s": _aggregate_rate(total, first, last)
-                             if last is not None else None})
+                     "tok_s": _mean_rate(rates.get(day, []))})
     return rows
 
 
@@ -965,36 +1012,39 @@ def total_totals(dest, model=None, since_ms=None, until_ms=None,
                  min_in=None, min_out=None, by_model=False):
     """All-time aggregates: one grand-total row; per-provider/model_id rows
     (ordered by that string) with a model filter or by_model=True. Empty
-    when no rows match."""
+    when no rows match. TOK/S is the mean of the group's per-session rates."""
     where, params = _session_filters(model, since_ms, until_ms, min_in, min_out)
     tail = " WHERE " + " AND ".join(where) if where else ""
     sums = (" COUNT(*), SUM(tokens_input), SUM(tokens_output), SUM(cost),"
-            " SUM(tokens_cache_read), SUM(tokens_cache_write),"
-            " MIN(time_created), MAX(time_updated)")
+            " SUM(tokens_cache_read), SUM(tokens_cache_write)")
     if not model and not by_model:
-        n, tin, tout, cost, tcr, tcw, first, last = dest.execute(
+        rates = _session_rate_groups(dest, "'(all)'", where, params)
+        found = dest.execute(
             "SELECT" + sums + " FROM usage" + tail, params).fetchone()
-        if not n:
+        if not found[0]:
             return []
-        tin, tout = tin or 0, tout or 0
-        return [_total_row("(all)", n, tin, tout, cost, tcr, tcw, first, last)]
+        n, tin, tout, cost, tcr, tcw = found
+        return [_total_row("(all)", n, tin, tout, cost, tcr, tcw,
+                           _mean_rate(rates.get("(all)", [])))]
+    rates = _session_rate_groups(dest, "provider || '/' || model_id",
+                                 where, params)
     rows = []
-    for m, n, tin, tout, cost, tcr, tcw, first, last in dest.execute(
+    for m, n, tin, tout, cost, tcr, tcw in dest.execute(
             "SELECT provider || '/' || model_id AS m," + sums +
             " FROM usage" + tail + " GROUP BY m ORDER BY m ASC", params):
-        rows.append(_total_row(m, n, tin, tout, cost, tcr, tcw, first, last))
+        rows.append(_total_row(m, n, tin, tout, cost, tcr, tcw,
+                               _mean_rate(rates.get(m, []))))
     return rows
 
 
-def _total_row(model, n, tin, tout, cost, tcr, tcw, first, last):
-    """Row dict for total_totals: totals plus cache components and a rate
-    over the group's created→updated span (None if unknown or < 1 s)."""
+def _total_row(model, n, tin, tout, cost, tcr, tcw, rate):
+    """Row dict for total_totals: totals plus cache components and the mean of
+    the group's per-session rates (None if none of them has one)."""
     tin, tout = tin or 0, tout or 0
     return {"model": model, "sessions": n, "tokens_input": tin,
             "tokens_output": tout, "total": tin + tout, "cost": cost or 0.0,
             "tokens_cache_read": tcr or 0, "tokens_cache_write": tcw or 0,
-            "tok_s": _aggregate_rate(tin + tout, first, last)
-                     if last is not None else None}
+            "tok_s": rate}
 
 
 def _connect_src(path):

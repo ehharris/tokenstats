@@ -107,18 +107,21 @@ share` panel (shares computed over ALL models before truncating to five),
 and a `sessions · 5 most recent` panel (newest first). Any view/filter flag
 restores the ordinary full table; `--json` always emits every session row.
 
-Every report table except `reconcile` also has a `TOK/S` column. In
-session, daily, and total views it is a **wall-clock average** — tokens
-divided by the row's time span (session creation → last update; aggregates
-span their earliest start to their latest end) — so idle time inside that
-window drags the number down; it is blank when the span is unknown or under
-a second. Per-event rows in `--from-unsloth` carry no duration, so their
-TOK/S is blank (their daily and total aggregates rate over the events'
-created_at range instead). Only `--from-runs` measures generation speed:
-there TOK/S is each run's *true* rate — progress tokens over the run's own
-wall-clock seconds — which is why those numbers typically sit well above
-session-mode averages. In `--json` the value is the float `tok_s` (null
-when blank).
+Every report table except `reconcile` also has a `TOK/S` column. A session
+row's is a **wall-clock average** — its tokens divided by its own time span
+(session creation → last update) — so idle time inside that window drags the
+number down; it is blank when the span is unknown or under a second. Daily
+and total rows are the **mean of the rates of the rows they fold up**, so a
+model's `TOK/S` is exactly the average of the session rates shown above it,
+undiluted by the idle time between sessions. Rows without a rate are left out
+of the mean, and a group where none has one renders blank. Per-event rows in
+`--from-unsloth` carry no duration, so their TOK/S is blank (their daily and
+total aggregates rate over the events' created_at range instead). Only
+`--from-runs` measures generation speed: there TOK/S is each run's *true*
+rate — progress tokens over the run's own wall-clock seconds — and its
+aggregates average those true rates, which is why those numbers typically sit
+well above session-mode averages. In `--json` the value is the float `tok_s`
+(null when blank).
 
 ## Cost estimates (`--cost`)
 

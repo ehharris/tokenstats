@@ -744,32 +744,51 @@ def _session_filters(model, since_ms, until_ms, min_in, min_out):
     return where, params
 
 
+# Scalar subqueries correlated on usage.session_id, reused by the aggregate
+# views (Task 4). _TURN_RATE_SQL is the unweighted mean of the session's turn
+# rates; a turn is excluded when ANY step never streamed (COUNT(step_ms) <>
+# COUNT(*)), when it moved no tokens, or when its pooled span is sub-second.
+# _GENERATED_SQL is the session's total generated tokens (output+reasoning).
+_TURN_RATE_SQL = (
+    "(SELECT AVG(rate) FROM (SELECT SUM(tokens_generated) * 1000.0"
+    " / SUM(step_ms) AS rate FROM opencode_steps"
+    " WHERE opencode_steps.session_id = usage.session_id GROUP BY turn"
+    " HAVING COUNT(step_ms) = COUNT(*) AND SUM(step_ms) >= 1000"
+    " AND SUM(tokens_generated) > 0))")
+_GENERATED_SQL = (
+    "(SELECT SUM(tokens_generated) FROM opencode_steps"
+    " WHERE opencode_steps.session_id = usage.session_id)")
+
+
 def query_sessions(dest, model=None, since_ms=None, until_ms=None,
                    min_in=None, min_out=None):
     """Session rows matching all given filters, oldest first.
 
-    tok_s is the session's wall-clock rate — tokens over created→updated
-    seconds; None when time_updated is NULL (span unknown) or under a
-    second."""
+    tok_s is the unweighted mean of the session's per-turn rates — the number
+    OpenCode shows per prompt: Σ(output+reasoning) / Σ(streamed - firstToken)
+    per turn, then averaged across turns. None when the session has no valid
+    turn. rate_weight is the session's total generated tokens. There is
+    deliberately no wall-clock fallback: mixing the two bases is the bug this
+    replaces."""
     sql = ("SELECT time_created, provider, model_id, tokens_input,"
            " tokens_output, cost, title, tokens_cache_read,"
-           " tokens_cache_write, time_updated FROM usage")
+           " tokens_cache_write, " + _TURN_RATE_SQL + ", " + _GENERATED_SQL
+           + " FROM usage")
     where, params = _session_filters(model, since_ms, until_ms, min_in, min_out)
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY time_created ASC"
     rows = []
     for (created, provider, model_id, tin, tout, cost, title, tcr, tcw,
-         updated) in dest.execute(sql, params):
+         rate, generated) in dest.execute(sql, params):
         date = datetime.datetime.fromtimestamp(created / 1000).strftime(
             "%Y-%m-%d")
-        tok_s = (_aggregate_rate(tin + tout, created, updated)
-                 if updated is not None else None)
         rows.append({"date": date, "model": f"{provider}/{model_id}",
                      "tokens_input": tin, "tokens_output": tout,
                      "total": tin + tout, "cost": cost, "title": title or "",
                      "tokens_cache_read": tcr, "tokens_cache_write": tcw,
-                     "tok_s": tok_s})
+                     "tok_s": round(rate, 1) if rate is not None else None,
+                     "rate_weight": generated or 0})
     return rows
 
 

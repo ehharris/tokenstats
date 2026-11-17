@@ -104,20 +104,29 @@ remains byte-plain (pinned). Spec + plan in docs/superpowers/{specs,plans}/
 2026-11-16-neon-midnight-theme*.
 
 Aggregate TOK/S increment (2026-11-17): daily/total aggregates stopped being
-"tokens over the group's calendar span" and became the **mean of the rates of
-the rows they fold up** (`_mean_rate` over `_session_rate_groups` /
-`_run_rate_groups`, which reuse `query_sessions`/`query_runs`' own formula, so
-an aggregate row is provably the average of the rates displayed above it).
-The old denominator was `MIN(created)→MAX(updated)` across the group, which
-counts every idle second between and inside sessions: `--model` for a model
-whose only long session sat open overnight read 2.4 tok/s while its four
-session rows read 1.8/595/118/77. Rows whose rate is None (session with no
-`time_updated`, unfinished/failed run) are dropped from the mean rather than
-counting as 0; a group where no row has a rate renders blank. Applies to
-`total_totals`/`daily_totals` and `total_runs`/`daily_runs`; the event
-aggregates keep the created_at-span rate because per-event rows carry no
-duration to average (documented in their docstrings). `_aggregate_rate` is
-now a per-row helper only — aggregate callers use `_mean_rate`.
+"tokens over the group's calendar span" and became the **token-weighted mean
+of the rates of the rows they fold up** (`_weighted_mean_rate` over
+`_session_rate_groups` / `_run_rate_groups`, which reuse
+`query_sessions`/`query_runs`' own formula, so an aggregate stays reproducible
+from the rates displayed above it). The old denominator was
+`MIN(created)→MAX(updated)` across the group, which counts every idle second
+between and inside sessions: `--model` for a model whose only long session
+sat open overnight read 2.4 tok/s while its four session rows read
+1.8/595/118/77. Weight = the row's tokens (`tokens_input+tokens_output`, or
+`progress_tokens` for runs), so the biggest session dominates: that same
+model reads 40.6 weighted vs 197.9 as a flat mean — the human partner chose
+weighted knowing this. Rows with no rate (session with no `time_updated`,
+unfinished/failed run) or no tokens drop out of BOTH sides of the average; a
+group with nothing left renders blank. Applies to
+`total_totals`/`daily_totals` and `total_runs`/`daily_runs`, and the hero
+(`report_header`) now computes the same weighted mean over the rows it
+summarizes and appends `· NNN.N tok/s` in the `accent` hue before the `--cost`
+tail — omitted whole when no displayed row has a rate, so `--from-unsloth`
+per-event and `reconcile` heroes are unchanged. The event aggregates keep the
+created_at-span rate: per-event rows carry no duration to weight (documented
+in their docstrings). `_aggregate_rate` is now a per-row helper only —
+aggregate callers use `_weighted_mean_rate`. Spec:
+docs/superpowers/specs/2026-11-17-token-weighted-tok-s-design.md.
 
 ## Commands (run from this directory)
 

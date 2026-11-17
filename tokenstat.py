@@ -6,9 +6,9 @@ store — OpenCode's per-session totals, plus Unsloth Studio's per-request
 events and generation runs — and reports them filtered by model, date, and
 token thresholds. Reporting views carry a TOK/S column (reconcile
 excepted): each session row is a wall-clock average over its own span (idle
-drags it down), aggregate rows are the mean of the rates they fold up, and
---from-runs shows each run's true generation rate. Opt-in --cost overlays a
-reference Claude-tier dollar estimate. See README.md.
+drags it down), aggregate rows are the token-weighted mean of the rates they
+fold up, and --from-runs shows each run's true generation rate. Opt-in --cost
+overlays a reference Claude-tier dollar estimate. See README.md.
 """
 import argparse
 import colorsys
@@ -361,24 +361,31 @@ def _aggregate_rate(total, first_started, last_end):
     return round(total / span, 1) if span >= 1 else None
 
 
-def _mean_rate(rates):
-    """Arithmetic mean of a group's per-row rates, rounded to one decimal like
-    every other rate; None when no row in the group has one.
+def _weighted_mean_rate(pairs):
+    """Token-weighted mean of `pairs`, a group's (rate, tokens moved) pairs,
+    rounded to one decimal like every other rate; None when nothing is left.
 
-    Aggregates average their rows' rates instead of dividing their token sum
-    by the group's calendar span: that span counts every idle second between
-    and inside sessions, so one session left open overnight dragged a model's
-    average far below every session row above it."""
-    known = [r for r in rates if r is not None]
-    return round(sum(known) / len(known), 1) if known else None
+    Each row's rate counts in proportion to the tokens it moved, so a session
+    that carried 200k tokens speaks 200x one that carried 1k. Rows with no
+    rate (session with no `time_updated`, unfinished or failed run) and rows
+    with no tokens are dropped from BOTH sides: they cannot be averaged and
+    they carry no weight. The alternative — dividing the group's token sum by
+    its calendar span — counted every idle second between and inside
+    sessions, so one session left open overnight sank a model's average below
+    every row above it."""
+    num = sum(rate * weight for rate, weight in pairs
+              if rate is not None and weight)
+    den = sum(weight for rate, weight in pairs
+              if rate is not None and weight)
+    return round(num / den, 1) if den else None
 
 
 def _session_rate_groups(dest, key_sql, where, params):
-    """{group key: [per-session wall-clock rates]} for sessions matching
-    `where`, using the formula query_sessions shows so an aggregate row is
-    exactly the mean of the rates the sessions view displays. A rate is None
-    when that session's span is unknown or under a second; `_mean_rate` drops
-    those. `key_sql` is the SQL expression to group on."""
+    """{group key: [(per-session rate, tokens moved)]} for sessions matching
+    `where`, using the formula query_sessions shows so an aggregate row stays
+    reproducible from the rates the sessions view displays. A rate is None
+    when that session's span is unknown or under a second. `key_sql` is the
+    SQL expression to group on."""
     sql = ("SELECT " + key_sql + ", time_created, time_updated,"
            " tokens_input + tokens_output FROM usage")
     if where:
@@ -386,15 +393,15 @@ def _session_rate_groups(dest, key_sql, where, params):
     groups = {}
     for key, created, updated, total in dest.execute(sql, params):
         groups.setdefault(key, []).append(
-            _aggregate_rate(total, created, updated)
-            if updated is not None else None)
+            (_aggregate_rate(total, created, updated)
+             if updated is not None else None, total))
     return groups
 
 
 def _run_rate_groups(dest, key_sql, where, params):
-    """{group key: [per-run true generation rates]} for runs matching `where`,
-    using query_runs' formula: progress over the run's wall-clock seconds.
-    A rate is None for runs that haven't completed (blank in that view)."""
+    """{group key: [(per-run true generation rate, progress tokens)]} for runs
+    matching `where`, using query_runs' formula: progress over the run's
+    wall-clock seconds. A rate is None for runs that haven't completed."""
     sql = ("SELECT " + key_sql + ", started_at, progress_tokens, completed_at,"
            " status FROM unsloth_runs")
     if where:
@@ -402,8 +409,9 @@ def _run_rate_groups(dest, key_sql, where, params):
     groups = {}
     for key, started, progress, completed, status in dest.execute(sql, params):
         groups.setdefault(key, []).append(
-            _aggregate_rate(progress, started, completed)
-            if completed is not None and status == "completed" else None)
+            (_aggregate_rate(progress, started, completed)
+             if completed is not None and status == "completed" else None,
+             progress))
     return groups
 
 
@@ -439,7 +447,8 @@ def query_runs(dest, model=None, since_ms=None, until_ms=None):
 
 def daily_runs(dest, model=None, since_ms=None, until_ms=None):
     """Per-day run aggregates (sessions = run count), keyed on the run's
-    started day, oldest first. TOK/S is the mean of the day's per-run rates."""
+    started day, oldest first. TOK/S is the token-weighted mean of the day's
+    per-run rates."""
     where, params = _run_filters(model, since_ms, until_ms)
     day_sql = "date(started_at/1000, 'unixepoch', 'localtime')"
     rates = _run_rate_groups(dest, day_sql, where, params)
@@ -452,7 +461,7 @@ def daily_runs(dest, model=None, since_ms=None, until_ms=None):
         {"date": day, "sessions": n, "tokens_input": p or 0,
          "progress_tokens": p or 0,
          "tokens_output": 0, "total": p or 0,
-         "tok_s": _mean_rate(rates.get(day, []))}
+         "tok_s": _weighted_mean_rate(rates.get(day, []))}
         for day, n, p in dest.execute(sql, params)
     ]
 
@@ -461,7 +470,7 @@ def total_runs(dest, model=None, since_ms=None, until_ms=None, by_model=False):
     """All-time run aggregates: one grand-total row; per-run-model rows
     (ordered by the raw stored model string) with a model filter or
     by_model=True. Empty when no runs match. Mirrors total_events; TOK/S is
-    the mean of the group's per-run rates."""
+    the token-weighted mean of the group's per-run rates."""
     where, params = _run_filters(model, since_ms, until_ms)
     tail = " WHERE " + " AND ".join(where) if where else ""
     sums = " COUNT(*), SUM(progress_tokens)"
@@ -475,13 +484,13 @@ def total_runs(dest, model=None, since_ms=None, until_ms=None, by_model=False):
         return [{"model": "(all)", "sessions": n, "tokens_input": p,
                  "progress_tokens": p,
                  "tokens_output": 0, "total": p,
-                 "tok_s": _mean_rate(rates.get("(all)", []))}]
+                 "tok_s": _weighted_mean_rate(rates.get("(all)", []))}]
     rates = _run_rate_groups(dest, "model", where, params)
     return [
         {"model": m, "sessions": n, "tokens_input": p or 0,
          "progress_tokens": p or 0,
          "tokens_output": 0, "total": p or 0,
-         "tok_s": _mean_rate(rates.get(m, []))}
+         "tok_s": _weighted_mean_rate(rates.get(m, []))}
         for m, n, p in dest.execute(
             "SELECT model," + sums + " FROM unsloth_runs" + tail
             + " GROUP BY model ORDER BY model ASC", params)
@@ -896,6 +905,8 @@ def report_header(title, rows, theme=NEON, cost_est=None, unit="rows",
     `cost_est` (float USD, precomputed by the caller) appends a `~$X.XX`
     reference-estimate tail; omitted means no cost shown. `unit` names what
     one row means in this view (the dashboard passes "sessions").
+    Rows carrying a `tok_s` add a token-weighted TOK/S stat; when none of
+    them has a rate the segment is omitted entirely.
     `color=False` renders the same text with no escape bytes."""
     def sum_of(key):
         return sum(r.get(key) or 0 for r in rows)
@@ -910,14 +921,23 @@ def report_header(title, rows, theme=NEON, cost_est=None, unit="rows",
     # "1 sessions" would read wrong: singularize a count of one.
     n_rows = len(rows)
     unit1 = unit[:-1] if n_rows == 1 and unit.endswith("s") else unit
+    # Same token-weighted mean the aggregate tables use, over exactly the rows
+    # this hero summarizes, so the hero and the table under it never disagree.
+    # Views whose rows carry no rate (--from-unsloth per event, reconcile) get
+    # no TOK/S segment at all.
+    rate = _weighted_mean_rate([(r.get("tok_s"), r.get("total") or 0)
+                                for r in rows])
     # IN/OUT tinted like the table columns; the grand total glows at the
     # gradient midpoint (bold); the row-count is a derived stat like SHARE,
-    # so it wears the same teal. panel() measures visible width, so the
-    # escape bytes never rag the frame.
+    # so it wears the same teal; TOK/S takes the accent hue, the token-column
+    # hues being claimed by the tables. panel() measures visible width, so
+    # the escape bytes never rag the frame.
     hero = (paint(compact(sum_of('total')), theme["ttotal"], bold=True)
             + " tokens · " + paint(f"{n_rows} {unit1}", theme["tshare"])
             + " · " + paint(compact(sum_of('tokens_input')), theme["tin"]) + " in"
             + " · " + paint(compact(sum_of('tokens_output')), theme["tout"]) + " out"
+            + (" · " + paint(f"{rate:.1f} tok/s", theme["accent"])
+               if rate is not None else "")
             + (" · " + paint(f"~${cost_est:,.2f}", theme["num"])
                if cost_est is not None else ""))
     lines = [hero]
@@ -987,7 +1007,7 @@ def render_table(rows, columns=None):
 def daily_totals(dest, model=None, since_ms=None, until_ms=None,
                  min_in=None, min_out=None):
     """Per-day aggregates matching the filters, oldest day first. TOK/S is the
-    mean of the day's per-session rates."""
+    token-weighted mean of the day's per-session rates."""
     where, params = _session_filters(model, since_ms, until_ms, min_in, min_out)
     day_sql = "date(time_created/1000, 'unixepoch', 'localtime')"
     rates = _session_rate_groups(dest, day_sql, where, params)
@@ -1004,7 +1024,7 @@ def daily_totals(dest, model=None, since_ms=None, until_ms=None,
                      "tokens_output": tout or 0, "total": total,
                      "cost": cost or 0.0, "tokens_cache_read": tcr or 0,
                      "tokens_cache_write": tcw or 0,
-                     "tok_s": _mean_rate(rates.get(day, []))})
+                     "tok_s": _weighted_mean_rate(rates.get(day, []))})
     return rows
 
 
@@ -1012,7 +1032,8 @@ def total_totals(dest, model=None, since_ms=None, until_ms=None,
                  min_in=None, min_out=None, by_model=False):
     """All-time aggregates: one grand-total row; per-provider/model_id rows
     (ordered by that string) with a model filter or by_model=True. Empty
-    when no rows match. TOK/S is the mean of the group's per-session rates."""
+    when no rows match. TOK/S is the token-weighted mean of the group's
+    per-session rates."""
     where, params = _session_filters(model, since_ms, until_ms, min_in, min_out)
     tail = " WHERE " + " AND ".join(where) if where else ""
     sums = (" COUNT(*), SUM(tokens_input), SUM(tokens_output), SUM(cost),"
@@ -1025,7 +1046,7 @@ def total_totals(dest, model=None, since_ms=None, until_ms=None,
             return []
         n, tin, tout, cost, tcr, tcw = found
         return [_total_row("(all)", n, tin, tout, cost, tcr, tcw,
-                           _mean_rate(rates.get("(all)", [])))]
+                           _weighted_mean_rate(rates.get("(all)", [])))]
     rates = _session_rate_groups(dest, "provider || '/' || model_id",
                                  where, params)
     rows = []
@@ -1033,13 +1054,14 @@ def total_totals(dest, model=None, since_ms=None, until_ms=None,
             "SELECT provider || '/' || model_id AS m," + sums +
             " FROM usage" + tail + " GROUP BY m ORDER BY m ASC", params):
         rows.append(_total_row(m, n, tin, tout, cost, tcr, tcw,
-                               _mean_rate(rates.get(m, []))))
+                               _weighted_mean_rate(rates.get(m, []))))
     return rows
 
 
 def _total_row(model, n, tin, tout, cost, tcr, tcw, rate):
-    """Row dict for total_totals: totals plus cache components and the mean of
-    the group's per-session rates (None if none of them has one)."""
+    """Row dict for total_totals: totals plus cache components and the
+    token-weighted mean of the group's per-session rates (None if none of them
+    carries weight)."""
     tin, tout = tin or 0, tout or 0
     return {"model": model, "sessions": n, "tokens_input": tin,
             "tokens_output": tout, "total": tin + tout, "cost": cost or 0.0,

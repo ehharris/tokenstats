@@ -285,12 +285,12 @@ class EventTokSTests(unittest.TestCase):
         self.assertAlmostEqual(r["tok_s"], 100.0, places=2)
 
 
-class AggregateMeanRateTests(unittest.TestCase):
-    """Aggregate TOK/S is the MEAN of the per-row rates of the rows it folds
-    up, not tokens over the group's calendar span. A model used in one
-    long-lived session plus three short fast ones must report the average of
-    what the sessions view shows, not a number diluted by every idle second
-    between and inside those sessions."""
+class AggregateWeightedRateTests(unittest.TestCase):
+    """Aggregate TOK/S is the TOKEN-WEIGHTED mean of the rates of the rows it
+    folds up: each row counts in proportion to the tokens it moved. Not the
+    group's calendar span (idle time between and inside sessions does not
+    belong in the denominator) and not a flat average of row rates (a 17-second
+    session is not as informative as one that moved 200k tokens)."""
 
     BASE = 1_764_000_000_000
 
@@ -302,17 +302,18 @@ class AggregateMeanRateTests(unittest.TestCase):
         record(src, dest, now_ms=1)
         return dest
 
-    def test_total_totals_rate_is_mean_of_session_rates(self):
+    def test_total_totals_rate_is_token_weighted_mean(self):
         dest = self.session_dest(
             src_row(sid="s1", tin=1000, tout=200, created=self.BASE,
                     updated=self.BASE + 5_000),        # 1200 tok / 5 s = 240.0
             src_row(sid="s2", model=LEMONADE_JSON, tin=500, tout=50,
                     created=self.BASE + 60_000,
                     updated=self.BASE + 65_000))       # 550 tok / 5 s = 110.0
-        # mean(240.0, 110.0) = 175.0; the calendar span (65 s) would say 26.9
-        self.assertAlmostEqual(total_totals(dest)[0]["tok_s"], 175.0, places=2)
+        # (240*1200 + 110*550) / 1750 = 199.1; a flat mean would say 175.0
+        # and the calendar span (65 s) would say 26.9
+        self.assertAlmostEqual(total_totals(dest)[0]["tok_s"], 199.1, places=2)
 
-    def test_total_totals_per_model_rate_is_that_models_mean(self):
+    def test_total_totals_per_model_rate_is_that_models_weighted_mean(self):
         dest = self.session_dest(
             src_row(sid="s1", tin=1000, tout=200, created=self.BASE,
                     updated=self.BASE + 5_000),        # 240.0
@@ -326,18 +327,18 @@ class AggregateMeanRateTests(unittest.TestCase):
         rows = {r["model"]: r["tok_s"]
                 for r in total_totals(dest, by_model=True)}
         self.assertAlmostEqual(rows["unsloth-studio/" + UNSLOTH_MODEL_ID],
-                               175.0, places=2)
+                               199.1, places=2)
         self.assertAlmostEqual(rows["lemonade/gpt-oss-120b"], 10.0, places=2)
 
-    def test_daily_totals_rate_is_mean_of_that_days_session_rates(self):
+    def test_daily_totals_rate_is_weighted_mean_of_that_days_sessions(self):
         day = ms(2026, 11, 1)
         dest = self.session_dest(
             src_row(sid="s1", tin=1000, tout=200, created=day + 1_000,
                     updated=day + 6_000),              # 1200 tok / 5 s = 240.0
             src_row(sid="s2", tin=4800, tout=200, created=day + 20_000,
                     updated=day + 70_000))             # 5000 tok / 50 s = 100.0
-        # mean(240.0, 100.0) = 170.0; the day's span (69 s) would say 89.9
-        self.assertAlmostEqual(daily_totals(dest)[0]["tok_s"], 170.0, places=2)
+        # (240*1200 + 100*5000) / 6200 = 127.1; flat mean would say 170.0
+        self.assertAlmostEqual(daily_totals(dest)[0]["tok_s"], 127.1, places=2)
 
     def test_sessions_without_a_rate_are_excluded_from_the_mean(self):
         # A NULL time_updated has no rate: it must not contribute a 0 that
@@ -348,6 +349,15 @@ class AggregateMeanRateTests(unittest.TestCase):
             src_row(sid="s2", model=LEMONADE_JSON, tin=9999, tout=9999,
                     created=self.BASE + 60_000, updated=None))
         self.assertAlmostEqual(total_totals(dest)[0]["tok_s"], 240.0, places=2)
+
+    def test_zero_token_rows_carry_no_weight(self):
+        # A rateless, tokenless row must not make the denominator zero.
+        dest = self.session_dest(
+            src_row(sid="s1", tin=0, tout=0, created=self.BASE,
+                    updated=self.BASE + 5_000),        # 0 tokens: no weight
+            src_row(sid="s2", model=LEMONADE_JSON, tin=0, tout=0,
+                    created=self.BASE + 60_000, updated=None))
+        self.assertIsNone(total_totals(dest)[0]["tok_s"])
 
     def test_group_without_any_rate_has_no_rate(self):
         dest = self.session_dest(
@@ -367,10 +377,12 @@ class AggregateMeanRateTests(unittest.TestCase):
                     updated=self.BASE + 18_240),
             src_row(sid="s3", model=LEMONADE_JSON, tin=46813, tout=6550,
                     created=self.BASE + 90_000, updated=self.BASE + 550_000))
-        rates = [r["tok_s"] for r in query_sessions(dest)]
-        self.assertEqual(len(rates), 3)
-        self.assertAlmostEqual(total_totals(dest)[0]["tok_s"],
-                               round(sum(rates) / len(rates), 1), places=2)
+        rows = query_sessions(dest)
+        self.assertEqual(len(rows), 3)
+        expected = round(sum(r["tok_s"] * r["total"] for r in rows)
+                         / sum(r["total"] for r in rows), 1)
+        self.assertAlmostEqual(total_totals(dest)[0]["tok_s"], expected,
+                               places=2)
 
     def runs_dest(self, *rows):
         dest = make_dest()
@@ -380,24 +392,24 @@ class AggregateMeanRateTests(unittest.TestCase):
         import_unsloth_runs(src, dest)
         return dest
 
-    def test_total_runs_rate_is_mean_of_run_rates(self):
+    def test_total_runs_rate_is_token_weighted_mean(self):
         dest = self.runs_dest(
             run_row("r1", progress=200, started=self.BASE,
-                    completed=self.BASE + 10_000),     # 20.0
+                    completed=self.BASE + 10_000),     # 200 tok / 10 s = 20.0
             run_row("r2", progress=100, started=self.BASE + 30_000,
-                    completed=self.BASE + 31_000))     # 100.0
-        # mean(20.0, 100.0) = 60.0; the calendar span (31 s) would say 9.7
-        self.assertAlmostEqual(total_runs(dest)[0]["tok_s"], 60.0, places=2)
+                    completed=self.BASE + 31_000))     # 100 tok / 1 s = 100.0
+        # (20*200 + 100*100) / 300 = 46.7; flat mean would say 60.0
+        self.assertAlmostEqual(total_runs(dest)[0]["tok_s"], 46.7, places=2)
         self.assertAlmostEqual(total_runs(dest, by_model=True)[0]["tok_s"],
-                               60.0, places=2)
+                               46.7, places=2)
 
-    def test_daily_runs_rate_is_mean_of_run_rates(self):
+    def test_daily_runs_rate_is_token_weighted_mean(self):
         day = ms(2026, 11, 1)
         dest = self.runs_dest(
             run_row("r1", progress=200, started=day, completed=day + 10_000),
             run_row("r2", progress=100, started=day + 30_000,
                     completed=day + 31_000))
-        self.assertAlmostEqual(daily_runs(dest)[0]["tok_s"], 60.0, places=2)
+        self.assertAlmostEqual(daily_runs(dest)[0]["tok_s"], 46.7, places=2)
 
     def test_runs_without_a_rate_are_excluded_from_the_mean(self):
         dest = self.runs_dest(
@@ -407,7 +419,54 @@ class AggregateMeanRateTests(unittest.TestCase):
                     completed=self.BASE + 31_000),     # 100.0
             run_row("r3", progress=9999, started=self.BASE + 60_000,
                     completed=None))                   # unfinished: no rate
-        self.assertAlmostEqual(total_runs(dest)[0]["tok_s"], 60.0, places=2)
+        self.assertAlmostEqual(total_runs(dest)[0]["tok_s"], 46.7, places=2)
+
+
+class HeroTokSTests(unittest.TestCase):
+    """The hero carries the same token-weighted TOK/S as the table under it,
+    and says nothing when none of its rows has a rate."""
+
+    ROWS = [{"total": 1200, "tokens_input": 1000, "tokens_output": 200,
+             "tok_s": 240.0, "date": "2026-11-16"},
+            {"total": 550, "tokens_input": 500, "tokens_output": 50,
+             "tok_s": 110.0, "date": "2026-11-17"}]
+
+    def hero(self, **kw):
+        return _ANSI_RE.sub("", "\n".join(report_header("x", self.ROWS, **kw)))
+
+    def test_hero_shows_token_weighted_tok_s(self):
+        # (240*1200 + 110*550) / 1750 = 199.1
+        self.assertIn("199.1 tok/s", self.hero())
+
+    def test_hero_omits_tok_s_when_no_row_has_a_rate(self):
+        rows = [{"total": 300, "tokens_input": 200, "tokens_output": 100,
+                 "tok_s": None, "date": "2026-11-16"}]
+        text = _ANSI_RE.sub("", "\n".join(report_header("x", rows)))
+        self.assertNotIn("tok/s", text)
+        self.assertIn("300 tokens", text)
+
+    def test_hero_omits_tok_s_for_rows_without_the_key(self):
+        # reconcile-shaped rows and the older hero fixtures carry no tok_s.
+        rows = [{"total": 300, "tokens_input": 200, "tokens_output": 100,
+                 "date": "2026-11-16"}]
+        self.assertNotIn("tok/s",
+                         _ANSI_RE.sub("", "\n".join(report_header("x", rows))))
+
+    def test_hero_tok_s_sits_between_out_and_cost(self):
+        text = self.hero(cost_est=123.456)
+        self.assertIn("tok/s", text)
+        self.assertLess(text.index("out"), text.index("tok/s"))
+        self.assertLess(text.index("tok/s"), text.index("~$"))
+
+    def test_hero_tok_s_painted_accent(self):
+        hero = report_header("x", self.ROWS)[1]
+        r, g, b = NEON["accent"]
+        self.assertIn(f"\x1b[38;2;{r};{g};{b}m199.1 tok/s\x1b[0m", hero)
+
+    def test_hero_tok_s_stays_plain_when_color_is_off(self):
+        lines = report_header("x", self.ROWS, color=False)
+        self.assertNotIn("\x1b", "\n".join(lines))
+        self.assertIn("199.1 tok/s", lines[1])
 
 
 class ParseDateTests(unittest.TestCase):

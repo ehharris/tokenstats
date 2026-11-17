@@ -308,6 +308,55 @@ class ImportStepsTests(unittest.TestCase):
         counts = record(src, dest, now_ms=1)
         self.assertEqual(counts["inserted"], 3)
 
+    def test_non_numeric_blob_values_bump_skipped_and_continue(self):
+        # Valid JSON, but the numeric fields are strings: both arithmetic
+        # sites (step_ms and tokens_generated) must isolate the row rather
+        # than aborting the whole snapshot.
+        bad_stream = json.dumps({
+            "time": {"streamed": "not-a-number"},
+            "tokens": {"output": 100, "reasoning": 50},
+        })
+        bad_tokens = json.dumps({
+            "time": {"streamed": self.BASE + 1000},
+            "tokens": {"output": "100", "reasoning": 50},
+        })
+        messages = [
+            step_msg(mid="good1", first=self.BASE,
+                     streamed=self.BASE + 1000),
+            step_msg(mid="bad_stream", data=bad_stream),
+            step_msg(mid="bad_tokens", data=bad_tokens),
+            step_msg(mid="good2", out=200),
+        ]
+        dest = make_dest()
+        self.addCleanup(dest.close)
+        src = make_step_src([src_row()], messages)
+        self.addCleanup(src.close)
+        counts = record(src, dest, now_ms=1)
+        self.assertEqual(counts["skipped"], 2)
+        self.assertEqual({r[0]: r[4] for r in self.rows(dest)},
+                         {"good1": 150, "good2": 250})
+
+    def test_skipped_first_boundary_row_does_not_consume_an_ordinal(self):
+        # The bad assistant at index 1 opens boundary 0 (before the idle);
+        # the good assistants open boundary 3. A skipped row must not burn
+        # ordinal 0, so the stored turns still start at 0.
+        messages = [
+            step_msg(mid="u1", kind="user", created=self.BASE + 1),
+            step_msg(mid="bad", data="{not json", created=self.BASE + 2),
+            step_msg(mid="i1", kind="idle", created=self.BASE + 3),
+            step_msg(mid="u2", kind="user", created=self.BASE + 4),
+            step_msg(mid="a1", created=self.BASE + 5),
+            step_msg(mid="a2", created=self.BASE + 6),
+        ]
+        dest = make_dest()
+        self.addCleanup(dest.close)
+        src = make_step_src([src_row()], messages)
+        self.addCleanup(src.close)
+        counts = record(src, dest, now_ms=1)
+        self.assertEqual(counts["skipped"], 1)
+        self.assertEqual({r[0]: r[2] for r in self.rows(dest)},
+                         {"a1": 0, "a2": 0})
+
 
 class ParseModelTests(unittest.TestCase):
     def test_parse_model_extracts_provider_and_id(self):

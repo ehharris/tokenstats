@@ -1697,8 +1697,16 @@ class PaintCellsTests(unittest.TestCase):
                       rows[0]["tokens_input"])
         self.assertIn("38;2;{};{};{}m".format(*NEON["tout"]),
                       rows[0]["tokens_output"])
-        self.assertIn("38;2;{};{};{}m".format(*NEON["num"]),
+        self.assertIn("1;38;2;{};{};{}m".format(*NEON["ttotal"]),
                       rows[0]["total"])
+
+    def test_total_column_painted_ttotal(self):
+        rows = paint_cells([{"total": 7300000, "tokens_input": None}])
+        self.assertIn("1;38;2;{};{};{}m".format(*NEON["ttotal"]), rows[0]["total"])
+
+    def test_share_column_painted_tshare(self):
+        rows = paint_cells([{"total": 7300000, "share_str": "58.7%"}])
+        self.assertIn("38;2;{};{};{}m".format(*NEON["tshare"]), rows[0]["share_str"])
 
     def test_untouched_keys_and_missing_keys(self):
         rows = paint_cells([{"model": "m", "date": "d"}])
@@ -1912,6 +1920,15 @@ class CliNeonTests(unittest.TestCase):
         # asserted on ANSI-stripped output (paint splits the substring)
         self.assertIn("tokenstat · usage by model", _ANSI_RE.sub("", out))
         self.assertIn("sorted by share", _ANSI_RE.sub("", out))
+
+    def test_piped_share_view_output_has_no_escapes(self):
+        # regression pin: piped runs stay byte-plain even with the violet
+        # TOTAL / teal SHARE painting (painting is gated by _color_enabled)
+        code, out, _ = self.run_main(
+            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+             "--total", "--model"])
+        self.assertEqual(code, 0)
+        self.assertNotIn("\x1b", out)
 
     def test_cache_overlay_column_is_lime_under_color(self):
         _, out, _ = self.colored_main(

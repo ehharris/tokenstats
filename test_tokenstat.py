@@ -1693,9 +1693,12 @@ class PaintCellsTests(unittest.TestCase):
     def test_class_colors_applied(self):
         rows = paint_cells([{"tokens_input": "10", "tokens_output": "5",
                              "total": "15"}])
-        self.assertIn("38;2;96;165;250", rows[0]["tokens_input"])   # tin
-        self.assertIn("38;2;251;146;60", rows[0]["tokens_output"])  # tout
-        self.assertIn("38;2;245;235;229", rows[0]["total"])         # num
+        self.assertIn("38;2;{};{};{}m".format(*NEON["tin"]),
+                      rows[0]["tokens_input"])
+        self.assertIn("38;2;{};{};{}m".format(*NEON["tout"]),
+                      rows[0]["tokens_output"])
+        self.assertIn("38;2;{};{};{}m".format(*NEON["num"]),
+                      rows[0]["total"])
 
     def test_untouched_keys_and_missing_keys(self):
         rows = paint_cells([{"model": "m", "date": "d"}])
@@ -1793,6 +1796,11 @@ class NeonThemeTests(unittest.TestCase):
             self.assertEqual(len(rgb), 3, key)
             self.assertTrue(all(isinstance(v, int) and 0 <= v <= 255 for v in rgb), key)
 
+    def test_gradient_endpoints_follow_theme(self):
+        from tokenstat import TOKEN_IN_RGB, TOKEN_OUT_RGB
+        self.assertEqual(TOKEN_IN_RGB, NEON["tin"])
+        self.assertEqual(TOKEN_OUT_RGB, NEON["tout"])
+
     def test_compact_formats_millions_thousands_plain(self):
         self.assertEqual(compact(7_770_000), "7.77M")
         self.assertEqual(compact(12_340), "12.3k")
@@ -1835,8 +1843,8 @@ class CliColorTests(unittest.TestCase):
         self.assertRegex(unsloth_line, r"\d+\.\d%   [█░▒▓ ]+$")
 
 
-class CliSunsetTests(unittest.TestCase):
-    """tty-colored CLI output: sunset header/panels, per-glyph gradient glyph
+class CliNeonTests(unittest.TestCase):
+    """tty-colored CLI output: neon header/panels, per-glyph gradient glyph
     bars, painted cells. Color is forced by patching the _color_enabled gate."""
 
     def setUp(self):
@@ -1876,7 +1884,7 @@ class CliSunsetTests(unittest.TestCase):
             ["--db", self.db, "--src", os.path.join(self.tmp.name, "none.db"),
              "--unsloth-db", self.udb, "--from-runs", "--total", "--model"])
         self.assertIn("█", out)                       # glyph bars, not blocks
-        self.assertIn("38;2;80;168;255", out)         # input-blue glyphs (fg)
+        self.assertIn("38;2;{};{};{}m".format(*NEON["tin"]), out)  # input-blue glyphs (fg)
         self.assertNotIn("48;2;", out)                # no background blocks
 
     def test_reconcile_colored_skips_hero_header(self):
@@ -1898,18 +1906,18 @@ class CliSunsetTests(unittest.TestCase):
         self.assertIn("█", out)                           # glyph bars remain
         self.assertIn("38;2;", out)                       # gradient foreground
         self.assertNotIn("48;2;", out)                    # no background blocks
-        self.assertIn("38;2;80;168;255", out)   # input-blue endpoint glyphs
-        self.assertIn("38;2;255;136;90", out)   # output-orange endpoint glyphs
+        self.assertIn("38;2;{};{};{}m".format(*NEON["tin"]), out)   # input-blue endpoint glyphs
+        self.assertIn("38;2;{};{};{}m".format(*NEON["tout"]), out)  # output-pink endpoint glyphs
         # panel() paints the title strip in two roles, so the title is
         # asserted on ANSI-stripped output (paint splits the substring)
         self.assertIn("tokenstat · usage by model", _ANSI_RE.sub("", out))
         self.assertIn("sorted by share", _ANSI_RE.sub("", out))
 
-    def test_cache_overlay_column_is_amber_under_color(self):
+    def test_cache_overlay_column_is_lime_under_color(self):
         _, out, _ = self.colored_main(
             ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
              "--total", "--model", "--cache"])
-        self.assertIn("38;2;250;204;21", out)   # tcach on the CACHE column
+        self.assertIn("38;2;{};{};{}m".format(*NEON["tcach"]), out)  # CACHE column
 
     def test_header_panel_prints(self):
         _, out, _ = self.colored_main(

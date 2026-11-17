@@ -768,7 +768,8 @@ _PAINT_CELLS = {
     "tokens_output": ("int", "tout", False),
     "cache": ("int", "tcach", False),
     "cost_est": ("cost", "num", False),
-    "total": ("int", "num", True),
+    "total": ("int", "ttotal", True),
+    "share_str": ("text", "tshare", False),
 }
 
 

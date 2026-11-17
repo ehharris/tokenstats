@@ -680,26 +680,40 @@ def add_shares(rows, bar_width=30):
     return out
 
 
+# Neon Midnight palette for the display layer: near-black indigo chrome,
+# a mirrored input-blue / output-pink pair for the token columns, lime for
+# cache reads, violet totals (the gradient midpoint), teal derived stats.
+# Every value is a true-color (r, g, b) triple.
+NEON = {
+    "border": (76, 58, 120), "accent": (232, 121, 249),
+    "label": (169, 156, 201), "num": (244, 240, 255),
+    "tin": (96, 165, 250), "tout": (244, 114, 182),
+    "tcach": (163, 230, 53), "track": (30, 23, 48),
+    "ttotal": (167, 139, 250), "tshare": (94, 234, 212),
+}
+
 # Bars are a left-to-right color gradient: input tokens blue fading into
-# output-token orange, with the transition centered where the input share of
+# output-token pink, with the transition centered where the input share of
 # the row's total ends. Interpolated in HSL sweeping UP from blue through
-# purple/magenta (never through gray), so every stop stays fully saturated;
-# at these endpoints that reproduces TOKEN_IN/OUT_RGB exactly.
-TOKEN_IN_RGB = (80, 168, 255)
-TOKEN_OUT_RGB = (255, 136, 90)
+# violet (never through gray); hue, lightness AND saturation are lerped
+# between the endpoints so both ends reproduce TOKEN_IN/OUT_RGB exactly.
+TOKEN_IN_RGB = NEON["tin"]
+TOKEN_OUT_RGB = NEON["tout"]
 
 
 _HUE_IN, _LUM_IN, _SAT = colorsys.rgb_to_hls(*(v / 255 for v in TOKEN_IN_RGB))
-_HUE_OUT, _LUM_OUT, _ = colorsys.rgb_to_hls(*(v / 255 for v in TOKEN_OUT_RGB))
-# sweep UP (blue -> purple -> magenta -> red-orange), wrapping past 1.0;
-# the DOWN route would go through green/yellow
+_HUE_OUT, _LUM_OUT, _SAT_OUT = colorsys.rgb_to_hls(*(v / 255 for v in TOKEN_OUT_RGB))
+# sweep UP (blue -> violet -> pink), wrapping past 1.0 when needed; for
+# this pair it is the short arc
 _HUE_SPAN = (_HUE_OUT - _HUE_IN) % 1.0
 
 
 def _token_rgb(t):
-    """Fully saturated blend from TOKEN_IN_RGB (t=0) to TOKEN_OUT_RGB (t=1)."""
+    """Blend from TOKEN_IN_RGB (t=0) to TOKEN_OUT_RGB (t=1), lerping hue
+    (UP sweep), lightness, and saturation; endpoints round-trip exactly."""
     r, g, b = colorsys.hls_to_rgb((_HUE_IN + t * _HUE_SPAN) % 1.0,
-                                  _LUM_IN + (_LUM_OUT - _LUM_IN) * t, 1.0)
+                                  _LUM_IN + (_LUM_OUT - _LUM_IN) * t,
+                                  _SAT + (_SAT_OUT - _SAT) * t)
     return (round(r * 255), round(g * 255), round(b * 255))
 
 
@@ -728,7 +742,7 @@ def _color_enabled(out, environ):
 
 def paint_bars(rows, color):
     """Copy of `rows` with BAR cells padded by one space either side; when
-    color is true, nonzero bars get a per-glyph blue->orange gradient whose
+    color is true, nonzero bars get a per-glyph blue->pink gradient whose
     transition marks the row's input/output split. Table-only."""
     out = []
     for r in rows:
@@ -737,18 +751,6 @@ def paint_bars(rows, color):
             bar = _paint_gradient(bar, r["tokens_input"] / r["total"])
         out.append({**r, "bar": f" {bar} "})
     return out
-
-
-# Sunset palette for the visual redesign: warm dusk chrome around the report,
-# plus a mirrored input-blue / output-orange pair for the token columns and
-# amber for cache reads. Every value is a true-color (r, g, b) triple.
-NEON = {
-    "border": (87, 69, 62), "accent": (251, 146, 60),
-    "label": (181, 153, 138), "num": (245, 235, 229),
-    "tin": (96, 165, 250), "tout": (251, 146, 60),
-    "tcach": (250, 204, 21), "track": (41, 34, 30),
-    "ttotal": (167, 139, 250), "tshare": (94, 234, 212),
-}
 
 
 def compact(n):

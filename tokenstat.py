@@ -206,7 +206,14 @@ def import_opencode_steps(src: sqlite3.Connection,
     the turn; distinct boundary indices are numbered in first-appearance order
     so the first turn's steps get 0, the next turn's get 1, and so on. This
     keeps _turn_index's raw-index contract intact (Task 1 pins it) while the
-    stored turn stays a small, stable label.
+    stored turn stays a small, stable label. A skipped row never claims an
+    ordinal, so stored turns still start at 0.
+
+    Per-row isolation covers the whole body — ordinal lookup, blob parse,
+    arithmetic and upsert — against sqlite3.Error, TypeError and ValueError.
+    A well-formed blob with non-numeric timing/token fields raises TypeError
+    in the arithmetic; per the spec's error-isolation constraint it bumps
+    `skipped` instead of aborting the snapshot.
     """
     counts = {"inserted": 0, "updated": 0, "unchanged": 0}
     has_table = src.execute(
@@ -230,16 +237,7 @@ def import_opencode_steps(src: sqlite3.Connection,
                 continue
             try:
                 boundary = _turn_index(types, i + 1, legacy)
-                # Register the boundary even for a row whose blob is bad, so
-                # later turns in this session keep stable ordinals.
-                if boundary not in turn_ordinals:
-                    turn_ordinals[boundary] = len(turn_ordinals)
-                turn = turn_ordinals[boundary]
-                try:
-                    data_obj = json.loads(data)
-                except (TypeError, ValueError):
-                    counts["skipped"] = counts.get("skipped", 0) + 1
-                    continue
+                data_obj = json.loads(data)
                 # Non-dict JSON is an extraction failure, not a row error
                 # (mirrors parse_model): the step still inserts, with no
                 # duration and no generated tokens.
@@ -258,6 +256,11 @@ def import_opencode_steps(src: sqlite3.Connection,
                     step_ms = max(0, streamed - start)
                 tokens_generated = ((tokens.get("output") or 0)
                                     + (tokens.get("reasoning") or 0))
+                # Peek at the ordinal without claiming it: a row that fails
+                # anywhere below must not consume a turn number.
+                turn = turn_ordinals.get(boundary)
+                if turn is None:
+                    turn = len(turn_ordinals)
                 existing = dest.execute(
                     "SELECT step_ms, tokens_generated FROM opencode_steps"
                     " WHERE message_id = ?", (mid,)).fetchone()
@@ -267,7 +270,7 @@ def import_opencode_steps(src: sqlite3.Connection,
                         " turn, step_ms, tokens_generated, time_created)"
                         " VALUES (?,?,?,?,?,?)",
                         [mid, sid, turn, step_ms, tokens_generated, created])
-                    counts["inserted"] += 1
+                    outcome = "inserted"
                 else:
                     old_step, old_tokens = existing
                     # NULL is "no information", never a zero to max against.
@@ -284,9 +287,13 @@ def import_opencode_steps(src: sqlite3.Connection,
                         " tokens_generated = ?, time_created = ?"
                         " WHERE message_id = ?",
                         [turn, *merged, created, mid])
-                    counts["updated" if changed else "unchanged"] += 1
-            except sqlite3.Error:
-                # One malformed source row must not abort (or roll back) the rest.
+                    outcome = "updated" if changed else "unchanged"
+                # The row committed cleanly — now the ordinal is official.
+                turn_ordinals[boundary] = turn
+                counts[outcome] += 1
+            except (sqlite3.Error, TypeError, ValueError):
+                # One malformed source row must not abort (or roll back) the
+                # rest, and must not consume a turn ordinal.
                 counts["skipped"] = counts.get("skipped", 0) + 1
     dest.commit()
     return counts

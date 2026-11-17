@@ -13,8 +13,8 @@ import tokenstat
 import unittest
 import unittest.mock
 
-from tokenstat import (_ANSI_RE, _visible, NEON, SESSION_COLUMNS, add_shares,
-                       compact, daily_events, daily_runs,
+from tokenstat import (_ANSI_RE, _turn_index, _visible, NEON, SESSION_COLUMNS,
+                       add_shares, compact, daily_events, daily_runs,
                        daily_totals, ensure_schema, import_unsloth,
                        import_unsloth_runs, main, paint_bars, paint_cells,
                        panel, parse_date, parse_model, query_events,
@@ -2185,6 +2185,41 @@ class SchemaTests(unittest.TestCase):
             "PRAGMA index_info(idx_usage_time_created)").fetchall()
         self.assertEqual(len(created), 1)
         self.assertEqual(len(tcreated), 1)
+
+
+class StepsSchemaTests(unittest.TestCase):
+    def test_ensure_schema_creates_opencode_steps(self):
+        dest = make_dest()
+        self.addCleanup(dest.close)
+        cols = [r[1] for r in dest.execute("PRAGMA table_info(opencode_steps)")]
+        self.assertEqual(
+            cols, ["message_id", "session_id", "turn", "step_ms",
+                   "tokens_generated", "time_created"])
+        idx = [r[1] for r in dest.execute(
+            "PRAGMA index_list(opencode_steps)")]
+        self.assertIn("idx_opencode_steps_session_turn", idx)
+
+
+class TurnIndexTests(unittest.TestCase):
+    def test_walks_back_past_synthetic_to_the_opening_user(self):
+        # Reference session: a mid-turn synthetic must NOT open the turn.
+        t = ["user", "assistant", "synthetic", "assistant", "assistant", "idle"]
+        self.assertEqual(_turn_index(t, 5, legacy=False), 0)
+
+    def test_stops_at_the_preceding_idle(self):
+        t = ["user", "assistant", "idle", "user", "assistant", "assistant"]
+        self.assertEqual(_turn_index(t, 5, legacy=False), 3)
+
+    def test_synthetic_opens_a_turn_when_no_user_precedes(self):
+        t = ["user", "assistant", "idle", "synthetic", "assistant"]
+        self.assertEqual(_turn_index(t, 4, legacy=False), 3)
+
+    def test_legacy_returns_nearest_input_and_does_not_walk_past_idle(self):
+        t = ["user", "assistant", "idle", "user", "assistant"]
+        self.assertEqual(_turn_index(t, 4, legacy=True), 3)
+
+    def test_no_input_message_returns_minus_one(self):
+        self.assertEqual(_turn_index(["assistant", "assistant"], 2, False), -1)
 
 
 class LikeEscapingTests(unittest.TestCase):

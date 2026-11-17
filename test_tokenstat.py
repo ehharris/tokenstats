@@ -13,7 +13,7 @@ import tokenstat
 import unittest
 import unittest.mock
 
-from tokenstat import (_ANSI_RE, _visible, SUNSET, SESSION_COLUMNS, add_shares,
+from tokenstat import (_ANSI_RE, _visible, NEON, SESSION_COLUMNS, add_shares,
                        compact, daily_events, daily_runs,
                        daily_totals, ensure_schema, import_unsloth,
                        import_unsloth_runs, main, paint_bars, paint_cells,
@@ -1737,8 +1737,8 @@ class PanelTests(unittest.TestCase):
     def test_title_carries_label_role_after_accent_prefix(self):
         # the strip is two runs: accent-bold " tokenstat · ", then the title
         # itself in the label role (roles are the spec of the redesign)
-        accent = "\x1b[1;38;2;{};{};{}m".format(*SUNSET["accent"])
-        label = "\x1b[38;2;{};{};{}m".format(*SUNSET["label"])
+        accent = "\x1b[1;38;2;{};{};{}m".format(*NEON["accent"])
+        label = "\x1b[38;2;{};{};{}m".format(*NEON["label"])
         top = panel("sessions", ["x"])[0]
         self.assertIn(accent + " tokenstat · " + "\x1b[0m" + label + "sessions ",
                       top)
@@ -1784,12 +1784,14 @@ class ColorEnabledTests(unittest.TestCase):
         self.assertFalse(_color_enabled(Pipe(), {}))
 
 
-class SunsetThemeTests(unittest.TestCase):
-    def test_sunset_palette_has_all_roles(self):
-        for key in ("border", "accent", "label", "num",
-                    "tin", "tout", "tcach", "track"):
-            self.assertEqual(len(SUNSET[key]), 3)
-            self.assertTrue(all(0 <= v <= 255 for v in SUNSET[key]))
+class NeonThemeTests(unittest.TestCase):
+    def test_neon_dict_shape(self):
+        self.assertEqual(
+            set(NEON), {"border", "accent", "label", "num", "tin", "tout",
+                        "tcach", "track", "ttotal", "tshare"})
+        for key, rgb in NEON.items():
+            self.assertEqual(len(rgb), 3, key)
+            self.assertTrue(all(isinstance(v, int) and 0 <= v <= 255 for v in rgb), key)
 
     def test_compact_formats_millions_thousands_plain(self):
         self.assertEqual(compact(7_770_000), "7.77M")
@@ -2042,9 +2044,9 @@ class PanelEmptyTitleTests(unittest.TestCase):
         rows = [{"total": 300, "tokens_input": 200, "tokens_output": 100,
                  "date": "2026-11-15"}]
         hero = report_header("x", rows)[1]
-        r, g, b = SUNSET["tin"]
+        r, g, b = NEON["tin"]
         self.assertIn(f"\x1b[38;2;{r};{g};{b}m200\x1b[0m in", hero)
-        r, g, b = SUNSET["tout"]
+        r, g, b = NEON["tout"]
         self.assertIn(f"\x1b[38;2;{r};{g};{b}m100\x1b[0m out", hero)
 
     def test_hero_unit_label_is_configurable(self):
@@ -2067,7 +2069,7 @@ class PanelEmptyTitleTests(unittest.TestCase):
                  "date": "2026-11-15"}]
         plain = _ANSI_RE.sub("", report_header("x", rows)[1])
         self.assertNotIn("~$", plain)
-        r, g, b = SUNSET["num"]
+        r, g, b = NEON["num"]
         hero = report_header("x", rows, cost_est=123.456)[1]
         self.assertIn(f"\x1b[38;2;{r};{g};{b}m~$123.46\x1b[0m", hero)
 

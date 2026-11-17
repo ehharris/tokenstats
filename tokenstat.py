@@ -742,11 +742,12 @@ def paint_bars(rows, color):
 # Sunset palette for the visual redesign: warm dusk chrome around the report,
 # plus a mirrored input-blue / output-orange pair for the token columns and
 # amber for cache reads. Every value is a true-color (r, g, b) triple.
-SUNSET = {
+NEON = {
     "border": (87, 69, 62), "accent": (251, 146, 60),
     "label": (181, 153, 138), "num": (245, 235, 229),
     "tin": (96, 165, 250), "tout": (251, 146, 60),
     "tcach": (250, 204, 21), "track": (41, 34, 30),
+    "ttotal": (167, 139, 250), "tshare": (94, 234, 212),
 }
 
 
@@ -769,7 +770,7 @@ _PAINT_CELLS = {
 }
 
 
-def paint_cells(rows, theme=SUNSET):
+def paint_cells(rows, theme=NEON):
     """Copy of `rows` whose token/cost cells are wrapped in their class color.
     Values arrive raw (ints) or already rendered (strings); numbers are
     formatted exactly as `render_table.fmt` would, so painting never changes
@@ -804,7 +805,7 @@ def _visible(cell):
     return len(_ANSI_RE.sub("", cell))
 
 
-def panel(title, lines, theme=SUNSET):
+def panel(title, lines, theme=NEON):
     """Rounded frame around `lines`, headed by a ` tokenstat · {title} ` strip;
     an empty title renders the plain ` tokenstat ` strip (no separator).
     Every returned line shares one visible width: the widest content line or
@@ -832,7 +833,7 @@ def panel(title, lines, theme=SUNSET):
     return [top] + body + [bottom]
 
 
-def report_header(title, rows, theme=SUNSET, cost_est=None, unit="rows"):
+def report_header(title, rows, theme=NEON, cost_est=None, unit="rows"):
     """Hero panel for a report: one grand-total line over a dim date span.
     Safe for rows that carry no tokens_input/tokens_output keys and for rows
     whose date is missing or None (the span is omitted when none is dated).
@@ -874,7 +875,7 @@ def _table_panel(title, rows, columns, share_view, color):
     table = render_table(paint_cells(rows) if color else rows, columns)
     lines = table.splitlines()
     if color:
-        r, g, b = SUNSET["label"]
+        r, g, b = NEON["label"]
         lines[0] = f"\x1b[38;2;{r};{g};{b}m{lines[0]}\x1b[0m"
     return panel(title, lines)
 
@@ -1273,7 +1274,7 @@ def main(argv):
                 lines = table.splitlines()
                 # Header row dimmed to the label role (column names recede
                 # behind the painted numbers below them).
-                r, g, b = SUNSET["label"]
+                r, g, b = NEON["label"]
                 lines[0] = f"\x1b[38;2;{r};{g};{b}m{lines[0]}\x1b[0m"
                 # Reconcile rows carry no summed token classes, so a hero
                 # header would imply zeros the view never computed — the

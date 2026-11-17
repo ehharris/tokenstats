@@ -354,14 +354,14 @@ Expected: FAIL — rates still computed from wall clock.
 
 - [ ] **Step 3: Add the two SQL constants above `query_sessions`**
 
-No JSON1; plain aggregation over `opencode_steps`. The `HAVING` clause encodes OpenCode's guards: no never-streamed step in the turn (`COUNT(step_ms) = COUNT(*)`), and positive tokens and time.
+No JSON1; plain aggregation over `opencode_steps`. The `HAVING` clause encodes OpenCode's guards: no never-streamed step in the turn (`COUNT(step_ms) = COUNT(*)`), positive tokens, and a turn span of at least one second — the same sub-second floor `_aggregate_rate` applies, per the Global Constraints.
 
 ```python
 _TURN_RATE_SQL = (
     "(SELECT AVG(rate) FROM (SELECT SUM(tokens_generated) * 1000.0"
     " / SUM(step_ms) AS rate FROM opencode_steps"
     " WHERE opencode_steps.session_id = usage.session_id GROUP BY turn"
-    " HAVING COUNT(step_ms) = COUNT(*) AND SUM(step_ms) > 0"
+    " HAVING COUNT(step_ms) = COUNT(*) AND SUM(step_ms) >= 1000"
     " AND SUM(tokens_generated) > 0))")
 _GENERATED_SQL = (
     "(SELECT SUM(tokens_generated) FROM opencode_steps"

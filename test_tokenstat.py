@@ -409,8 +409,8 @@ class QueryTests(unittest.TestCase):
         self.assertEqual(
             sorted(row.keys()),
             sorted(["date", "model", "tokens_input", "tokens_output",
-                    "total", "cost", "title", "tok_s", "tokens_cache_read",
-                    "tokens_cache_write"]))
+                    "total", "cost", "title", "tok_s", "rate_weight",
+                    "tokens_cache_read", "tokens_cache_write"]))
         self.assertEqual(row["total"], row["tokens_input"] + row["tokens_output"])
 
 
@@ -424,19 +424,27 @@ class SessionTokSTests(unittest.TestCase):
         self.addCleanup(src.close)
         record(src, self.dest, now_ms=1)
 
-    def test_session_rate_is_tokens_over_wall_clock_span(self):
-        row = query_sessions(self.dest)[0]
-        # (1000+200) tokens over 5 s = 240.0
-        self.assertAlmostEqual(row["tok_s"], 240.0, places=2)
-
-    def test_session_zero_span_rate_is_none(self):
-        # 0-second span (time_updated == time_created) must yield None, not a
-        # ZeroDivision.
+    def test_session_with_no_steps_has_none_rate(self):
+        # A session_v2 row may carry a wall-clock span, but with no step data
+        # there is no turn rate — and no wall-clock fallback.
         dest = make_dest()
         self.addCleanup(dest.close)
-        src = make_src([src_row(sid="z", tin=100, tout=10,
-                                 created=1_764_000_000_000,
-                                 updated=1_764_000_000_000)])
+        src = make_step_src([src_row(sid="n")], [])
+        self.addCleanup(src.close)
+        record(src, dest, now_ms=1)
+        rows = query_sessions(dest)
+        self.assertEqual(len(rows), 1)
+        self.assertIsNone(rows[0]["tok_s"])
+
+    def test_session_subsecond_turn_has_none_rate(self):
+        # A single 0.5 s turn falls below the one-second floor and is dropped;
+        # with no other turn the session has no rate (not a ZeroDivision).
+        dest = make_dest()
+        self.addCleanup(dest.close)
+        base = 1_764_000_000_000
+        src = make_step_src(
+            [src_row(sid="z")],
+            [step_msg(mid="a", sid="z", first=base, streamed=base + 500)])
         self.addCleanup(src.close)
         record(src, dest, now_ms=1)
         rows = query_sessions(dest)
@@ -456,6 +464,103 @@ class SessionTokSTests(unittest.TestCase):
         self.addCleanup(src.close)
         import_unsloth(src, dest)
         self.assertIsNone(query_events(dest)[0]["tok_s"])
+
+
+class SessionTurnRateTests(unittest.TestCase):
+    """A session's TOK/S is the unweighted mean of its turns' rates, matching
+    OpenCode's per-prompt number: Σ(output+reasoning) / Σ(streamed - firstToken)
+    per turn, then averaged across turns."""
+
+    BASE = 1_764_000_000_000
+
+    def dest_for(self, messages, rows=(src_row(),)):
+        dest = make_dest()
+        self.addCleanup(dest.close)
+        src = make_step_src(list(rows), list(messages))
+        self.addCleanup(src.close)
+        record(src, dest, now_ms=1)
+        return dest
+
+    def turn(self, mid, first_off, stream_off, out, reasoning=0, sid="s1",
+             created=None):
+        # `created` is only ordering metadata: step_ms comes from the blob's
+        # firstToken/streamed, so bumping it cannot change the rate math. It
+        # lets multi-turn fixtures keep assistant/idle/user messages in a
+        # deterministic time order (as ImportStepsTests does).
+        return step_msg(mid, sid=sid,
+                        created=self.BASE if created is None else created,
+                        first=self.BASE + first_off,
+                        streamed=self.BASE + first_off + stream_off,
+                        out=out, reasoning=reasoning)
+
+    def test_two_turns_average_their_rates(self):
+        # turn 0: 100 tokens / 1.0 s = 100.0; turn 1: 100 / 2.0 = 50.0.
+        messages = [
+            self.turn("a1", 0, 1000, 100),
+            step_msg("i1", kind="idle", created=self.BASE + 10),
+            step_msg("u1", kind="user", created=self.BASE + 20),
+            self.turn("a2", 0, 2000, 100, created=self.BASE + 30),
+        ]
+        row = query_sessions(self.dest_for(messages))[0]
+        self.assertAlmostEqual(row["tok_s"], 75.0, places=2)
+
+    def test_steps_in_one_turn_pool_before_dividing(self):
+        # Two steps in one turn: (100+300) / (1.0+1.0) = 200.0, NOT the mean
+        # of 100.0 and 300.0.
+        messages = [
+            self.turn("a1", 0, 1000, 100),
+            self.turn("a2", 0, 1000, 300, created=self.BASE + 10),
+        ]
+        row = query_sessions(self.dest_for(messages))[0]
+        self.assertAlmostEqual(row["tok_s"], 200.0, places=2)
+
+    def test_never_streamed_step_drops_its_turn(self):
+        # Turn 0 is valid (100.0). Turn 1 holds a valid step AND a
+        # never-streamed step: ANY such step voids the whole turn, so turn 1
+        # is dropped rather than averaged in (as 0 or as a pooled rate).
+        messages = [
+            self.turn("a1", 0, 1000, 100),
+            step_msg("i1", kind="idle", created=self.BASE + 10),
+            step_msg("u1", kind="user", created=self.BASE + 20),
+            self.turn("a2", 0, 1000, 100, created=self.BASE + 30),
+            step_msg("bad", first=self.BASE + 40, streamed=None, out=999,
+                     created=self.BASE + 40),
+        ]
+        row = query_sessions(self.dest_for(messages))[0]
+        self.assertAlmostEqual(row["tok_s"], 100.0, places=2)
+
+    def test_session_with_no_steps_has_no_rate(self):
+        # The session_v2 row has a wall-clock span, but there is no step data
+        # and deliberately no wall-clock fallback.
+        row = query_sessions(self.dest_for([]))[0]
+        self.assertIsNone(row["tok_s"])
+
+    def test_subsecond_turn_is_dropped(self):
+        # A 0.5 s turn is excluded by the >= 1000 ms floor; alone -> None.
+        messages = [self.turn("a1", 0, 500, 100)]
+        row = query_sessions(self.dest_for(messages))[0]
+        self.assertIsNone(row["tok_s"])
+
+    def test_rate_weight_is_generated_tokens(self):
+        # tokens_generated is output + reasoning per step: 100 + (200+50).
+        messages = [
+            self.turn("a1", 0, 1000, 100),
+            self.turn("a2", 0, 1000, 200, reasoning=50,
+                      created=self.BASE + 10),
+        ]
+        row = query_sessions(self.dest_for(messages))[0]
+        self.assertEqual(row["rate_weight"], 350)
+
+    def test_mean_of_nonround_turn_rates(self):
+        # Turn rates 1000/3 and 1000/7, averaged then rounded to one decimal.
+        messages = [
+            self.turn("a1", 0, 3000, 1000),
+            step_msg("i1", kind="idle", created=self.BASE + 10),
+            step_msg("u1", kind="user", created=self.BASE + 20),
+            self.turn("a2", 0, 7000, 1000, created=self.BASE + 30),
+        ]
+        row = query_sessions(self.dest_for(messages))[0]
+        self.assertEqual(row["tok_s"], round((1000 / 3 + 1000 / 7) / 2, 1))
 
 
 class EventTokSTests(unittest.TestCase):
@@ -577,15 +682,28 @@ class AggregateWeightedRateTests(unittest.TestCase):
         self.assertIsNone(daily_totals(dest)[0]["tok_s"])
 
     def test_total_totals_rate_matches_the_sessions_view(self):
-        # The number on the --model row must be reproducible from the numbers
-        # on the sessions rows, awkward quotients and all.
-        dest = self.session_dest(
-            src_row(sid="s1", tin=163585, tout=65564, created=self.BASE,
-                    updated=self.BASE + 125_924_000),
-            src_row(sid="s2", tin=10150, tout=108, created=self.BASE + 1000,
-                    updated=self.BASE + 18_240),
-            src_row(sid="s3", model=LEMONADE_JSON, tin=46813, tout=6550,
-                    created=self.BASE + 90_000, updated=self.BASE + 550_000))
+        # The grand-total TOK/S must be reproducible from the session rows'
+        # own rates. Give each session one step whose turn rate IS its old
+        # wall-clock rate (generated tokens = tin+tout, span = created→updated)
+        # so the invariant holds whether the aggregate reads wall clock or
+        # turn data — Task 4 swaps the former for the latter.
+        dest = make_dest()
+        self.addCleanup(dest.close)
+        sessions = [
+            src_row(sid="s1", tin=1000, tout=200, created=self.BASE,
+                    updated=self.BASE + 5_000),                  # 240.0, 1200
+            src_row(sid="s2", tin=500, tout=50, created=self.BASE + 1_000,
+                    updated=self.BASE + 6_000),                  # 110.0, 550
+            src_row(sid="s3", model=LEMONADE_JSON, tin=90, tout=10,
+                    created=self.BASE + 90_000,
+                    updated=self.BASE + 100_000),                # 10.0, 100
+        ]
+        steps = [step_msg(mid=f"a{i}", sid=r[0], first=r[11],
+                          streamed=r[12], out=r[2] + r[3], reasoning=0)
+                 for i, r in enumerate(sessions)]
+        src = make_step_src(sessions, steps)
+        self.addCleanup(src.close)
+        record(src, dest, now_ms=1)
         rows = query_sessions(dest)
         self.assertEqual(len(rows), 3)
         expected = round(sum(r["tok_s"] * r["total"] for r in rows)

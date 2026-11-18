@@ -104,7 +104,7 @@ def parse_model(raw):
     return (str(data.get("providerID", "")), str(data.get("id", "")))
 
 
-def _turn_index(types, end, legacy):
+def _turn_index(types: list[str], end: int, legacy: bool) -> int:
     """Index of the input message opening the turn ending at `end` (exclusive).
 
     Port of OpenCode's inputIndex: walk back from `end`, remembering the last

@@ -883,33 +883,45 @@ class AggregateTurnWeightTests(unittest.TestCase):
         self.assertIn(shown + " tok/s", hero)
 
     def test_hero_over_per_model_rows_reproduces_grand_total(self):
-        # Two models, two sessions each with differing turn rates, and each
-        # model's generated tokens differ from its in+out total:
-        #   unsloth: (240 tok/s * 240 gen + 110 * 550) / 790 = 149.5
-        #   lemonade: (10 * 100 + 10 * 400) / 500 = 10.0
-        #   grand:    (240*240 + 110*550 + 10*100 + 10*400) / 1290 = 95.4
-        # Weighting the per-model rows by in+out instead would give 129.1.
+        # Two models, two sessions each, with GENUINELY DIFFERENT turn rates
+        # AND each session's turn rate differing from its wall-clock value
+        # (in+out tokens / (updated-created)). One step per session, so the
+        # turn rate is generated*1000/span_ms. All arithmetic by hand:
+        #   unsloth s1: 200/1.0s = 200.0  (wall 1200/4.0s = 300.0), gen 200
+        #   unsloth s2: 400/4.0s = 100.0  (wall  550/5.0s = 110.0), gen 400
+        #   lemonade s3: 100/1.0s = 100.0 (wall  100/2.0s =  50.0), gen 100
+        #   lemonade s4: 300/2.0s = 150.0 (wall  200/4.0s =  50.0), gen 300
+        #   unsloth:  (200*200 + 100*400)/600  = 80000/600  = 133.3
+        #   lemonade: (100*100 + 150*300)/400  = 55000/400  = 137.5
+        #   grand:    (200*200 + 100*400 + 100*100 + 150*300)/1000
+        #                                        = 135000/1000 = 135.0
+        # A wall-clock basis would give 212.4 instead — so a rate-basis
+        # regression fails this pin. Weighting the per-model rows by in+out
+        # instead of generated tokens also fails the rate_weight assertions.
         dest = self.dest_with(
             [src_row(sid="s1", tin=1000, tout=200, created=self.BASE,
-                     updated=self.BASE + 5_000),
+                     updated=self.BASE + 4_000),
              src_row(sid="s2", tin=500, tout=50, created=self.BASE + 60_000,
                      updated=self.BASE + 65_000),
              src_row(sid="s3", model=LEMONADE_JSON, tin=90, tout=10,
-                     created=self.BASE, updated=self.BASE + 10_000),
+                     created=self.BASE, updated=self.BASE + 2_000),
              src_row(sid="s4", model=LEMONADE_JSON, tin=190, tout=10,
-                     created=self.BASE + 30_000, updated=self.BASE + 50_000)],
-            [self.turn("a1", "s1", 240, 1000),
-             self.turn("a2", "s2", 550, 5000),
-             self.turn("a3", "s3", 100, 10000),
-             self.turn("a4", "s4", 400, 40000)])
+                     created=self.BASE + 30_000, updated=self.BASE + 34_000)],
+            [self.turn("a1", "s1", 200, 1000),
+             self.turn("a2", "s2", 400, 4000),
+             self.turn("a3", "s3", 100, 1000),
+             self.turn("a4", "s4", 300, 2000)])
         grand = total_totals(dest)[0]["tok_s"]
+        self.assertEqual(grand, 135.0)
         rows = {r["model"]: r for r in total_totals(dest, by_model=True)}
         unsloth = rows["unsloth-studio/" + UNSLOTH_MODEL_ID]
         lemonade = rows["lemonade/gpt-oss-120b"]
+        self.assertEqual(unsloth["tok_s"], 133.3)
+        self.assertEqual(lemonade["tok_s"], 137.5)
         # The weight each aggregate row carries is the Σ generated tokens of
         # its rate-bearing sessions — NOT its in+out total.
-        self.assertEqual(unsloth["rate_weight"], 790)
-        self.assertEqual(lemonade["rate_weight"], 500)
+        self.assertEqual(unsloth["rate_weight"], 600)
+        self.assertEqual(lemonade["rate_weight"], 400)
         self.assertNotEqual(unsloth["rate_weight"], unsloth["total"])
         self.assertNotEqual(lemonade["rate_weight"], lemonade["total"])
         hero = _ANSI_RE.sub("", "\n".join(
@@ -2724,10 +2736,19 @@ class StepsSchemaTests(unittest.TestCase):
     def test_ensure_schema_creates_opencode_steps(self):
         dest = make_dest()
         self.addCleanup(dest.close)
-        cols = [r[1] for r in dest.execute("PRAGMA table_info(opencode_steps)")]
-        self.assertEqual(
-            cols, ["message_id", "session_id", "turn", "step_ms",
-                   "tokens_generated", "time_created"])
+        # PRAGMA table_info -> (cid, name, type, notnull, dflt_value, pk).
+        # Pin (name, type, notnull, pk) so a wrongly-typed, wrongly-nullable
+        # or non-PRIMARY-KEY column fails — names alone cannot catch that.
+        shape = [(r[1], r[2], r[3], r[5])
+                 for r in dest.execute("PRAGMA table_info(opencode_steps)")]
+        self.assertEqual(shape, [
+            ("message_id", "TEXT", 0, 1),           # PRIMARY KEY (SQLite leaves notnull=0)
+            ("session_id", "TEXT", 1, 0),           # NOT NULL
+            ("turn", "INTEGER", 1, 0),              # NOT NULL DEFAULT 0
+            ("step_ms", "INTEGER", 0, 0),           # nullable
+            ("tokens_generated", "INTEGER", 1, 0),  # NOT NULL DEFAULT 0
+            ("time_created", "INTEGER", 1, 0),      # NOT NULL
+        ])
         idx = [r[1] for r in dest.execute(
             "PRAGMA index_list(opencode_steps)")]
         self.assertIn("idx_opencode_steps_session_turn", idx)
@@ -2750,6 +2771,18 @@ class TurnIndexTests(unittest.TestCase):
     def test_legacy_returns_nearest_input_and_does_not_walk_past_idle(self):
         t = ["user", "assistant", "idle", "user", "assistant"]
         self.assertEqual(_turn_index(t, 4, legacy=True), 3)
+
+    def test_legacy_nearest_input_differs_from_full_walk(self):
+        # A mid-turn synthetic is where the two rules genuinely disagree.
+        # legacy exercises the "nearest preceding input" short-circuit: it
+        # stops at the synthetic (index 1) and never reaches the user. The
+        # non-legacy full walk remembers the last input while walking back,
+        # so the user at index 0 overwrites it — the synthetic does not open
+        # the turn. Deleting the `if legacy: return i` short-circuit makes the
+        # legacy call fall through to the full walk and return 0, failing here.
+        t = ["user", "synthetic", "assistant"]
+        self.assertEqual(_turn_index(t, 3, legacy=True), 1)    # nearest input
+        self.assertEqual(_turn_index(t, 3, legacy=False), 0)   # turn-opening user
 
     def test_no_input_message_returns_minus_one(self):
         self.assertEqual(_turn_index(["assistant", "assistant"], 2, False), -1)

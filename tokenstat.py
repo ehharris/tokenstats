@@ -209,6 +209,14 @@ def import_opencode_steps(src: sqlite3.Connection,
     stored turn stays a small, stable label. A skipped row never claims an
     ordinal, so stored turns still start at 0.
 
+    Turns are recomputed for every LIVE session, so growth and the legacy ->
+    idle flip still regroup turns. A session is frozen ONLY when the source has
+    lost a step we already stored (a stored message_id missing from the current
+    assistant messages): pruning would otherwise move boundaries and silently
+    rewrite historical rates. Frozen rows keep their stored turn; new rows in a
+    pruned session take dense ordinals continuing from that session's stored
+    maximum, so they cannot collide with a frozen one.
+
     Per-row isolation covers the whole body — ordinal lookup, blob parse,
     arithmetic and upsert — against sqlite3.Error, TypeError and ValueError.
     A well-formed blob with non-numeric timing/token fields raises TypeError
@@ -224,14 +232,27 @@ def import_opencode_steps(src: sqlite3.Connection,
     rows = src.execute(
         "SELECT id, session_id, type, time_created, data FROM session_message"
         " ORDER BY session_id, time_created").fetchall()
+    # One pass over our own store: {session_id: {message_id: stored turn}}.
+    # This detects pruning (a stored step gone from the source) and supplies
+    # the high-water mark for new rows in a pruned session, without an N+1
+    # SELECT per session or per row beyond the existing per-row upsert probe.
+    stored_by_session = {}
+    for sid, mid, turn in dest.execute(
+            "SELECT session_id, message_id, turn FROM opencode_steps"):
+        stored_by_session.setdefault(sid, {})[mid] = turn
     # ORDER BY keeps each session's messages contiguous and in time order.
     sessions = {}
     for row in rows:
         sessions.setdefault(row[1], []).append(row)
-    for msgs in sessions.values():
+    for sid, msgs in sessions.items():
+        stored = stored_by_session.get(sid, {})
+        present_ids = {m[0] for m in msgs if m[2] == "assistant"}
+        pruned = bool(stored.keys() - present_ids)
+        stored_max = max(stored.values(), default=-1)
         types = [m[2] for m in msgs]
         legacy = not any(kind == "idle" for kind in types)
-        turn_ordinals = {}
+        turn_ordinals = {}      # live session: recomputed dense ordinals
+        new_turn_ordinals = {}  # pruned session: dense ordinals for NEW rows
         for i, (mid, sid, kind, created, data) in enumerate(msgs):
             if kind != "assistant":
                 continue
@@ -256,15 +277,26 @@ def import_opencode_steps(src: sqlite3.Connection,
                     step_ms = max(0, streamed - start)
                 tokens_generated = ((tokens.get("output") or 0)
                                     + (tokens.get("reasoning") or 0))
-                # Peek at the ordinal without claiming it: a row that fails
-                # anywhere below must not consume a turn number.
-                turn = turn_ordinals.get(boundary)
-                if turn is None:
-                    turn = len(turn_ordinals)
                 existing = dest.execute(
                     "SELECT step_ms, tokens_generated FROM opencode_steps"
                     " WHERE message_id = ?", (mid,)).fetchone()
-                if existing is None:
+                is_new = existing is None
+                # Peek at the ordinal without claiming it: a row that fails
+                # anywhere below must not consume a turn number. In a pruned
+                # session existing rows keep their stored turn (the UPDATE
+                # below omits `turn`); new rows continue the stored sequence
+                # so they cannot collide with a frozen ordinal.
+                if not pruned:
+                    turn = turn_ordinals.get(boundary)
+                    if turn is None:
+                        turn = len(turn_ordinals)
+                elif is_new:
+                    turn = new_turn_ordinals.get(boundary)
+                    if turn is None:
+                        turn = stored_max + 1 + len(new_turn_ordinals)
+                else:
+                    turn = None  # frozen row: leave its stored turn alone
+                if is_new:
                     dest.execute(
                         "INSERT INTO opencode_steps (message_id, session_id,"
                         " turn, step_ms, tokens_generated, time_created)"
@@ -282,14 +314,24 @@ def import_opencode_steps(src: sqlite3.Connection,
                         merged_step = max(old_step, step_ms)
                     merged = [merged_step, max(old_tokens, tokens_generated)]
                     changed = merged != list(existing)
-                    dest.execute(
-                        "UPDATE opencode_steps SET turn = ?, step_ms = ?,"
-                        " tokens_generated = ?, time_created = ?"
-                        " WHERE message_id = ?",
-                        [turn, *merged, created, mid])
+                    if pruned:
+                        dest.execute(
+                            "UPDATE opencode_steps SET step_ms = ?,"
+                            " tokens_generated = ?, time_created = ?"
+                            " WHERE message_id = ?",
+                            [*merged, created, mid])
+                    else:
+                        dest.execute(
+                            "UPDATE opencode_steps SET turn = ?, step_ms = ?,"
+                            " tokens_generated = ?, time_created = ?"
+                            " WHERE message_id = ?",
+                            [turn, *merged, created, mid])
                     outcome = "updated" if changed else "unchanged"
-                # The row committed cleanly — now the ordinal is official.
-                turn_ordinals[boundary] = turn
+                # The upsert succeeded — now the ordinal is official.
+                if not pruned:
+                    turn_ordinals[boundary] = turn
+                elif is_new:
+                    new_turn_ordinals[boundary] = turn
                 counts[outcome] += 1
             except (sqlite3.Error, TypeError, ValueError):
                 # One malformed source row must not abort (or roll back) the

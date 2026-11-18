@@ -296,7 +296,37 @@ def _upsert(dest, table, pk, rows, numeric, overwrite=(), insert_only=()):
     counters have always meant. One malformed row fails inside its own
     statement and bumps `skipped` without aborting (or rolling back) the rest.
     The caller owns the commit, so a family's rows land in one transaction.
+
+    Every name in `numeric`, `overwrite` and `insert_only` must be a real
+    column of `table` and none of them may be `pk`; a name that is not raises
+    `ValueError` before any row is written, because the alternative is silent:
+    an unknown `numeric` name leaves that column in the label class, where
+    invariant 1 is not protected. A payload key that is not a column is a
+    different kind of mistake and lands as `skipped`, one row at a time.
     """
+    # The column classes are a contract with the table, and every way to break
+    # it is silent: an unknown name in `numeric` demotes a real token column to
+    # the label class, where `new or old` can shrink it (invariant 1), and a
+    # column in two classes resolves in `numeric`'s favor. Checked once, up
+    # front, before the first row: inside the per-row try a ValueError would
+    # only count as `skipped` and the whole family would vanish one row at a
+    # time. `table` is interpolated into the PRAGMA because it is a literal from
+    # this module, like every other fragment this engine interpolates.
+    known = {row[1] for row in dest.execute(f"PRAGMA table_info({table})")}
+    if pk not in known:
+        raise ValueError(f"{table} has no column {pk!r}")
+    by_class = {}
+    for cls, names in (("numeric", numeric), ("overwrite", overwrite),
+                       ("insert_only", insert_only)):
+        for name in names:
+            if name not in known:
+                raise ValueError(f"{table} has no column {name!r} "
+                                 f"(named in the {cls} class)")
+            if name == pk or name in by_class:
+                raise ValueError(f"{table}: {name!r} is in both the "
+                                 f"{by_class.get(name, 'primary-key')} and "
+                                 f"{cls} classes")
+            by_class[name] = cls
     counts = Counter(inserted=0, updated=0, unchanged=0)
     if not rows:
         return counts

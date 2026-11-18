@@ -285,7 +285,8 @@ def _upsert(dest, table, pk, rows, numeric, overwrite=(), insert_only=()):
       overwrite    — takes the new value unconditionally, even NULL, so a run
                      that finished stops looking unfinished.
       insert_only  — written on insert and never touched again (our own
-                     provenance columns, e.g. first_seen).
+                     provenance columns, e.g. first_seen, and source
+                     timestamps that are immutable upstream).
       everything else — a label: `new or old`, so a source that nulls a
                      provider/model/title keeps the best we already have
                      (invariant 3).
@@ -339,9 +340,11 @@ def record(src: sqlite3.Connection, dest: sqlite3.Connection, now_ms: int) -> di
     observed total (max of stored and source), so re-recording can never
     double count and a pruned/rewritten source can never shrink history.
     time_updated and last_seen follow the source (last_seen is the one field
-    that moves on an unchanged session), first_seen is written once, and the
-    labels — provider, model_id, title, directory, agent and the source's own
-    time_created — keep the best we already have (invariant 3).
+    that moves on an unchanged session), first_seen and the source's own
+    time_created are written once — a creation stamp is immutable, so a
+    source that ever rewrote one must not move the stored value — and the
+    labels — provider, model_id, title, directory and agent — keep the best
+    we already have (invariant 3).
     """
     rows = src.execute(
         "SELECT id, model, tokens_input, tokens_output, tokens_reasoning,"
@@ -364,7 +367,7 @@ def record(src: sqlite3.Connection, dest: sqlite3.Connection, now_ms: int) -> di
     counts = _upsert(dest, "usage", "session_id", payload,
                      numeric=TOKEN_COLUMNS,
                      overwrite=("time_updated", "last_seen"),
-                     insert_only=("first_seen",))
+                     insert_only=("first_seen", "time_created"))
     counts.update(import_opencode_steps(src, dest))
     dest.commit()
     return counts
@@ -534,8 +537,10 @@ def import_unsloth(src: sqlite3.Connection, dest: sqlite3.Connection) -> dict:
 
     One row per Unsloth event id; the token columns are monotonic max, so
     re-importing can never double count (events themselves are immutable).
-    `model` and `created_at` ride the label class: a source that nulls one
-    keeps the value we already hold."""
+    `model` rides the label class: a source that nulls it keeps the value we
+    already hold. `created_at` is insert-only: an event's timestamp is
+    immutable, so a source that ever rewrote one must not move the stored
+    value."""
     rows = src.execute(
         "SELECT id, model, prompt_tokens, completion_tokens, total_tokens,"
         " created_at FROM api_usage_events").fetchall()
@@ -545,7 +550,8 @@ def import_unsloth(src: sqlite3.Connection, dest: sqlite3.Connection) -> dict:
                for eid, model, p, c, t, ts in rows]
     counts = _upsert(dest, "unsloth_events", "event_id", payload,
                      numeric=("prompt_tokens", "completion_tokens",
-                              "total_tokens"))
+                              "total_tokens"),
+                     insert_only=("created_at",))
     dest.commit()
     return counts
 

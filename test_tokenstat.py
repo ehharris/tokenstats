@@ -3533,6 +3533,18 @@ class CliSessionsTests(unittest.TestCase):
             self.assertNotIn(gone, text)
         self.assertLess(text.index("t-25"), text.index("t-21"))
 
+    def test_capped_list_view_takes_the_cost_overlay(self):
+        # Overlay smoke: --cost must not change the view -- the capped list
+        # still renders, with the COST column appended.
+        code, out, _ = self.sess_colored("--sessions=3", "--cost")
+        self.assertEqual(code, 0)
+        text = self.plain(out)
+        self.assertIn("sessions \u00b7 3 most recent", text)
+        self.assertIn("COST", text)
+        for kept in ("t-23", "t-24", "t-25"):
+            self.assertIn(kept, text)
+        self.assertNotIn("t-22", text)   # exactly 3 rows
+
     def test_space_form_behaves_identically(self):
         _, eq_out, _ = self.sess("--sessions=5")
         _, sp_out, _ = self.sess("--sessions", "5")
@@ -3586,6 +3598,14 @@ class CliSessionsTests(unittest.TestCase):
         _, bare, _ = self.sess("--total")
         _, capped, _ = self.sess("--sessions", "--total")
         self.assertEqual(bare, capped)
+
+    def test_sessions_bare_model_equals_plain_model(self):
+        # Bare --model is the --total shortcut, so the resolver sees an
+        # effective want_total: a valueless --sessions means ALL sessions
+        # there too, and the share view is byte-identical to plain --model.
+        _, plain_out, _ = self.sess("--model")
+        _, capped, _ = self.sess("--sessions", "--model")
+        self.assertEqual(plain_out, capped)
 
     def test_sessions_daily_equals_plain_daily(self):
         _, bare, _ = self.sess("--daily")

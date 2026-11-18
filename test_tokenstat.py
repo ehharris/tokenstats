@@ -3293,6 +3293,18 @@ class ThemeFileTests(unittest.TestCase):
         self.assertIn("warning:", warnings[0])
         self.assertEqual(set(self.BUILTIN_SLUGS), set(found) - {"mine"})
 
+    def test_scan_skips_config_json(self):
+        # themes/config.json is the saved-default file, not a theme: a scan must
+        # ignore it (no spurious warning) and never list "config" as a slug.
+        self.write_theme("mine", self.GOOD)
+        write_default_theme(os.path.join(self.themes, "config.json"), "nord")
+        warnings = []
+        found = scan_themes(dir=self.themes, warn=warnings.append)
+        self.assertIn("mine", found)
+        self.assertNotIn("config", found)
+        self.assertEqual(warnings, [])
+        self.assertEqual(set(self.BUILTIN_SLUGS) | {"mine"}, set(found))
+
 
 class ThemeConfigTests(unittest.TestCase):
     """themes/config.json: read/write the saved default, and resolve a slug."""

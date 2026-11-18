@@ -2020,8 +2020,8 @@ def main(argv):
     parser.add_argument("--theme-default", nargs="?", const=THEME_SAVE,
                         default=None, dest="theme_default", metavar="SLUG",
                         help="save SLUG as the default theme in"
-                             " themes/config.json (bare --theme-default saves"
-                             " this run's --theme=SLUG). Prefer"
+                             " ~/.tokenstat/themes/config.json (bare"
+                             " --theme-default saves this run's theme). Prefer"
                              " --theme-default=SLUG: the space form can"
                              " swallow a following command")
     args = parser.parse_args(argv)
@@ -2057,7 +2057,7 @@ def main(argv):
                          " given — add --theme=SLUG, or save directly as"
                          " --theme-default=SLUG")
         # write_default_theme does not validate: resolve first, so a typo in
-        # the slug never lands in themes/config.json.
+        # the slug never lands in ~/.tokenstat/themes/config.json.
         try:
             resolve_theme(slug, THEMES_DIR)
         except ThemeError as exc:
@@ -2090,15 +2090,16 @@ def main(argv):
                        f" '{default}' is not available; runs render in Neon"
                        f" Midnight until --theme-default=SLUG saves another")
         return 0
-    # Precedence: --theme=SLUG > themes/config.json > Neon Midnight. The two
-    # sources fail differently on purpose: a slug typed for this run is the
-    # user's own request, so an unknown one is a hard exit 2; a *saved* default
-    # that cannot be resolved is a config that cannot be used — warn naming the
-    # file and render with Neon Midnight, because a cosmetic default must not
-    # cost the user a report whose data is fine. Only this saved-default path
-    # passes warn= down: a file that is present but invalid then reports its
-    # real reason from the scan, above the config line, instead of reading as a
-    # plain "unknown theme" for a file the user can see on disk.
+    # Precedence: --theme=SLUG > ~/.tokenstat/themes/config.json > Neon
+    # Midnight. The two sources fail differently on purpose: a slug typed for
+    # this run is the user's own request, so an unknown one is a hard exit 2; a
+    # *saved* default that cannot be resolved is a config that cannot be used —
+    # warn naming the file and render with Neon Midnight, because a cosmetic
+    # default must not cost the user a report whose data is fine. Only this
+    # saved-default path passes warn= down: a file that is present but invalid
+    # then reports its real reason from the scan, above the config line,
+    # instead of reading as a plain "unknown theme" for a file the user can see
+    # on disk.
     if args.theme:
         try:
             theme = resolve_theme(args.theme, THEMES_DIR)

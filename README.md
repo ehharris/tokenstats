@@ -1,9 +1,10 @@
 # tokenstat — permanent AI token usage record for this machine
 
 `tokenstat` snapshots AI token usage from two sources into its own SQLite
-store (`usage.db` next to the script), and reports it filtered by model,
+store (`~/.tokenstat/usage.db`), and reports it filtered by model,
 date, and token counts: OpenCode's session database
-(`~/.local/share/opencode/opencode.db`) and Unsloth Studio's per-request
+(`$XDG_DATA_HOME/opencode/opencode.db`, falling back to
+`~/.local/share/opencode/opencode.db`) and Unsloth Studio's per-request
 event log plus generation runs (`~/.unsloth/studio/studio.db`), both opened
 read-only. OpenCode prunes its own history over time; your copy in
 `usage.db` never shrinks, so this machine's full token history survives.
@@ -16,6 +17,26 @@ python3 tokenstat.py record         # snapshot OpenCode only
 python3 tokenstat.py import-unsloth # snapshot Unsloth Studio only (events + runs)
 python3 tokenstat.py reconcile      # per-model: sessions vs Unsloth's log, gaps
 ```
+
+## Where things live
+
+Everything tokenstat owns sits in one directory, `~/.tokenstat/`:
+
+```
+~/.tokenstat/usage.db             the store (plus its -wal / -shm siblings)
+~/.tokenstat/themes/              your theme files, read by --theme
+~/.tokenstat/themes/config.json   the default saved by --theme-default
+~/.tokenstat/record.log           the cron log (the crontab chooses this path)
+```
+
+Nothing is created until a run needs the store, so the script itself can sit
+anywhere — including a read-only directory. It reads two databases it does not
+own, both opened read-only: OpenCode's `$XDG_DATA_HOME/opencode/opencode.db`
+when `XDG_DATA_HOME` is set to an absolute path, otherwise
+`~/.local/share/opencode/opencode.db` (the same way OpenCode resolves it), and
+Unsloth Studio's `~/.unsloth/studio/studio.db`. A store or theme files left
+beside an older copy of the script are moved into `~/.tokenstat/` on the first
+run, which says so on stderr (`migrated store: <old> -> <new>`).
 
 ## Examples
 
@@ -77,7 +98,7 @@ python3 tokenstat.py --total --real-cost        # stored real USD, not an estima
 python3 tokenstat.py --total --model --cache
 
 # Paint this run with a theme — one of the ten built-ins or your own
-# themes/SLUG.json (see themes/README.md); bare --theme lists them:
+# ~/.tokenstat/themes/SLUG.json (see themes/README.md); bare --theme lists them:
 python3 tokenstat.py --theme=nord
 python3 tokenstat.py --theme                    # list slugs + mark the default
 
@@ -122,16 +143,18 @@ Ten themes ship built in: `neon-midnight` (the default — indigo chrome, blue
 `--theme=SLUG` paints one run — a display overlay like `--cost`, so
 `--theme=nord` still renders the dashboard — and bare `--theme` lists the slugs
 and marks the default. `--theme-default=SLUG` saves one into
-`themes/config.json` for every later run (bare `--theme-default` saves the
-`--theme=SLUG` of the same invocation); precedence is `--theme` >
-`themes/config.json` > Neon Midnight. An unknown `--theme=SLUG` exits 2 and
-lists what is available, while a saved default that no longer resolves warns
-naming `themes/config.json` and renders in Neon Midnight rather than costing
-you the report. Your own themes are one `.json` each in `themes/` — filename
-stem = slug, and a file shadows a built-in of the same slug; `themes/README.md`
-is the format reference. Color is all a theme touches: piped output, `NO_COLOR`,
-and `--json` stay byte-plain under every theme, and flag-less output is
-byte-identical to the tool from before themes existed.
+`~/.tokenstat/themes/config.json` for every later run (bare `--theme-default`
+saves the `--theme=SLUG` of the same invocation); precedence is `--theme` >
+`~/.tokenstat/themes/config.json` > Neon Midnight. An unknown `--theme=SLUG`
+exits 2 and lists what is available, while a saved default that no longer
+resolves warns naming `~/.tokenstat/themes/config.json` and renders in Neon
+Midnight rather than costing you the report. Your own themes are one `.json`
+each in `~/.tokenstat/themes/` — filename stem = slug, and a file shadows a
+built-in of the same slug; `themes/README.md` is the format reference. The
+repo's `themes/` folder is documentation only — its format README and
+`examples/` — and is not read at runtime. Color is all a theme touches: piped
+output, `NO_COLOR`, and `--json` stay byte-plain under every theme, and
+flag-less output is byte-identical to the tool from before themes existed.
 
 A bare run renders a compact **dashboard** instead of one table: a hero
 panel with grand totals over all sessions, a `usage by model · top 5 by
@@ -252,8 +275,10 @@ Every query snapshots both sources first (OpenCode's database and Unsloth
 Studio's `api_usage_events` + `chat_generation_runs`), so reports are always
 current. If either
 database is missing or locked, `tokenstat` prints a warning and reports
-from your existing store instead of failing. Override paths with `--src`,
-`--unsloth-db`, and `--db`.
+from your existing store instead of failing. `--src`, `--unsloth-db`, and
+`--db` still override those three paths, and `--min-in`, `--min-out`, and
+`--from-unsloth` still work: all six are fully functional but deliberately
+left out of `--help`, which advertises only what a normal run needs.
 
 ## No double counting
 
@@ -279,8 +304,9 @@ OpenCode's input + cache columns — which is exactly what `reconcile` does.
 
 Because queries snapshot both sources implicitly, using the tool keeps
 history current for free. To guarantee snapshots even in weeks without a
-query, schedule an hourly run: add to crontab (`crontab -e`):
-`0 * * * * /usr/bin/python3 $HOME/messinaround/token_counter/tokenstat.py record >> $HOME/messinaround/token_counter/record.log 2>&1; /usr/bin/python3 $HOME/messinaround/token_counter/tokenstat.py import-unsloth >> $HOME/messinaround/token_counter/record.log 2>&1`
+query, schedule an hourly run: add to crontab (`crontab -e`), logging into
+the state directory:
+`0 * * * * /usr/bin/python3 $HOME/messinaround/token_counter/tokenstat.py record >> $HOME/.tokenstat/record.log 2>&1; /usr/bin/python3 $HOME/messinaround/token_counter/tokenstat.py import-unsloth >> $HOME/.tokenstat/record.log 2>&1`
 
 ## Tests
 

@@ -909,6 +909,11 @@ def cost_column(tier):
     """(header, key, kind) for the opt-in --cost overlay; the header names the
     model the pricing is pinned to, so a stale price table is visible."""
     return (f"COST \u00b7 {PRICES[tier]['name']} pricing", "cost_est", "cost")
+
+
+# --real-cost overlay: the stored real cost (real OpenCode data); every
+# session-family row and aggregate already carries `cost`, display-only.
+REAL_COST_COLUMN = ("REAL COST", "cost", "cost")
 CACHE_COLUMN = ("CACHE", "cache", "int")  # opt-in --cache display overlay
 
 
@@ -1179,13 +1184,15 @@ def panel(title, lines, theme=NEON, color=True):
     return [top] + body + [bottom]
 
 
-def report_header(title, rows, theme=NEON, cost_est=None, unit="rows",
-                  color=True):
+def report_header(title, rows, theme=NEON, cost_est=None, real_cost=None,
+                  unit="rows", color=True):
     """Hero panel for a report: one grand-total line over a dim date span.
     Safe for rows that carry no tokens_input/tokens_output keys and for rows
     whose date is missing or None (the span is omitted when none is dated).
     `cost_est` (float USD, precomputed by the caller) appends a `~$X.XX`
-    reference-estimate tail; omitted means no cost shown. `unit` names what
+    reference-estimate tail; omitted means no cost shown. `real_cost` (float
+    USD) appends a `· $X.XX` tail after it — no tilde, it is the stored real
+    cost. `unit` names what
     one row means in this view (the dashboard passes "sessions").
     Rows carrying a `tok_s` add a token-weighted TOK/S stat; when none of
     them has a rate the segment is omitted entirely.
@@ -1224,7 +1231,9 @@ def report_header(title, rows, theme=NEON, cost_est=None, unit="rows",
             + (" · " + paint(f"{rate:.1f}", theme["accent"]) + " tok/s"
                if rate is not None else "")
             + (" · " + paint(f"~${cost_est:,.2f}", theme["num"])
-               if cost_est is not None else ""))
+               if cost_est is not None else "")
+            + (" · " + paint(f"${real_cost:,.2f}", theme["num"])
+               if real_cost is not None else ""))
     lines = [hero]
     dates = sorted(d for d in (r.get("date") for r in rows) if d)
     if dates:
@@ -1422,6 +1431,10 @@ def main(argv):
                              " sonnet-5); display-only overlay (not with"
                              " reconcile). Prefer --cost=TIER: the space form"
                              " can swallow a following command")
+    parser.add_argument("--real-cost", action="store_true", dest="real_cost",
+                        help="add a REAL COST column with the stored real USD"
+                             " OpenCode reported (session views only; not"
+                             " with reconcile, --from-unsloth or --from-runs)")
     parser.add_argument("--cache", action="store_true", dest="cache",
                         help="add a CACHE column (cache read + write) between"
                              " OUT and TOTAL in session views; informational,"
@@ -1521,12 +1534,18 @@ def main(argv):
                 # to five rows, so its COST column can't sum to the truth.
                 hero_cost = sum(r["cost_est"]
                                 for r in annotate_cost(all_rows, cost_tier))
+            hero_real = None
+            if args.real_cost:
+                hero_real = sum(r["cost"] for r in all_rows)
+                m_cols = m_cols + [REAL_COST_COLUMN]
+                s_cols = s_cols + [REAL_COST_COLUMN]
             if args.cache:
                 model_rows = annotate_cache(model_rows)
                 sess_rows = annotate_cache(sess_rows)
                 m_cols, s_cols = with_cache(m_cols), with_cache(s_cols)
             lines = report_header("", all_rows, cost_est=hero_cost,
-                                  unit="sessions", color=color)
+                                  real_cost=hero_real, unit="sessions",
+                                  color=color)
             lines += _table_panel("usage by model \u00b7 top 5 by share",
                                   model_rows, m_cols, True, color)
             lines += _table_panel("sessions \u00b7 5 most recent",
@@ -1548,6 +1567,9 @@ def main(argv):
             parser.error("--cache requires OpenCode session rows; Unsloth"
                          " event/run sources fold cache hits into prompt"
                          " tokens with no split")
+        if args.real_cost and (args.from_unsloth or args.from_runs):
+            parser.error("--real-cost requires OpenCode session rows; Unsloth"
+                         " event/run sources store no real cost")
         if args.sessions is not None and (args.from_unsloth or args.from_runs):
             parser.error("--sessions applies to OpenCode session views only;"
                          " unsupported with --from-unsloth/--from-runs")
@@ -1567,6 +1589,7 @@ def main(argv):
                 + (["--total"] if args.total else []) \
                 + (["--sessions"] if args.sessions is not None else []) \
                 + (["--cost"] if args.cost else []) \
+                + (["--real-cost"] if args.real_cost else []) \
                 + (["--cache"] if args.cache else [])
             if unsupported:
                 parser.error("reconcile supports only --model; unsupported:"
@@ -1658,6 +1681,8 @@ def main(argv):
         if args.cost and columns is not RECON_COLUMNS:
             rows = annotate_cost(rows, cost_tier)
             columns = columns + [cost_column(cost_tier)]
+        if args.real_cost:
+            columns = columns + [REAL_COST_COLUMN]
         # Opt-in --cache overlay: combined cache classes as one informational
         # column between OUT and TOTAL; TOTAL stays IN + OUT. The guard above
         # keeps it off the cache-blind Unsloth views; reconcile rejects it.

@@ -1924,14 +1924,33 @@ class ReviewFixTests2(unittest.TestCase):
         self.assertEqual(before, after)
 
     def test_reconcile_rejects_unsupported_flags(self):
-        # An explicit --db keeps this hermetic: the default store now lives in
-        # ~/.tokenstat, which only exists once the migration has run, and an
-        # unopenable store exits 1 at open time — before this guard's exit 2.
+        # Hermetic on every path. An explicit --db keeps the default store
+        # (~/.tokenstat, which only exists once the migration has run) out of
+        # it, and --src/--unsloth-db keep reconcile's implicit ingestion out
+        # of the live OpenCode and Studio databases: the guard fires after
+        # that ingestion, so without these the test reads real user data
+        # before it ever reaches the exit 2 it is asserting.
         with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaises(SystemExit) as cm:
-                main(["--db", os.path.join(tmp, "usage.db"),
-                      "reconcile", "--since", "2026-11-01"])
+            seen = []
+            real = tokenstat._connect_src
+
+            def spy(path):
+                seen.append(path)
+                return real(path)
+
+            with unittest.mock.patch.object(tokenstat, "_connect_src", spy):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit) as cm:
+                        main(["--db", os.path.join(tmp, "usage.db"),
+                              "--src", os.path.join(tmp, "none.db"),
+                              "--unsloth-db", os.path.join(tmp, "none.db"),
+                              "reconcile", "--since", "2026-11-01"])
         self.assertEqual(cm.exception.code, 2)
+        # The proof, not just the exit code: every source this run opened was
+        # inside the temp dir.
+        self.assertTrue(seen)
+        for path in seen:
+            self.assertTrue(path.startswith(tmp), path)
 
 
 class CliUnslothFailTests(unittest.TestCase):
@@ -4297,6 +4316,23 @@ class DefaultPathsTests(unittest.TestCase):
         self.assertEqual(fresh.DEFAULT_UNSLOTH_DB,
                          "/tmp/fake-home/.unsloth/studio/studio.db")
 
+    def test_importing_creates_nothing(self):
+        # Import purity, pinned instead of assumed: the migration is
+        # default_store()'s job and only main() calls it, so a fresh import
+        # under an empty $HOME must leave that $HOME empty. A stray
+        # os.makedirs in a path helper — or at module scope — shows up here as
+        # a directory nobody asked for.
+        import importlib.util
+        with tempfile.TemporaryDirectory() as home:
+            spec = importlib.util.spec_from_file_location(
+                "tokenstat_pure", tokenstat.__file__)
+            fresh = importlib.util.module_from_spec(spec)
+            with unittest.mock.patch.dict(os.environ, {"HOME": home,
+                                                       "XDG_DATA_HOME": ""}):
+                spec.loader.exec_module(fresh)
+            self.assertEqual(os.listdir(home), [])
+            self.assertEqual(fresh.STATE_DIR, home + "/.tokenstat")
+
 
 def read_text(path):
     """Small file's contents, closed on the way out: the suite must stay clean
@@ -4647,6 +4683,17 @@ class FilterHelperTests(unittest.TestCase):
     def test_date_clauses_are_empty_when_unbounded(self):
         self.assertEqual(tokenstat._date_clauses("created_at", None, None),
                          ([], []))
+
+    def test_until_alone_is_still_a_half_open_window(self):
+        # The other half of the window, which nothing exercised: `until` alone
+        # must still give the exclusive day-end bound and nothing else. The
+        # both-bounds pin above cannot cover this side — verified by mutation,
+        # this is the only test that fails when the until clause is made to
+        # depend on `since` being present.
+        until = ms(2026, 11, 3)
+        where, params = tokenstat._date_clauses("created_at", None, until)
+        self.assertEqual(where, ["created_at < ?"])
+        self.assertEqual(params, [tokenstat._day_end_ms(until)])
 
 
 class LikeEscapingTests(unittest.TestCase):

@@ -3212,6 +3212,23 @@ class ThemeFileTests(unittest.TestCase):
             load_theme_file(self.write_theme("broken", "{oops"))
         self.assertIn("broken.json", str(ctx.exception))
 
+    def test_non_utf8_bytes_raise_and_scan_skips(self):
+        # e.g. UTF-16-authored or a binary file misnamed .json: UnicodeDecodeError
+        # must surface as ThemeError naming the file, and a scan must skip it
+        # with a warning instead of aborting every run.
+        path = os.path.join(self.themes, "mojibake.json")
+        with open(path, "wb") as fh:
+            fh.write(b"\xff\xfe{")
+        with self.assertRaises(ThemeError) as ctx:
+            load_theme_file(path)
+        self.assertIn("mojibake.json", str(ctx.exception))
+        warnings = []
+        found = scan_themes(dir=self.themes, warn=warnings.append)
+        self.assertNotIn("mojibake", found)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("mojibake.json", warnings[0])
+        self.assertEqual(set(self.BUILTIN_SLUGS), set(found))
+
     def test_scan_merges_and_shadows(self):
         self.write_theme("nord", self.GOOD)
         found = scan_themes(dir=self.themes)

@@ -911,8 +911,10 @@ SHARE_COLUMNS = TOTAL_COLUMNS + [
 
 def cost_column(tier):
     """(header, key, kind) for the opt-in --cost overlay; the header names the
-    model the pricing is pinned to, so a stale price table is visible."""
-    return (f"COST \u00b7 {PRICES[tier]['name']} Prices", "cost_est", "cost")
+    model the pricing is pinned to, so a stale price table is visible. It
+    wraps over two lines ("COST  ·" / "<model> Prices", human decision) to
+    keep the column narrower than a single-line header would."""
+    return (f"COST  \u00b7\n{PRICES[tier]['name']} Prices", "cost_est", "cost")
 
 
 # --real-cost overlay: the stored real cost (real OpenCode data); every
@@ -1282,24 +1284,34 @@ def render_table(rows, columns=None):
             return str(value)[:40]
         return str(value)
 
-    header = [name for name, _, _ in columns]
+    header = [name.split("\n") for name, _, _ in columns]
     body = [[fmt(r.get(key), kind) for _, key, kind in columns] for r in rows]
     widths = []
     for i, (name, _, kind) in enumerate(columns):
         if i == len(columns) - 1:
             widths.append(None)  # last column needs no padding
         else:
-            widths.append(max([len(name)] + [_visible(row[i]) for row in body]))
-    out = []
-    for line in [header] + body:
+            widths.append(max([max(_visible(l) for l in header[i])]
+                              + [_visible(row[i]) for row in body]))
+
+    def line_out(cells):
         parts = []
-        for i, cell in enumerate(line):
+        for i, cell in enumerate(cells):
             if widths[i] is None:
                 parts.append(cell)
             else:
                 # pad by visible length (ljust would count escape bytes)
                 parts.append(cell + " " * (widths[i] - _visible(cell)))
-        out.append("  ".join(parts).rstrip())
+        return "  ".join(parts).rstrip()
+
+    out = []
+    # A header may carry "\n" (the --cost column wraps: "COST  ·" over
+    # "<model> Prices"). Header lines top-align: single-line columns keep
+    # their names on the first line, blanks below.
+    for j in range(max(len(h) for h in header)):
+        out.append(line_out([h[j] if j < len(h) else "" for h in header]))
+    for row in body:
+        out.append(line_out(row))
     return "\n".join(out) + "\n"
 
 

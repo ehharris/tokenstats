@@ -2201,14 +2201,20 @@ class CliTotalTests(unittest.TestCase):
             ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
              "--total", "--cost"])
         self.assertEqual(code, 0)
-        self.assertIn("COST \u00b7 Claude Sonnet 5 Prices", out)
+        # two-line header (human decision): "COST  ·" on the header line,
+        # "<model> Prices" wrapped onto the next, aligned under the column.
+        lines = out.splitlines()
+        self.assertIn("COST  \u00b7", lines[0])
+        self.assertEqual(lines[1].strip(), "Claude Sonnet 5 Prices")
 
     def test_cost_slug_changes_header(self):
         code, out, _ = self.run_main(
             ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
              "--total", "--cost=deepseek-v3.2"])
         self.assertEqual(code, 0)
-        self.assertIn("COST \u00b7 DeepSeek V3.2 Prices", out)
+        lines = out.splitlines()
+        self.assertIn("COST  \u00b7", lines[0])
+        self.assertEqual(lines[1].strip(), "DeepSeek V3.2 Prices")
 
     def test_cost_family_alias_equals_model_slug(self):
         base = ["--db", self.db, "--src", self.src, "--unsloth-db",
@@ -2216,7 +2222,9 @@ class CliTotalTests(unittest.TestCase):
         _, alias, _ = self.run_main(base + ["--cost=qwen"])
         _, model, _ = self.run_main(base + ["--cost=qwen-plus"])
         self.assertEqual(alias, model)
-        self.assertIn("COST \u00b7 Qwen-Plus Prices", alias)
+        lines = alias.splitlines()
+        self.assertIn("COST  \u00b7", lines[0])
+        self.assertEqual(lines[1].strip(), "Qwen-Plus Prices")
 
     def test_cost_invalid_slug_exits_2(self):
         with self.assertRaises(SystemExit) as cm, \
@@ -2302,7 +2310,7 @@ class RealCostTests(unittest.TestCase):
              "--total", "--cost", "--real-cost"])
         self.assertEqual(code, 0)
         header = out.splitlines()[0]
-        self.assertLess(header.index("COST \u00b7"), header.index("REAL COST"))
+        self.assertLess(header.index("COST  \u00b7"), header.index("REAL COST"))
 
     def test_real_cost_json_shape_unchanged(self):  # review-focus pin
         base = ["--db", self.db, "--src", self.src, "--unsloth-db",
@@ -2444,6 +2452,32 @@ class CostFormatTests(unittest.TestCase):
         from tokenstat import paint_cells
         (row,) = paint_cells([{"cost": 0.02}])
         self.assertEqual(row["cost"], "\x1b[38;2;244;240;255m$0.02\x1b[0m")
+
+    def test_render_table_two_line_header(self):
+        # "\n" in a header wraps the cell: later header lines sit below,
+        # other columns' names stay on the first line (top-aligned).
+        from tokenstat import render_table
+        table = render_table([{"a": 1, "cost_est": 14.7}],
+                             [("A", "a", "int"),
+                              ("COST  \u00b7\nClaude Sonnet 5 Prices",
+                               "cost_est", "cost")])
+        self.assertEqual(table.splitlines(),
+                         ["A  COST  \u00b7",
+                          "   Claude Sonnet 5 Prices",
+                          "1  $14.70"])
+
+    def test_render_table_two_line_header_pads_later_columns(self):
+        # A column AFTER the wrapped one: its header rides the first line and
+        # its data aligns past the widest header line of the wrapped column.
+        from tokenstat import render_table
+        table = render_table([{"cost_est": 14.7, "z": 5}],
+                             [("COST  \u00b7\nClaude Sonnet 5 Prices",
+                               "cost_est", "cost"),
+                              ("Z", "z", "int")])
+        lines = table.splitlines()
+        self.assertEqual(lines[0], "COST  \u00b7" + " " * 17 + "Z")
+        self.assertEqual(lines[1], "Claude Sonnet 5 Prices")
+        self.assertEqual(lines[2], "$14.70" + " " * 18 + "5")
 
 
 class CacheOverlayTests(unittest.TestCase):
@@ -3552,7 +3586,7 @@ class DefaultDashboardTests(unittest.TestCase):
         code, out, _ = self.bare(["--cost"])
         self.assertEqual(code, 0)
         plain = _ANSI_RE.sub("", out)
-        self.assertEqual(plain.count("COST \u00b7 Claude Sonnet 5 Prices"), 2)
+        self.assertEqual(plain.count("Claude Sonnet 5 Prices"), 2)
 
     def test_dashboard_hero_real_total_over_all_sessions(self):
         # review-focus pin: 7 sessions x stored $0.01 = $0.07, not the

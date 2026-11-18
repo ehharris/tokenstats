@@ -217,8 +217,10 @@ premium → `cache_write = in`), plus `FAMILY_ALIASES` mapping a family name to
 the provider's MID-TIER model (claude→sonnet-5, codex/openai→gpt-5.1-codex,
 deepseek→deepseek-v3.2, qwen→qwen-plus; two-model lineups: the standard model
 is the mid), resolved once in `main` via `resolve_cost_tier`. The COST header
-is built per-run by `cost_column(tier)` and names the pinned model
-(`COST · Claude Sonnet 5 Prices`) — a stale price table is visible. Cost
+is built per-run by `cost_column(tier)` and names the pinned model, wrapped
+over two lines (`COST  ·` / `Claude Sonnet 5 Prices`; `render_table` now
+splits header names on `"\n"` and top-aligns the lines, so any column may
+wrap) — a stale price table is visible and the column stays narrow. Cost
 cells render `$X.XX` (2 decimals, human decision; sub-cent rows render
 `$0.00`). New `--real-cost` adds a `REAL COST` column from the stored `cost`
 field (the real USD OpenCode reported; rows already carry it — pure display,

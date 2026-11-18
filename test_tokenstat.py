@@ -4345,6 +4345,36 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(read_text(
                 os.path.join(self.state, "usage.db" + suffix)), suffix)
 
+    def test_a_lost_race_leaves_the_siblings_with_the_winner(self):
+        # A rival run moves usage.db while we are mid-migration, so our own
+        # store move finds nothing left to move. The siblings we already moved
+        # belong with the winner at the state dir; pulling them back would
+        # strand them beside a legacy path that now holds nothing, and the next
+        # run — seeing both paths occupied — would never try again.
+        for suffix in ("", "-wal", "-shm"):
+            with open(os.path.join(self.legacy, "usage.db" + suffix),
+                      "w") as fh:
+                fh.write(suffix)
+        old_db = os.path.join(self.legacy, "usage.db")
+        real = os.replace
+
+        def rival_wins(src, dst):
+            if src == old_db:          # the store move: we just lost the race
+                real(src, os.path.join(self.state, "usage.db"))
+                raise OSError("no such file or directory")
+            return real(src, dst)
+
+        with unittest.mock.patch.object(tokenstat.os, "replace",
+                                        side_effect=rival_wins):
+            with contextlib.redirect_stderr(io.StringIO()):
+                used = tokenstat.default_store(self.state, self.legacy)
+        self.assertEqual(used, os.path.join(self.state, "usage.db"))
+        self.assertEqual(read_text(os.path.join(self.state, "usage.db")), "")
+        for suffix in ("-wal", "-shm"):
+            self.assertFalse(os.path.exists(old_db + suffix))
+            self.assertTrue(os.path.exists(
+                os.path.join(self.state, "usage.db" + suffix)))
+
     def test_migration_is_a_no_op_once_the_store_exists(self):
         os.makedirs(self.state)
         keep = os.path.join(self.state, "usage.db")

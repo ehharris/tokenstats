@@ -118,11 +118,19 @@ def default_store(state=None, legacy=None):
                     os.replace(old_db + suffix, new_db + suffix)
                     moved.append(suffix)
         except OSError as exc:
-            for suffix in reversed(moved):
-                try:
-                    os.replace(new_db + suffix, old_db + suffix)
-                except OSError:
-                    pass
+            # Pull the siblings back only while the legacy store is still
+            # there. If it is gone, a rival run moved it: our files belong
+            # with it at the state dir, and moving them back would orphan them
+            # beside a path that holds nothing — permanently, because the next
+            # run sees both paths occupied and never retries. This is also
+            # what a double fault (the forward move failed AND the reverse one
+            # does) leaves behind, so one gate closes both.
+            if os.path.exists(old_db):
+                for suffix in reversed(moved):
+                    try:
+                        os.replace(new_db + suffix, old_db + suffix)
+                    except OSError:
+                        pass
             # Decide by what is on disk, not by what was attempted: a failed
             # move leaves the legacy store in place, and a lost race leaves it
             # gone — moved by the winner, whose store is the one to open.

@@ -8,9 +8,9 @@ filtered by model, date, and token counts. Built 2026-11-13 via spec →
 plan → TDD; design doc in `docs/superpowers/specs/`, implementation plan
 in `docs/superpowers/plans/`.
 
-**State at handoff (2026-11-17):** work sits on `master` (no remote
+**State at handoff (2026-11-18):** work sits on `master` (no remote
 configured — local-only repo, no push; branch workflow used for increments,
-fast-forward merged after clean review rounds). 382 tests green. Connection
+fast-forward merged after clean review rounds). 383 tests green. Connection
 hygiene (2026-11-15): every sqlite
 connection main() opens is now closed — the store via try/finally and each
 read-only source by `_ingest` owning its open/close; `NoResourceWarningTests`

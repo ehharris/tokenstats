@@ -907,6 +907,8 @@ RUNS_COLUMNS = [
 SHARE_COLUMNS = TOTAL_COLUMNS + [
     ("SHARE", "share_str", "text"), ("", "bar", "text"),  # bar unlabeled
 ]
+
+
 def cost_column(tier):
     """(header, key, kind) for the opt-in --cost overlay; the header names the
     model the pricing is pinned to, so a stale price table is visible."""
@@ -963,11 +965,11 @@ def resolve_cost_tier(slug):
 
 
 def annotate_cost(rows, tier="sonnet-5"):
-    """Copy of `rows` with a reference Claude-tier estimate added as float
-    `cost_est` (USD). Display/JSON overlay only: inputs untouched, nothing
-    stored. Row shape picks the math: run rows (progress_tokens) price as
-    output-only; session-family rows add the cache classes; event rows use
-    input+output."""
+    """Copy of `rows` with a reference estimate added as float `cost_est`
+    (USD), priced at `tier`'s entry in PRICES. Display/JSON overlay only:
+    inputs untouched, nothing stored. Row shape picks the math: run rows
+    (progress_tokens) price as output-only; session-family rows add the
+    cache classes; event rows use input+output."""
     p = PRICES[tier]
     out = []
     for r in rows:
@@ -1111,6 +1113,7 @@ _PAINT_CELLS = {
     "tokens_output": ("int", "tout", False),
     "cache": ("int", "tcach", False),
     "cost_est": ("cost", "num", False),
+    "cost": ("cost", "num", False),         # --real-cost's stored value
     "total": ("int", "ttotal", True),
     "share_str": ("text", "tshare", False),
     "sessions": ("int", "tshare", False),  # row count: the hero's other stat
@@ -1193,9 +1196,9 @@ def report_header(title, rows, theme=NEON, cost_est=None, real_cost=None,
     whose date is missing or None (the span is omitted when none is dated).
     `cost_est` (float USD, precomputed by the caller) appends a `~$X.XX`
     reference-estimate tail; omitted means no cost shown. `real_cost` (float
-    USD) appends a `· $X.XX` tail after it — no tilde, it is the stored real
-    cost. `unit` names what
-    one row means in this view (the dashboard passes "sessions").
+    USD) appends a `· $X.XX` tail after it — no tilde, it is the stored
+    real cost. `unit` names what one row means in this view (the dashboard
+    passes "sessions").
     Rows carrying a `tok_s` add a token-weighted TOK/S stat; when none of
     them has a rate the segment is omitted entirely.
     `color=False` renders the same text with no escape bytes."""
@@ -1437,12 +1440,21 @@ def main(argv):
                         help="add a REAL COST column with the stored real USD"
                              " OpenCode reported (session views only; not"
                              " with reconcile, --from-unsloth or --from-runs)")
+    # --cost-tier was removed with the --cost rework; kept as a suppressed
+    # shim so stale shell-history invocations get a migration message
+    # instead of argparse blaming the word it swallowed as the command.
+    parser.add_argument("--cost-tier", nargs="?", const="<removed>",
+                        default=None, dest="_cost_tier", metavar="TIER",
+                        help=argparse.SUPPRESS)
     parser.add_argument("--cache", action="store_true", dest="cache",
                         help="add a CACHE column (cache read + write) between"
                              " OUT and TOTAL in session views; informational,"
                              " TOTAL unchanged (not with reconcile,"
                              " --from-unsloth or --from-runs)")
     args = parser.parse_args(argv)
+    if args._cost_tier is not None:
+        parser.error("--cost-tier was removed; use --cost=<slug>"
+                     " (e.g. --cost=opus-5); see --help")
     cost_tier = resolve_cost_tier(args.cost) if args.cost else None
 
     dest = None
@@ -1683,7 +1695,7 @@ def main(argv):
         if args.cost and columns is not RECON_COLUMNS:
             rows = annotate_cost(rows, cost_tier)
             columns = columns + [cost_column(cost_tier)]
-        if args.real_cost:
+        if args.real_cost and columns is not RECON_COLUMNS:
             columns = columns + [REAL_COST_COLUMN]
         # Opt-in --cache overlay: combined cache classes as one informational
         # column between OUT and TOTAL; TOTAL stays IN + OUT. The guard above

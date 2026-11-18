@@ -837,7 +837,14 @@ def _grouped_aggregates(dest, table, key_sql, sums, where, params, groups,
     `counts` is the aggregate tuple (the `sums` columns of the row). `groups`
     maps a key to the (rate, weight) pairs to average for that row; None
     means the family has no per-row rate to weight, and rate/weight arrive
-    None. Rows come back in query order."""
+    None. Rows come back in query order.
+
+    `table`, `key_sql` and `sums` are SQL fragments, interpolated into the
+    statement rather than bound into it, so they are trusted internal values
+    only: every caller passes a literal from this module (or a builder built
+    from one). User input reaches a query through `where` and `params`, which
+    are parameterized — nothing derived from a command line may be passed
+    here. Same contract for `_run_rate_groups` and `_session_rate_groups`."""
     sql = "SELECT " + key_sql + " AS key," + sums + " FROM " + table
     if where:
         sql += " WHERE " + " AND ".join(where)
@@ -858,7 +865,10 @@ def _total_aggregates(dest, table, sums, where, params, groups, row_builder,
     """All-time aggregates: with `group_key_sql`, the same grouped rows
     _grouped_aggregates would build; without it, one grand-total row keyed
     "(all)" (empty when nothing matches — COUNT(*) is 0), whose rate group is
-    groups.get("(all)", [])."""
+    groups.get("(all)", []).
+
+    `table`, `sums` and `group_key_sql` are the same trusted internal SQL
+    fragments _grouped_aggregates documents, and the same rule applies."""
     if group_key_sql is not None:
         return _grouped_aggregates(dest, table, group_key_sql, sums, where,
                                    params, groups, row_builder)

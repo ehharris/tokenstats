@@ -38,6 +38,9 @@ unchanged. `--json` `--total` rows carry a float `share` field (no bar).
 Share views (`--total --model`, bare `--model`) now sort rows by `SHARE`
 descending — ties keep alphabetical-by-model order (stable sort) and
 `--json` rows carry the same order — session/daily views unchanged.
+Share-titles increment (2026-11-17, human decision): the percent column is
+titled `SHARE %` and the bar column `SHARE` (was `SHARE` + unlabeled bar)
+so the visual reads at a glance; the bar column is no longer unlabeled.
 Tokens-per-second increment (2026-11-14): new store
 table `unsloth_runs` (run_id PK, model extracted in Python from Studio's
 `request_json` — no JSON1 dependency; `progress_tokens` monotonic max;

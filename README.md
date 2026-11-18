@@ -80,12 +80,13 @@ python3 tokenstat.py --total --model --cache
 python3 tokenstat.py reconcile
 ```
 
-Per-model `--total` reports end with two extra columns: `SHARE`, the row's
-percent of the overall total across the displayed rows, and `BAR`, a smooth
+Per-model `--total` reports end with two extra columns: `SHARE %`, the row's
+percent of the overall total across the displayed rows, and `SHARE`, a smooth
 Unicode bar (full blocks `█` plus one shade block `░▒▓` for the fraction —
 deliberately no eighth-block glyphs like `▁`, whose different vertical
 metrics rag the bottom edge in many fonts) padded with a space on either
-side and scaled to the largest row so the mix is visible at a glance. On a
+side and scaled to the largest row so the mix is visible at a glance (the
+bar's length is the row against the LARGEST row, not the percent tick). On a
 terminal the same glyph bar is additionally colored truecolor, one color per
 glyph: a blue→orange gradient whose transition sits at the row's
 input/output split (runs in `--from-runs` have no in/out split, so their

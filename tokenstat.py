@@ -905,7 +905,9 @@ RUNS_COLUMNS = [
     ("TOTAL", "total", "int"), ("TOK/S", "tok_s", "rate"),
 ]
 SHARE_COLUMNS = TOTAL_COLUMNS + [
-    ("SHARE", "share_str", "text"), ("", "bar", "text"),  # bar unlabeled
+    # share pair (human decision): the percent column is "SHARE %", the bar
+    # column "SHARE" — labeled so the visual reads at a glance.
+    ("SHARE %", "share_str", "text"), ("SHARE", "bar", "text"),
 ]
 
 

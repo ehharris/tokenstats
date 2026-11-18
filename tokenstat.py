@@ -1626,6 +1626,13 @@ def main(argv):
             if args.sessions is not None:
                 title = (f"sessions \u00b7 {limit} most recent" if limit
                          else "sessions \u00b7 all")
+        # Aggregate views fold sessions up, so a positive cap must say so in
+        # the title: ` · last N sessions` on --daily and the totals/share
+        # views (bare --model counts — it is the --total shortcut). The list
+        # view's title already names its scope, and a limit of 0 (all)
+        # leaves every title byte-identical to the uncapped view.
+        if limit and (share_view or args.daily):
+            title = f"{title} \u00b7 last {limit} sessions"
         if args.cost and columns is not RECON_COLUMNS:
             rows = annotate_cost(rows, args.cost_tier)
             columns = columns + [COST_COLUMN]

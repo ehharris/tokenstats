@@ -3470,6 +3470,17 @@ class CliNeonTests(unittest.TestCase):
         ]).close)
         self.no_udb = os.path.join(self.tmp.name, "no-studio.db")
         self.udb = os.path.join(self.tmp.name, "studio.db")
+        # This repo's own themes/ folder stays invisible to these tests: they
+        # pin the Neon Midnight default, and a default someone saved with
+        # --theme-default must not repaint them. An absent folder plus an absent
+        # config is exactly the "no theme chosen" state.
+        no_themes = os.path.join(self.tmp.name, "no-themes")
+        for name, value in (("THEMES_DIR", no_themes),
+                            ("THEME_CONFIG",
+                             os.path.join(no_themes, "config.json"))):
+            patcher = unittest.mock.patch.object(tokenstat, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def tearDown(self):
         self.tmp.cleanup()

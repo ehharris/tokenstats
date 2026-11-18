@@ -1041,6 +1041,93 @@ NEON = {
     "ttotal": (167, 139, 250), "tshare": (94, 234, 212),
 }
 
+# Nine roles shared by every palette; `track` is legacy and lives in NEON only.
+THEME_ROLES = ("border", "accent", "label", "num", "tin", "tout",
+               "tcach", "ttotal", "tshare")
+
+
+def _hex(h):
+    """#RRGGBB -> (r, g, b) triple, so the palette hexes read as written."""
+    return tuple(int(h[i:i + 2], 16) for i in (1, 3, 5))
+
+
+# dracula/nord/monokai `label` values are lifted from each scheme's comment color so the hero's date span stays readable.
+TOKYO_NIGHT = {
+    "border": _hex("#414868"), "accent": _hex("#F7768E"),
+    "label": _hex("#7982A9"), "num": _hex("#C0CAF5"),
+    "tin": _hex("#7AA2F7"), "tout": _hex("#FF9E64"),
+    "tcach": _hex("#9ECE6A"), "ttotal": _hex("#BB9AF7"),
+    "tshare": _hex("#2ACBCF"),
+}
+DRACULA = {
+    "border": _hex("#6272A4"), "accent": _hex("#FF79C6"),
+    "label": _hex("#8A94C0"), "num": _hex("#F8F8F2"),
+    "tin": _hex("#8BE9FD"), "tout": _hex("#FFB86C"),
+    "tcach": _hex("#50FA7B"), "ttotal": _hex("#BD93F9"),
+    "tshare": _hex("#F1FA8C"),
+}
+NORD = {
+    "border": _hex("#4C566A"), "accent": _hex("#BF616A"),
+    "label": _hex("#7B88A1"), "num": _hex("#ECEFF4"),
+    "tin": _hex("#88C0D0"), "tout": _hex("#D08770"),
+    "tcach": _hex("#A3BE8C"), "ttotal": _hex("#B48EAD"),
+    "tshare": _hex("#EBCB8B"),
+}
+GRUVBOX_DARK = {
+    "border": _hex("#665C54"), "accent": _hex("#FE8019"),
+    "label": _hex("#A89984"), "num": _hex("#EBDBB2"),
+    "tin": _hex("#83A598"), "tout": _hex("#FB4934"),
+    "tcach": _hex("#B8BB26"), "ttotal": _hex("#D38696"),
+    "tshare": _hex("#8EC07C"),
+}
+SOLARIZED_DARK = {
+    "border": _hex("#073642"), "accent": _hex("#D33682"),
+    "label": _hex("#839496"), "num": _hex("#EEE8D5"),
+    "tin": _hex("#268BD2"), "tout": _hex("#CB4B16"),
+    "tcach": _hex("#859900"), "ttotal": _hex("#6C71C4"),
+    "tshare": _hex("#2AA198"),
+}
+MONOKAI = {
+    "border": _hex("#75715E"), "accent": _hex("#F92672"),
+    "label": _hex("#9B9277"), "num": _hex("#F8F8F2"),
+    "tin": _hex("#66D9EF"), "tout": _hex("#FD971F"),
+    "tcach": _hex("#A6E22E"), "ttotal": _hex("#AE81FF"),
+    "tshare": _hex("#F4BF75"),
+}
+ONE_DARK = {
+    "border": _hex("#4B5263"), "accent": _hex("#C678DD"),
+    "label": _hex("#7F8695"), "num": _hex("#ABB2BF"),
+    "tin": _hex("#61AFEF"), "tout": _hex("#E06C75"),
+    "tcach": _hex("#98C379"), "ttotal": _hex("#E5C07B"),
+    "tshare": _hex("#56B6C2"),
+}
+SOLARIZED_LIGHT = {
+    "border": _hex("#93A1A1"), "accent": _hex("#D33682"),
+    "label": _hex("#657B83"), "num": _hex("#073642"),
+    "tin": _hex("#268BD2"), "tout": _hex("#CB4B16"),
+    "tcach": _hex("#859900"), "ttotal": _hex("#6C71C4"),
+    "tshare": _hex("#2AA198"),
+}
+PAPER = {
+    "border": _hex("#B0B7C3"), "accent": _hex("#BE185D"),
+    "label": _hex("#6B7280"), "num": _hex("#1F2328"),
+    "tin": _hex("#1D4ED8"), "tout": _hex("#C2410C"),
+    "tcach": _hex("#15803D"), "ttotal": _hex("#6D28D9"),
+    "tshare": _hex("#0E7490"),
+}
+THEMES = {
+    "neon-midnight": ("Neon Midnight", NEON),
+    "tokyo-night": ("Tokyo Night", TOKYO_NIGHT),
+    "dracula": ("Dracula", DRACULA),
+    "nord": ("Nord", NORD),
+    "gruvbox-dark": ("Gruvbox Dark", GRUVBOX_DARK),
+    "solarized-dark": ("Solarized Dark", SOLARIZED_DARK),
+    "monokai": ("Monokai", MONOKAI),
+    "one-dark": ("One Dark", ONE_DARK),
+    "solarized-light": ("Solarized Light", SOLARIZED_LIGHT),
+    "paper": ("Paper", PAPER),
+}
+
 # Bars are a left-to-right color gradient: input tokens blue fading into
 # output-token pink, with the transition centered where the input share of
 # the row's total ends. Interpolated in HSL sweeping UP from blue through

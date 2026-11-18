@@ -22,15 +22,62 @@ import sqlite3
 import sys
 import time
 
-DEFAULT_SRC = os.path.expanduser("~/.local/share/opencode/opencode.db")
-DEFAULT_UNSLOTH_DB = os.path.expanduser("~/.unsloth/studio/studio.db")
+
+def state_dir(home=None):
+    """The one directory tokenstat owns: <home>/.tokenstat (pure path math)."""
+    if home is None:
+        home = os.path.expanduser("~")
+    return os.path.join(home, ".tokenstat")
+
+
+def default_db(home=None):
+    """Our store: <home>/.tokenstat/usage.db."""
+    return os.path.join(state_dir(home), "usage.db")
+
+
+def themes_dir(home=None):
+    """User theme files and the saved default: <home>/.tokenstat/themes."""
+    return os.path.join(state_dir(home), "themes")
+
+
+def theme_config(home=None):
+    """The saved default theme file: <home>/.tokenstat/themes/config.json."""
+    return os.path.join(themes_dir(home), "config.json")
+
+
+def unsloth_db(home=None):
+    """Unsloth Studio's database: <home>/.unsloth/studio/studio.db."""
+    if home is None:
+        home = os.path.expanduser("~")
+    return os.path.join(home, ".unsloth", "studio", "studio.db")
+
+
+def default_src(home=None):
+    """OpenCode's database: $XDG_DATA_HOME/opencode when that is an absolute
+    path, else <home>/.local/share/opencode — matching how OpenCode itself
+    resolves it."""
+    if home is None:
+        home = os.path.expanduser("~")
+    xdg = os.environ.get("XDG_DATA_HOME", "")
+    base = xdg if os.path.isabs(xdg) else os.path.join(home, ".local", "share")
+    return os.path.join(base, "opencode", "opencode.db")
+
+
+STATE_DIR = state_dir()
+LEGACY_DIR = os.path.dirname(os.path.abspath(__file__))
+LEGACY_THEMES_DIR = os.path.join(LEGACY_DIR, "themes")
+DEFAULT_DB = default_db()
+DEFAULT_SRC = default_src()
+DEFAULT_UNSLOTH_DB = unsloth_db()
+THEMES_DIR = themes_dir()
+THEME_CONFIG = theme_config()
+
 MODEL_ANY = object()  # --model with no value (valid only with --total)
 SESSIONS_BARE = object()  # --sessions with no value; argparse skips type on
 # a non-str const, so the sentinel distinguishes the valueless flag from
 # --sessions=0 (a plain string const would be run through type=int).
 THEME_LIST = object()   # --theme with no value: list the themes and exit
 THEME_SAVE = object()   # --theme-default with no value: save this run's theme
-DEFAULT_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "usage.db")
 
 TOKEN_COLUMNS = (
     "tokens_input", "tokens_output", "tokens_reasoning",
@@ -1130,9 +1177,6 @@ THEMES = {
     "paper": ("Paper", PAPER),
 }
 
-# User-supplied theme files live next to this script, one .json per theme.
-THEMES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "themes")
-
 # Strict hex for user-supplied files: exactly '#rrggbb', digits or a-f, any
 # case. (The _hex() helper above is deliberately NOT reused — it is permissive
 # and only for the built-in palettes.)
@@ -1210,11 +1254,11 @@ def scan_themes(dir=THEMES_DIR, warn=None):
     return found
 
 
-# The saved default theme lives in themes/config.json as {"default": "<slug>"}.
+# The saved default theme lives in THEME_CONFIG (see the globals block at the
+# top) as {"default": "<slug>"}.
 # It is read whenever a run resolves a theme without an explicit --theme=SLUG
 # (and by the bare --theme list) and written by --theme-default; a missing or
 # unusable file is not an error, it simply means "no default saved".
-THEME_CONFIG = os.path.join(THEMES_DIR, "config.json")
 
 
 def read_default_theme(path=THEME_CONFIG, warn=None):

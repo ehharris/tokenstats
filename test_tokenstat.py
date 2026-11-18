@@ -1772,8 +1772,13 @@ class ReviewFixTests2(unittest.TestCase):
         self.assertEqual(before, after)
 
     def test_reconcile_rejects_unsupported_flags(self):
-        with self.assertRaises(SystemExit) as cm:
-            main(["reconcile", "--since", "2026-11-01"])
+        # An explicit --db keeps this hermetic: the default store now lives in
+        # ~/.tokenstat, which only exists once the migration has run, and an
+        # unopenable store exits 1 at open time — before this guard's exit 2.
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(SystemExit) as cm:
+                main(["--db", os.path.join(tmp, "usage.db"),
+                      "reconcile", "--since", "2026-11-01"])
         self.assertEqual(cm.exception.code, 2)
 
 
@@ -4013,6 +4018,38 @@ class CliThemeTests(CliHarness):
                               cwd=repo, capture_output=True)
         self.assertEqual(proc.returncode, 0,
                          "themes/*.json must be gitignored")
+
+
+class DefaultPathsTests(unittest.TestCase):
+    def test_state_lives_in_one_home_directory(self):
+        h = "/tmp/fake-home"
+        self.assertEqual(tokenstat.state_dir(h), "/tmp/fake-home/.tokenstat")
+        self.assertEqual(tokenstat.default_db(h), "/tmp/fake-home/.tokenstat/usage.db")
+        self.assertEqual(tokenstat.themes_dir(h), "/tmp/fake-home/.tokenstat/themes")
+        self.assertEqual(tokenstat.theme_config(h),
+                         "/tmp/fake-home/.tokenstat/themes/config.json")
+
+    def test_xdg_data_home_moves_the_opencode_default(self):
+        with unittest.mock.patch.dict(os.environ,
+                                      {"XDG_DATA_HOME": "/xdg/data"}):
+            self.assertEqual(tokenstat.default_src("/tmp/fake-home"),
+                             "/xdg/data/opencode/opencode.db")
+
+    def test_empty_or_relative_xdg_data_home_is_ignored(self):
+        for value in ("", "relative/path"):
+            with unittest.mock.patch.dict(os.environ, {"XDG_DATA_HOME": value}):
+                self.assertEqual(tokenstat.default_src("/tmp/fake-home"),
+                                 "/tmp/fake-home/.local/share/opencode/opencode.db")
+
+    def test_unsloth_default_is_the_studio_location(self):
+        self.assertEqual(tokenstat.unsloth_db("/tmp/fake-home"),
+                         "/tmp/fake-home/.unsloth/studio/studio.db")
+
+    def test_module_defaults_point_at_the_state_dir(self):
+        self.assertEqual(tokenstat.DEFAULT_DB, tokenstat.default_db())
+        self.assertEqual(tokenstat.THEMES_DIR, tokenstat.themes_dir())
+        self.assertEqual(tokenstat.THEME_CONFIG, tokenstat.theme_config())
+        self.assertEqual(tokenstat.DEFAULT_SRC, tokenstat.default_src())
 
 
 class SchemaTests(unittest.TestCase):

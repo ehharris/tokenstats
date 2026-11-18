@@ -911,10 +911,10 @@ SHARE_COLUMNS = TOTAL_COLUMNS + [
 
 def cost_column(tier):
     """(header, key, kind) for the opt-in --cost overlay; the header names the
-    model the pricing is pinned to, so a stale price table is visible. It
-    wraps over two lines ("COST  ·" / "<model> Prices", human decision) to
-    keep the column narrower than a single-line header would."""
-    return (f"COST  \u00b7\n{PRICES[tier]['name']} Prices", "cost_est", "cost")
+    model the pricing is pinned to, so a stale price table is visible.
+    SINGLE line (human decision): "COST · <model> Prices" — compactness wins
+    over column width; the whole head stays one line tall."""
+    return (f"COST \u00b7 {PRICES[tier]['name']} Prices", "cost_est", "cost")
 
 
 # --real-cost overlay: the stored real cost (real OpenCode data); every

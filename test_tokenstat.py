@@ -2201,12 +2201,11 @@ class CliTotalTests(unittest.TestCase):
             ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
              "--total", "--cost"])
         self.assertEqual(code, 0)
-        # two-line header (human decision): "COST  ·" floats on the first
-        # header line, "<model> Prices" bottom-aligns above the rule.
+        # single-line header (human decision): "COST · <model> Prices" sits
+        # on the one header line, directly above the rule.
         lines = out.splitlines()
-        self.assertEqual(lines[0].strip(), "COST  \u00b7")
-        self.assertIn("Claude Sonnet 5 Prices", lines[1])
-        self.assertTrue(lines[2].startswith("\u2500"))
+        self.assertIn("COST \u00b7 Claude Sonnet 5 Prices", lines[0])
+        self.assertTrue(lines[1].startswith("\u2500"))
 
     def test_cost_slug_changes_header(self):
         code, out, _ = self.run_main(
@@ -2214,8 +2213,7 @@ class CliTotalTests(unittest.TestCase):
              "--total", "--cost=deepseek-v3.2"])
         self.assertEqual(code, 0)
         lines = out.splitlines()
-        self.assertEqual(lines[0].strip(), "COST  \u00b7")
-        self.assertIn("DeepSeek V3.2 Prices", lines[1])
+        self.assertIn("COST \u00b7 DeepSeek V3.2 Prices", lines[0])
 
     def test_cost_family_alias_equals_model_slug(self):
         base = ["--db", self.db, "--src", self.src, "--unsloth-db",
@@ -2224,8 +2222,7 @@ class CliTotalTests(unittest.TestCase):
         _, model, _ = self.run_main(base + ["--cost=qwen-plus"])
         self.assertEqual(alias, model)
         lines = alias.splitlines()
-        self.assertEqual(lines[0].strip(), "COST  \u00b7")
-        self.assertIn("Qwen-Plus Prices", lines[1])
+        self.assertIn("COST \u00b7 Qwen-Plus Prices", lines[0])
 
     def test_cost_invalid_slug_exits_2(self):
         with self.assertRaises(SystemExit) as cm, \
@@ -2311,10 +2308,10 @@ class RealCostTests(unittest.TestCase):
              "--total", "--cost", "--real-cost"])
         self.assertEqual(code, 0)
         lines = out.splitlines()
-        # estimate column still left of the real one: compare column start
-        # positions across the two (bottom-aligned) header lines.
-        self.assertLess(lines[0].index("COST  \u00b7"),
-                        lines[1].index("REAL COST"))
+        # estimate column still left of the real one: both names now share
+        # the single header line; compare their start positions.
+        self.assertLess(lines[0].index("COST"),
+                        lines[0].index("REAL COST"))
 
     def test_real_cost_json_shape_unchanged(self):  # review-focus pin
         base = ["--db", self.db, "--src", self.src, "--unsloth-db",
@@ -2458,17 +2455,18 @@ class CostFormatTests(unittest.TestCase):
         self.assertEqual(row["cost"], "\x1b[38;2;244;240;255m$0.02\x1b[0m")
 
     def test_render_table_two_line_header(self):
-        # "\n" in a header wraps the cell; header text BOTTOM-aligns, so each
+        # "\n" in a header wraps the cell (mechanism kept; the shipped COST
+        # header is single-line); header text BOTTOM-aligns, so each
         # column's last line sits on the rule directly above the data.
         from tokenstat import render_table
         table = render_table([{"a": 1, "cost_est": 14.7}],
                              [("A", "a", "int"),
-                              ("COST  \u00b7\nClaude Sonnet 5 Prices",
+                              ("PRICE\nClaude Sonnet 5 Rates",
                                "cost_est", "cost")])
         self.assertEqual(table.splitlines(),
-                         ["   COST  \u00b7",
-                          "A  Claude Sonnet 5 Prices",
-                          "\u2500" * 25,
+                         ["   PRICE",
+                          "A  Claude Sonnet 5 Rates",
+                          "\u2500" * 24,
                           "1  $14.70"])
 
     def test_render_table_two_line_header_pads_later_columns(self):
@@ -2476,14 +2474,14 @@ class CostFormatTests(unittest.TestCase):
         # line and its data aligns past the wrapped column's widest line.
         from tokenstat import render_table
         table = render_table([{"cost_est": 14.7, "z": 5}],
-                             [("COST  \u00b7\nClaude Sonnet 5 Prices",
+                             [("PRICE\nClaude Sonnet 5 Rates",
                                "cost_est", "cost"),
                               ("Z", "z", "int")])
         lines = table.splitlines()
-        self.assertEqual(lines[0], "COST  \u00b7")
-        self.assertEqual(lines[1], "Claude Sonnet 5 Prices  Z")
-        self.assertEqual(lines[2], "\u2500" * 25)
-        self.assertEqual(lines[3], "$14.70" + " " * 18 + "5")
+        self.assertEqual(lines[0], "PRICE")
+        self.assertEqual(lines[1], "Claude Sonnet 5 Rates  Z")
+        self.assertEqual(lines[2], "\u2500" * 24)
+        self.assertEqual(lines[3], "$14.70" + " " * 17 + "5")
 
     def test_render_table_rule_separates_header(self):
         # every table gets a rule between head and body (human decision:

@@ -146,12 +146,13 @@ to their rate.
 ## Session scope (`--sessions`)
 
 `--sessions` lists the **20 most recent sessions**, newest first;
-`--sessions=50` lists 50. With `--daily` or `--total` (including bare
-`--model`, the `--total` shortcut) the same cap instead narrows the session
-set the aggregate covers, so the aggregate describes exactly those sessions
-and nothing else — the table title says so (`daily · last 3 sessions`,
-`totals · last 3 sessions`, `usage by model · sorted by share · last 3
-sessions`). A valueless `--sessions` means **all** sessions in the
+`--sessions=50` lists 50. With `--daily` or `--total` (bare `--model`
+counts — it is the `--total` shortcut unless `--daily` is set) the same
+cap instead narrows the session set the aggregate covers, so the
+aggregate describes exactly those sessions and nothing else — the table
+title says so (`daily · last 3 sessions`, `totals · last 3 sessions`,
+`usage by model · sorted by share · last 3 sessions`). A valueless
+`--sessions` means **all** sessions in the
 aggregate views — an aggregate is a summary by default, so `--total` and
 `--daily` alone stay the everything views — and `--sessions=0` means all
 matching sessions in any view. Existing filters (`--model`, `--since`,

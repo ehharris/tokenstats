@@ -10,7 +10,7 @@ in `docs/superpowers/plans/`.
 
 **State at handoff (2026-11-17):** work sits on `master` (no remote
 configured — local-only repo, no push; branch workflow used for increments,
-fast-forward merged after clean review rounds). 252 tests green. Connection
+fast-forward merged after clean review rounds). 292 tests green. Connection
 hygiene (2026-11-15): every sqlite
 connection main() opens is now closed — the store via try/finally and each
 read-only source by `_ingest` owning its open/close; `NoResourceWarningTests`
@@ -191,8 +191,9 @@ is reached by omission, not a second code path). Alone (no other view flag)
 it renders the capped rows newest first — the same `most_recent` recency
 step the dashboard's panel shares — titled `sessions · N most recent` or
 `sessions · all`; with a POSITIVE cap in force the aggregate titles say so
-(`daily · last 3 sessions`, `totals ·
-last 3 sessions`, `usage by model · sorted by share · last 3 sessions`) and
+(`daily · last 3 sessions`,
+`totals · last 3 sessions`,
+`usage by model · sorted by share · last 3 sessions`) and
 with no cap or a 0 cap every title stays byte-identical to today;
 `hero_unit` values never change. Rejected (exit 2, after implicit
 ingestion like the other guards) with `--from-unsloth`, `--from-runs`, and

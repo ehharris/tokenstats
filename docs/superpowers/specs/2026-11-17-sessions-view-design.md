@@ -21,8 +21,9 @@ rows makes it a scroll.
 
 ## Goals
 
-- `--sessions` (no value) caps the session set at the 20 most recent.
-- `--sessions=N` caps it at N. `--sessions=0` means all matching sessions.
+- `--sessions` with no value means 20 in the list view and all sessions in
+  the aggregate views; `--sessions=N` means N everywhere.
+- `--sessions=0` means all matching sessions in any view.
 - "Most recent" is by session creation time, newest first — the same order
   the dashboard's `sessions · 5 most recent` panel uses.
 - Used alone it **lists** those sessions, newest first.
@@ -90,15 +91,21 @@ rows makes it a scroll.
 - It coexists with the bare-run dashboard; that panel is unchanged.
 - It works with `--daily` and `--total`; `--total` is the `--sessions=0`
   case.
+- **`--sessions` with no value alongside `--total` means all sessions ever
+  recorded**, not 20.
 - Approach 2.
 
 ## Controller's calls (correctable, not agreed)
 
-- The flag's default is 20 in every view, so `--sessions --total` means
-  "totals over the 20 most recent". `--total` with no `--sessions` stays
-  all sessions, exactly as today — nothing about current output changes.
-- `--sessions=0` means all matching sessions; a negative N is a
-  `parser.error`, not a silent empty table.
+- Extending the partner's ruling by symmetry: a valueless `--sessions`
+  means **all** in either aggregate view (`--daily` as well as `--total`),
+  and 20 in the list view. The reasoning is that an aggregate is a summary
+  of everything by default and only a list needs a bound; an explicit
+  `--sessions=10` caps every view the same way.
+- `--total` with no `--sessions` stays all sessions, exactly as today —
+  nothing about current output changes.
+- `--sessions=0` means all matching sessions in any view; a negative N is
+  a `parser.error`, not a silent empty table.
 - Rejected with `--from-unsloth`, `--from-runs`, and the `reconcile`
   command — none of them are sessions.
 - The cap is a predicate on the session set (`session_id IN (SELECT

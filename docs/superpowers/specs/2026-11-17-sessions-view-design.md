@@ -93,6 +93,8 @@ rows makes it a scroll.
   case.
 - **`--sessions` with no value alongside `--total` means all sessions ever
   recorded**, not 20.
+- **`--sessions --daily` shows all sessions from that day** — every day's
+  row covers every session created that day, with no recency cut.
 - Approach 2.
 
 ## Controller's calls (correctable, not agreed)
@@ -102,6 +104,9 @@ rows makes it a scroll.
   and 20 in the list view. The reasoning is that an aggregate is a summary
   of everything by default and only a list needs a bound; an explicit
   `--sessions=10` caps every view the same way.
+- With an explicit N, `--sessions=10 --daily` takes the 10 most recent
+  sessions first, so it can legitimately show fewer days than an uncapped
+  run; days with no session in the capped set simply do not appear.
 - `--total` with no `--sessions` stays all sessions, exactly as today —
   nothing about current output changes.
 - `--sessions=0` means all matching sessions in any view; a negative N is

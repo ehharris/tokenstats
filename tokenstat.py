@@ -5,9 +5,9 @@ Snapshots three tables from two sources (read-only) into our own SQLite
 store — OpenCode's per-session totals, plus Unsloth Studio's per-request
 events and generation runs — and reports them filtered by model, date, and
 token thresholds. Reporting views carry a TOK/S column (reconcile
-excepted): each session row is a wall-clock average over its own span (idle
-drags it down), aggregate rows are the token-weighted mean of the rates they
-fold up, and --from-runs shows each run's true generation rate. Opt-in --cost
+excepted): each session row is the mean of its per-turn decode rates (matching
+OpenCode's per-prompt number), aggregate rows are token-weighted by generated
+tokens, and --from-runs shows each run's true generation rate. Opt-in --cost
 overlays a reference Claude-tier dollar estimate. See README.md.
 """
 import argparse

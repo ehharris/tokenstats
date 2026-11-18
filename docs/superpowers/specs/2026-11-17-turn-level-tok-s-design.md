@@ -115,8 +115,10 @@ decode time.
 Invariant 1 holds per column: `step_ms` and `tokens_generated` are fixed once a
 step completes, so `max(stored, source)` covers the streaming→complete
 transition and still prevents a pruned source from shrinking history.
-`turn` is a deterministic label, overwritten with the recomputed value.
-Rows are never deleted, so ingested steps survive OpenCode's pruning forever.
+`turn` is recomputed while every stored step is still in the source; once a
+step is pruned, that session's stored turns are frozen so a displayed rate
+cannot drift without new generation. Rows are never deleted, so ingested
+steps survive OpenCode's pruning forever.
 
 ### Ingestion — inside `record()`
 

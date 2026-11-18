@@ -194,6 +194,22 @@ class UpsertEngineTests(unittest.TestCase):
             tokenstat._upsert(self.dest, "no_such_table", "k",
                               [{"k": "a", "n": 1}], numeric=["n"])
 
+    def test_a_text_numeric_source_value_is_isolated_not_fatal(self):
+        # max(5, "x") raises TypeError, not sqlite3.Error. import_opencode_steps
+        # already isolates exactly this; the two ingest paths must not differ in
+        # how wide one bad row reaches. Good row first, so the bad row is not
+        # the only one covered (the malformed-row pin above covers that side).
+        tokenstat._upsert(self.dest, "t", "k", [{"k": "a", "n": 5}],
+                          numeric=["n"])
+        counts = tokenstat._upsert(
+            self.dest, "t", "k",
+            [{"k": "a", "n": "not-a-number"}, {"k": "b", "n": 4}],
+            numeric=["n"])
+        self.assertEqual(counts["skipped"], 1)
+        self.assertEqual(counts["inserted"], 1)
+        self.assertEqual(self.stored("a"), (None, 5, None, None))  # untouched
+        self.assertEqual(self.stored("b"), (None, 4, None, None))
+
 
 class RecordTests(unittest.TestCase):
     def setUp(self):

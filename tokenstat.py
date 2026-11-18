@@ -1208,10 +1208,10 @@ THEME_CONFIG = os.path.join(THEMES_DIR, "config.json")
 
 def read_default_theme(path=THEME_CONFIG, warn=None):
     """The saved default theme slug from `path`, or None. A missing file is a
-    silent None; a file that exists but cannot be read, decoded, or parsed, or
-    that is not a JSON object, is reported through warn(f"warning: ...") and
-    also yields None. A JSON object without a usable string "default" is treated
-    as 'no default' (None, silent) rather than an error."""
+    silent None; a file that exists but cannot be read, decoded, or parsed, is
+    not a JSON object, or has no usable string "default" is reported through
+    warn(f"warning: ...") and yields None — an unusable config must not let a
+    saved theme silently stop applying with no clue why."""
     try:
         with open(path, encoding="utf-8") as fh:
             obj = json.load(fh)
@@ -1226,7 +1226,11 @@ def read_default_theme(path=THEME_CONFIG, warn=None):
             warn(f"warning: {path}: config must be a JSON object")
         return None
     slug = obj.get("default")
-    return slug if isinstance(slug, str) and slug else None
+    if not isinstance(slug, str) or not slug:
+        if warn is not None:
+            warn(f"warning: {path}: no usable 'default' theme slug found")
+        return None
+    return slug
 
 
 def write_default_theme(path, slug):

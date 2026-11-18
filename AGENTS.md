@@ -280,7 +280,9 @@ built-in palettes live in `tokenstat.py`.
 Neon Midnight remains the default and flag-off output stays byte-identical
 (existing pins untouched); piped/`NO_COLOR`/`--json` output stays byte-plain
 under every theme. Spec + plan in docs/superpowers/{specs,plans}/
-2026-11-17-custom-themes*.
+2026-11-17-custom-themes*. CLI tests share one harness base (`CliHarness`:
+`run_main` captures both streams, `colored_main` also forces the color gate)
+instead of each class re-declaring it.
 
 ## Commands (run from this directory)
 

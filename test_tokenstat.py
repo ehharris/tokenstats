@@ -1212,7 +1212,32 @@ class DailyTotalsTests(unittest.TestCase):
         self.assertEqual(first["total"], 3300)
 
 
-class CliTests(unittest.TestCase):
+# Shared CLI harness: every CLI test class runs main() with both streams
+# captured, and the colored ones fake a tty through the same gate. Kept in one
+# place so a change to how a run is captured is one edit, not twelve.
+class CliHarness(unittest.TestCase):
+    """Base for CLI tests: run_main captures stdout/stderr; colored_main also
+    forces the color gate on (the in-process stand-in for a terminal)."""
+
+    def run_main(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(argv)
+        return code, out.getvalue(), err.getvalue()
+
+    def colored_main(self, argv):
+        with unittest.mock.patch.object(tokenstat, "_color_enabled",
+                                        return_value=True):
+            return self.run_main(argv)
+
+
+def rgbs(bar):
+    """The 24-bit foreground triples painted into a bar, left to right."""
+    return [tuple(int(g) for g in m) for m in
+            re.findall(r"\x1b\[38;2;(\d+);(\d+);(\d+)m", bar)]
+
+
+class CliTests(CliHarness):
     def setUp(self):
         import tempfile
         self.tmp = tempfile.TemporaryDirectory()
@@ -1221,12 +1246,6 @@ class CliTests(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
-
-    def run_main(self, argv):
-        out, err = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = main(argv)
-        return code, out.getvalue(), err.getvalue()
 
     def test_implicit_record_fallback_missing_src(self):
         code, out, err = self.run_main(
@@ -1599,7 +1618,7 @@ def make_file_runs_db(path, events=(), runs=()):
     return conn
 
 
-class CliUnslothTests(unittest.TestCase):
+class CliUnslothTests(CliHarness):
     def setUp(self):
         import tempfile
         self.tmp = tempfile.TemporaryDirectory()
@@ -1609,12 +1628,6 @@ class CliUnslothTests(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
-
-    def run_main(self, argv):
-        out, err = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = main(argv)
-        return code, out.getvalue(), err.getvalue()
 
     def test_import_unsloth_subcommand_prints_counts(self):
         self.addCleanup(make_file_unsloth_db(
@@ -2055,7 +2068,7 @@ class TotalEventsTests(unittest.TestCase):
         self.assertEqual(sum(r["sessions"] for r in rows), 2)
 
 
-class CliTotalTests(unittest.TestCase):
+class CliTotalTests(CliHarness):
     def setUp(self):
         import tempfile
         self.tmp = tempfile.TemporaryDirectory()
@@ -2070,12 +2083,6 @@ class CliTotalTests(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
-
-    def run_main(self, argv):
-        out, err = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = main(argv)
-        return code, out.getvalue(), err.getvalue()
 
     def test_total_flag_renders_grand_row(self):
         code, out, _ = self.run_main(
@@ -2274,7 +2281,7 @@ class CliTotalTests(unittest.TestCase):
         self.assertEqual(bare, pinned)
 
 
-class RealCostTests(unittest.TestCase):
+class RealCostTests(CliHarness):
     """--real-cost: the stored real USD as a display column."""
 
     def setUp(self):
@@ -2291,12 +2298,6 @@ class RealCostTests(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
-
-    def run_main(self, argv):
-        out, err = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = main(argv)
-        return code, out.getvalue(), err.getvalue()
 
     def test_real_cost_column_shows_stored_cost(self):
         code, out, _ = self.run_main(
@@ -2534,7 +2535,7 @@ class CacheOverlayTests(unittest.TestCase):
         self.assertEqual(SESSION_COLUMNS, original)
 
 
-class CliCacheTests(unittest.TestCase):
+class CliCacheTests(CliHarness):
     """--cache overlay column end-to-end through main()."""
 
     def setUp(self):
@@ -2551,12 +2552,6 @@ class CliCacheTests(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
-
-    def run_main(self, argv):
-        out, err = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = main(argv)
-        return code, out.getvalue(), err.getvalue()
 
     def base(self, *flags):
         return self.run_main(["--db", self.db, "--src", self.src,
@@ -2639,7 +2634,7 @@ class CliCacheTests(unittest.TestCase):
         self.assertEqual(cm.exception.code, 2)
 
 
-class DisplayAlignmentTests(unittest.TestCase):
+class DisplayAlignmentTests(CliHarness):
     def setUp(self):
         import tempfile
         self.tmp = tempfile.TemporaryDirectory()
@@ -2650,12 +2645,6 @@ class DisplayAlignmentTests(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
-
-    def run_main(self, argv):
-        out, err = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = main(argv)
-        return code, out.getvalue(), err.getvalue()
 
     def test_render_table_left_aligns_numbers(self):
         columns = [("N", "n", "int"), ("T", "t", "text")]
@@ -2747,7 +2736,7 @@ class AddSharesTests(unittest.TestCase):
         self.assertEqual([r["bar"] for r in out], ["", ""])
 
 
-class CliShareTests(unittest.TestCase):
+class CliShareTests(CliHarness):
     """--total per-model views (both sources) show SHARE + BAR; bare --model
     is now a valid shortcut for --total --model."""
 
@@ -2765,12 +2754,6 @@ class CliShareTests(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
-
-    def run_main(self, argv):
-        out, err = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = main(argv)
-        return code, out.getvalue(), err.getvalue()
 
     def test_total_per_model_table_shares_and_bars(self):
         code, out, _ = self.run_main(
@@ -2913,11 +2896,6 @@ class PaintBarsTests(unittest.TestCase):
                  "tokens_input": 5, "tokens_output": 5}]
         bar = paint_bars(rows, color=True)[0]["bar"]
 
-        def rgbs(bar):
-            import re
-            return [tuple(int(g) for g in m) for m in
-                    re.findall(r"\x1b\[38;2;(\d+);(\d+);(\d+)m", bar)]
-
         colors = rgbs(bar)
         self.assertEqual(len(colors), 10)         # every glyph its own color
         self.assertEqual(colors[0], TOKEN_IN_RGB)   # left end: pure input hue
@@ -2926,10 +2904,6 @@ class PaintBarsTests(unittest.TestCase):
     def test_gradient_endpoints_follow_an_arbitrary_theme(self):
         # the gradient must read its endpoints from the theme it is handed,
         # not from the import-time TOKEN_IN_RGB/TOKEN_OUT_RGB globals
-        def rgbs(bar):
-            return [tuple(int(g) for g in m) for m in
-                    re.findall(r"\x1b\[38;2;(\d+);(\d+);(\d+)m", bar)]
-
         theme = dict(NEON, tin=(10, 200, 190), tout=(250, 30, 90))
         rows = [{"model": "a", "total": 10, "share": 100.0, "bar": "█" * 8,
                  "tokens_input": 5, "tokens_output": 5}]
@@ -2948,10 +2922,6 @@ class PaintBarsTests(unittest.TestCase):
     def test_default_paint_bars_unchanged_without_theme_arg(self):
         # the default path (no theme=) still paints the NEON-derived pins
         from tokenstat import TOKEN_IN_RGB, TOKEN_OUT_RGB
-
-        def rgbs(bar):
-            return [tuple(int(g) for g in m) for m in
-                    re.findall(r"\x1b\[38;2;(\d+);(\d+);(\d+)m", bar)]
 
         rows = [{"model": "a", "total": 10, "share": 100.0, "bar": "█" * 8,
                  "tokens_input": 5, "tokens_output": 5}]
@@ -3454,7 +3424,7 @@ class ThemeConfigTests(unittest.TestCase):
         self.assertEqual(colors["tin"], (0, 0, 255))
 
 
-class CliColorTests(unittest.TestCase):
+class CliColorTests(CliHarness):
     """Piped (non-tty) CLI output stays plain text but keeps bar padding."""
 
     def setUp(self):
@@ -3472,12 +3442,6 @@ class CliColorTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def run_main(self, argv):
-        out, err = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = main(argv)
-        return code, out.getvalue(), err.getvalue()
-
     def test_piped_output_plain_but_padded(self):
         code, out, _ = self.run_main(
             ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
@@ -3489,7 +3453,7 @@ class CliColorTests(unittest.TestCase):
         self.assertRegex(unsloth_line, r"\d+\.\d%   [█░▒▓ ]+$")
 
 
-class CliNeonTests(unittest.TestCase):
+class CliNeonTests(CliHarness):
     """tty-colored CLI output: neon header/panels, per-glyph gradient glyph
     bars, painted cells. Color is forced by patching the _color_enabled gate."""
 
@@ -3519,17 +3483,6 @@ class CliNeonTests(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
-
-    def run_main(self, argv):
-        out, err = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = main(argv)
-        return code, out.getvalue(), err.getvalue()
-
-    def colored_main(self, argv):
-        with unittest.mock.patch.object(tokenstat, "_color_enabled",
-                                        return_value=True):
-            return self.run_main(argv)
 
     def test_runs_share_rows_render_gradient_glyph_bars(self):
         # runs have no in/out split (all-input rows), but on a terminal their
@@ -3677,7 +3630,7 @@ class ThemePaintTests(unittest.TestCase):
         self.assertNotIn("\x1b", out)
 
 
-class CliThemeTests(unittest.TestCase):
+class CliThemeTests(CliHarness):
     """--theme / --theme-default: the two actions, precedence, painted bytes.
     Modeled on CliNeonTests: same fixture, same color-forcing helper."""
 
@@ -3707,17 +3660,6 @@ class CliThemeTests(unittest.TestCase):
             patcher = unittest.mock.patch.object(tokenstat, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
-
-    def run_main(self, argv):
-        out, err = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = main(argv)
-        return code, out.getvalue(), err.getvalue()
-
-    def colored_main(self, argv):
-        with unittest.mock.patch.object(tokenstat, "_color_enabled",
-                                        return_value=True):
-            return self.run_main(argv)
 
     def exit_two(self, argv):
         """Run main() expecting argparse's exit 2; returns the stderr text."""
@@ -4289,7 +4231,7 @@ class PanelEmptyTitleTests(unittest.TestCase):
         self.assertIn(f"\x1b[38;2;{r};{g};{b}m~$123.46\x1b[0m", hero)
 
 
-class DefaultDashboardTests(unittest.TestCase):
+class DefaultDashboardTests(CliHarness):
     """Bare tokenstat run: hero + top-5 models + 5 most recent sessions."""
 
     def setUp(self):
@@ -4313,12 +4255,6 @@ class DefaultDashboardTests(unittest.TestCase):
                     created=ms(2026, 11, 6)),
             src_row(sid="s7", title="t-s7", created=ms(2026, 11, 7)),
         ]).close)
-
-    def run_main(self, argv):
-        out, err = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = main(argv)
-        return code, out.getvalue(), err.getvalue()
 
     def bare(self, extra=()):
         return self.run_main(["--db", self.db, "--src", self.src,
@@ -4518,7 +4454,7 @@ class HeroUnitTests(unittest.TestCase):
         self.assertIn("2 runs", self.run_hero("--from-runs"))
 
 
-class CliSessionsTests(unittest.TestCase):
+class CliSessionsTests(CliHarness):
     """--sessions[=N] scopes session views to the N most recent sessions."""
 
     def setUp(self):
@@ -4536,25 +4472,13 @@ class CliSessionsTests(unittest.TestCase):
                     created=base + i * 3_600_000)   # hourly, all distinct
             for i in range(26)]).close)
 
-    def run_main(self, argv):
-        out, err = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = main(argv)
-        return code, out.getvalue(), err.getvalue()
-
-    def colored(self, argv):
-        # Titles/heroes only print on a tty; fake one, then strip colour.
-        with unittest.mock.patch("tokenstat._color_enabled",
-                                 lambda *a: True):
-            return self.run_main(argv)
-
     def sess(self, *extra):
         return self.run_main(
             ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb]
             + list(extra))
 
     def sess_colored(self, *extra):
-        return self.colored(
+        return self.colored_main(
             ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb]
             + list(extra))
 
@@ -4763,7 +4687,7 @@ class CliSessionsTests(unittest.TestCase):
             + [src_row(sid="u1", title="t-u1", created=base + 7 * 3_600_000)]
         ).close)
         db = os.path.join(self.tmp.name, "usage2.db")
-        code, out, _ = self.colored(
+        code, out, _ = self.colored_main(
             ["--db", db, "--src", lemon, "--unsloth-db", self.no_udb,
              "--sessions=4", "--model", "lemonade"])
         self.assertEqual(code, 0)

@@ -1,12 +1,16 @@
-# `themes/` — your own palettes
+# `~/.tokenstat/themes/` — your own palettes
 
-`tokenstat` ships ten built-in themes. Anything you drop in this folder joins
-that list on the next run — no code change, no restart. One `.json` per theme,
-and the filename stem is the slug you type.
+`tokenstat` ships ten built-in themes. Anything you drop in
+`~/.tokenstat/themes/` joins that list on the next run — no code change, no
+restart. One `.json` per theme, and the filename stem is the slug you type.
+
+This folder in the repository is documentation only: the format reference you
+are reading, plus `examples/`. It is not read at runtime.
 
 ## Format
 
-`themes/copper-dusk.json` is theme `copper-dusk`, displayed as `Copper Dusk`:
+`~/.tokenstat/themes/copper-dusk.json` is theme `copper-dusk`, displayed as
+`Copper Dusk`:
 
 ```json
 {
@@ -32,8 +36,8 @@ and the filename stem is the slug you type.
   bare `--theme` prints, and what a run that reads a saved default prints; it is
   where you find out why a file is missing from the list. Its slug then does not
   exist, so `--theme=<that slug>` reports `unknown theme`.
-- A file whose stem matches a built-in slug **shadows** it: `themes/dracula.json`
-  replaces the built-in Dracula.
+- A file whose stem matches a built-in slug **shadows** it:
+  `~/.tokenstat/themes/dracula.json` replaces the built-in Dracula.
 - `track` is a legacy role — it still lives in the built-in Neon Midnight dict,
   nothing reads it, and it is not part of this schema.
 
@@ -66,25 +70,27 @@ python3 tokenstat.py --theme-default=nord          # save the default for later 
 python3 tokenstat.py --theme=nord --theme-default  # ...or save this run's --theme
 ```
 
-Precedence: `--theme` > `themes/config.json` > Neon Midnight. An unknown
-`--theme=SLUG` exits 2 and lists the available slugs; a saved default that no
-longer resolves warns naming `themes/config.json` and renders in Neon Midnight
-rather than costing you the report.
+Precedence: `--theme` > `~/.tokenstat/themes/config.json` > Neon Midnight. An
+unknown `--theme=SLUG` exits 2 and lists the available slugs; a saved default
+that no longer resolves warns naming `~/.tokenstat/themes/config.json` and
+renders in Neon Midnight rather than costing you the report.
 
-`themes/config.json` is that saved default (`{"default": "<slug>"}`), written by
-`--theme-default` — it is **not** a theme, and the scan skips a file with exactly
-that name. It and your `*.json` themes are gitignored: this folder holds personal
-state, and the ten built-ins live in `tokenstat.py` itself.
+`~/.tokenstat/themes/config.json` is that saved default (`{"default":
+"<slug>"}`), written by `--theme-default` — it is **not** a theme, and the scan
+skips a file with exactly that name. It and your `*.json` themes are personal
+state: they live under `~/.tokenstat/`, not in the repository, and the ten
+built-ins live in `tokenstat.py` itself.
 
 ## examples/
 
-`examples/` is the one tracked part of this folder: reference themes you can copy
-here and edit. The scan reads only this folder's own `*.json` files — subfolders
-are not walked — so an example is inert until you copy it in:
+`examples/` is the tracked part of this folder: reference themes to copy into
+`~/.tokenstat/themes/` and edit. The scan reads only that folder's own `*.json`
+files — subfolders are not walked — so an example is inert until you copy it in:
 
 ```bash
-cp themes/examples/gta-vi.json themes/    # then: --theme=gta-vi
-python3 tokenstat.py --theme              # gta-vi — GTA VI
+mkdir -p ~/.tokenstat/themes
+cp themes/examples/gta-vi.json ~/.tokenstat/themes/   # then: --theme=gta-vi
+python3 tokenstat.py --theme                          # gta-vi — GTA VI
 ```
 
 `gta-vi.json` is a worked example in the Vice City register: dusk-violet chrome,

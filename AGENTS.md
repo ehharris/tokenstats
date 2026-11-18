@@ -4,13 +4,15 @@
 machine. `tokenstat.py` (stdlib-only Python, no install step) snapshots
 three tables from two sources (OpenCode sessions; Unsloth Studio request
 events and generation runs) into its own SQLite store and reports them
-filtered by model, date, and token counts. Built 2026-11-13 via spec →
-plan → TDD; design doc in `docs/superpowers/specs/`, implementation plan
+filtered by model, date, and token counts. Everything the tool owns lives in
+one directory, `~/.tokenstat/` (store, user themes, saved theme default), so
+the script itself can sit anywhere, read-only included. Built 2026-11-13 via
+spec → plan → TDD; design doc in `docs/superpowers/specs/`, implementation plan
 in `docs/superpowers/plans/`.
 
 **State at handoff (2026-11-18):** work sits on `master` (no remote
 configured — local-only repo, no push; branch workflow used for increments,
-fast-forward merged after clean review rounds). 393 tests green. Connection
+fast-forward merged after clean review rounds). 427 tests green. Connection
 hygiene (2026-11-15): every sqlite
 connection main() opens is now closed — the store via try/finally and each
 read-only source by `_ingest` owning its open/close; `NoResourceWarningTests`
@@ -86,11 +88,11 @@ Cache-column increment (2026-11-15): opt-in `--cache` adds one combined
 views only; informational — TOTAL stays IN+OUT, `--json` gains no field
 (both classes already carried), rejected for reconcile/--from-unsloth/
 --from-runs (no cache split there); primitives `annotate_cache`/`with_cache`.
-Store `usage.db` holds full recoverable history: ~128 OpenCode sessions,
-~5,160 `opencode_steps` rows (one per ingested assistant message — see the
-turn-level increment below), 2,539 Unsloth request events, and 5 generation
-runs back to 2026-11-06 (counts from the 2026-11-17 verification pass; the
-source is live and grows between runs).
+Store `~/.tokenstat/usage.db` holds full recoverable history: ~189 OpenCode
+sessions, ~7,350 `opencode_steps` rows (one per ingested assistant message —
+see the turn-level increment below), 2,539 Unsloth request events, and 5
+generation runs back to 2026-11-06 (counts from the 2026-11-18 verification
+pass; the source is live and grows between runs).
 
 Default-dashboard increment (2026-11-15): bare run renders hero + top-5-by-share
 model panel + 5 most-recent sessions (newest first); trigger is a truly bare
@@ -255,28 +257,31 @@ the bar gradient takes its HLS endpoints from the theme's `tin`/`tout`
 (`gradient_stops`); `TOKEN_IN_RGB`/`TOKEN_OUT_RGB` are now only Neon Midnight's
 endpoints. CLI: `--theme=SLUG` paints one run (a display overlay like `--cost`,
 so the bare dashboard still renders), bare `--theme` lists the themes and marks
-the default, `--theme-default=SLUG` saves the default into `themes/config.json`
-(`{"default": "<slug>"}`, written by `write_default_theme`, read by
-`read_default_theme` on any run that resolves a theme without an explicit
-`--theme=SLUG`; bare `--theme-default` saves the same run's `--theme=SLUG`,
-and a save wins over a list when both flags are given). Both actions
-short-circuit before implicit ingestion and never touch SQLite. Precedence:
-`--theme` > `themes/config.json` > Neon Midnight, and the two failure modes split
-on purpose: an explicit `--theme=<unknown>` is exit 2 naming the slug and
-listing the slugs, while a saved default that no longer resolves warns naming
-`themes/config.json` and renders in Neon Midnight (a cosmetic default never costs
-a report). `themes/` is scanned by `scan_themes` whenever a theme is resolved or
+the default, `--theme-default=SLUG` saves the default into
+`~/.tokenstat/themes/config.json` (`{"default": "<slug>"}`, written by
+`write_default_theme`, read by `read_default_theme` on any run that resolves a
+theme without an explicit `--theme=SLUG`; bare `--theme-default` saves the same
+run's `--theme=SLUG`, and a save wins over a list when both flags are given).
+Both actions short-circuit before implicit ingestion and never touch SQLite.
+Precedence: `--theme` > `~/.tokenstat/themes/config.json` > Neon Midnight, and
+the two failure modes split on purpose: an explicit `--theme=<unknown>` is exit
+2 naming the slug and listing the slugs, while a saved default that no longer
+resolves warns naming `~/.tokenstat/themes/config.json` and renders in Neon
+Midnight (a cosmetic default never costs a report). `~/.tokenstat/themes/` is
+scanned by `scan_themes` whenever a theme is resolved or
 listed (not on a plain run that has no saved default to read): one `.json` per
-theme, filename stem = slug, a folder file shadows a built-in of the same slug,
+theme, filename stem = slug, a file shadows a built-in of the same slug,
 a file named exactly `config.json` is skipped (it is the saved default, not a
 theme), and a file that fails to parse or validate is skipped with a one-line
 stderr warning — so an explicitly named broken slug reads as an unknown theme,
-and `--theme`'s list prints the reason. Layout: `themes/*.json` and
-`themes/config.json` are gitignored (personal state); `themes/README.md` is the
-tracked format reference and `themes/examples/` ships tracked reference themes
-(`gta-vi`) that stay inert until copied into `themes/` — the scan does not walk
-subfolders, and a test loads every example so a shipped one cannot rot. The ten
-built-in palettes live in `tokenstat.py`.
+and `--theme`'s list prints the reason. Layout (as of the deployment-readiness
+increment below): the live theme files and the saved default are
+`~/.tokenstat/themes/*.json` — personal state, outside the repo; the repo's
+`themes/` keeps only `README.md` (the format reference) and `examples/`, which
+ship tracked reference themes (`gta-vi`) that stay inert until copied into
+`~/.tokenstat/themes/` — the scan does not walk subfolders, and a test loads
+every example so a shipped one cannot rot. The ten built-in palettes live in
+`tokenstat.py`.
 Neon Midnight remains the default and flag-off output stays byte-identical
 (existing pins untouched); piped/`NO_COLOR`/`--json` output stays byte-plain
 under every theme — and that promise is now an artifact: `golden/` holds exact
@@ -286,6 +291,45 @@ Spec + plan in docs/superpowers/{specs,plans}/2026-11-17-custom-themes*. CLI
 tests share one harness base (`CliHarness`: `run_main` captures both streams,
 `colored_main` also forces the color gate) instead of each class re-declaring
 it.
+
+Deployment-readiness increment (2026-11-18): tokenstat's own state moved out of
+the script's folder into one flat directory, `~/.tokenstat/` — `usage.db` (plus
+its `-wal`/`-shm` siblings), `themes/` (user theme files), and
+`themes/config.json` (the saved default). Path math lives in `state_dir`,
+`default_db`, `themes_dir` and `theme_config` (pure, each takes `home=`), bound
+at import to the globals `STATE_DIR`/`DEFAULT_DB`/`THEMES_DIR`/`THEME_CONFIG`;
+importing `tokenstat` still touches no filesystem. `default_store()` is the only
+function here that creates directories or moves files, and `main()` is its only
+caller — and only when `--db` was not given, so every test and every run that
+names its own store never touches `$HOME`. It performs the one-time migration: a
+store, or top-level `themes/*.json`, left beside an older copy of the script
+travels into `~/.tokenstat/` and says so on stderr (`migrated store: <old> ->
+<new>`). The order cannot lose history: theme files travel first and the store
+LAST, a failed move rolls the moved files back and keeps using the legacy path,
+and a move lost to a rival run lands on the store that run migrated — decided by
+what is on disk, not by what was attempted. The OpenCode default is now
+XDG-aware: `$XDG_DATA_HOME/opencode/opencode.db` when that is an absolute path,
+else `~/.local/share/opencode/opencode.db`, matching how OpenCode resolves it;
+Unsloth stays `~/.unsloth/studio/studio.db`. `--help` now advertises only the 13
+user-facing options (plus the `record`/`import-unsloth`/`reconcile` positional):
+`--min-in`, `--min-out`, `--db`, `--src`, `--unsloth-db` and `--from-unsloth`
+are `argparse.SUPPRESS`ed — fully usable, never listed. Redundancy pass,
+behavior and on-screen bytes unchanged: one LIKE-escape helper and one
+date-window builder behind all three filter paths (`_like_pattern`,
+`_date_clauses`); one aggregate engine behind the daily and total views
+(`_grouped_aggregates`, `_total_aggregates`); one monotonic-max upsert for every
+ingest path (`_upsert`, whose column classes are numeric / `overwrite` /
+`insert_only` / label — `insert_only` caught a real bug in pass one: usage's
+`time_created` and an event's `created_at` rode the label class, so a source
+that ever rewrote one could move the stored value; they are now written once and
+never touched again); and a flatter `main()` view layer
+(`_view_rows`, `_view_title`, `render_report`: one reject list, one dispatch,
+one render path). New test classes: `DefaultPathsTests`, `MigrationTests`,
+`FreshMachineTests` (one copied file, an empty `$HOME`, an unrelated cwd — the
+end-user promise end to end), `HiddenOptionsTests`, `FilterHelperTests`,
+`AggregateRowShapeTests`, `UpsertEngineTests`, `ViewDispatchTests`. 427 tests,
+clean under `-W error::ResourceWarning`, `golden/` untouched.
+Spec + plan in docs/superpowers/{specs,plans}/2026-11-18-deployment-readiness*.
 
 ## Commands (run from this directory)
 
@@ -305,17 +349,25 @@ python3 tokenstat.py --cost[=<slug>]                   # reference $ overlay (de
 python3 tokenstat.py --total --real-cost               # stored real USD column (session views only)
 python3 tokenstat.py --total --model --cache           # combined cache column (session views only)
 python3 tokenstat.py --theme[=SLUG]                    # list themes / paint this run (display-only overlay)
-python3 tokenstat.py --theme-default=SLUG              # save the default theme in themes/config.json
+python3 tokenstat.py --theme-default=SLUG              # save the default theme in ~/.tokenstat/themes/config.json
 python3 tokenstat.py reconcile                         # lost-history view per model
 python3 tokenstat.py record | import-unsloth           # explicit snapshots (import-unsloth = events + runs; exit 1 if source unreadable)
-python3 -m unittest test_tokenstat -v                  # tests (~0.15s, no deps)
+python3 -m unittest test_tokenstat -v                  # tests (~0.9s, no deps)
 python3 -W error::ResourceWarning -m unittest test_tokenstat   # strict variant: must stay warning-clean
 TOKENSTAT_UPDATE_GOLDEN=1 python3 -m unittest test_tokenstat   # re-pin golden/ only AFTER reading the diff
 ```
 
+`--min-in`, `--min-out`, `--db`, `--src`, `--unsloth-db` and `--from-unsloth`
+work exactly as before but are deliberately absent from `--help`; the store
+override is what keeps the suite out of `$HOME`. tokenstat's own state is
+`~/.tokenstat/` (store, `themes/`, `themes/config.json`), and the hourly cron
+logs to `~/.tokenstat/record.log`.
+
 ## Data sources (verified live)
 
-- **OpenCode:** `~/.local/share/opencode/opencode.db`, table `session_v2` —
+- **OpenCode:** `$XDG_DATA_HOME/opencode/opencode.db` when `XDG_DATA_HOME` is
+  set to an absolute path, else `~/.local/share/opencode/opencode.db` (on this
+  machine it is unset, so the fallback is what is read), table `session_v2` —
   per-session totals only (no per-request data). OpenCode **prunes** this
   table; import promptly or history is lost. Model column is JSON
   (`providerID` + `id`). Providers seen: `unsloth-studio`, `lemonade`,
@@ -357,7 +409,10 @@ TOKENSTAT_UPDATE_GOLDEN=1 python3 -m unittest test_tokenstat   # re-pin golden/ 
 6. Query modes warn-and-continue when a source is missing/locked (exit 0);
    explicit snapshot commands exit 1 on failure.
 7. Our store uses WAL + busy_timeout so cron and interactive runs overlap
-   safely. Keep `.gitignore` covering `usage.db*` and `record.log`.
+   safely. It lives in `~/.tokenstat/usage.db`, outside the repo, and the cron
+   log sits beside it. Keep `.gitignore` covering `usage.db*` and `record.log`
+   anyway: those entries now only catch a legacy copy left beside the script,
+   which the first run migrates away.
 
 ## Known gotchas / deferred work (from review rounds)
 
@@ -415,10 +470,14 @@ TOKENSTAT_UPDATE_GOLDEN=1 python3 -m unittest test_tokenstat   # re-pin golden/ 
 ## NOT DONE (decisions left to the human)
 
 - ~~Hourly cron~~ **INSTALLED 2026-11-13** for user `elih` (`crontab -l`):
-  hourly `record` + `import-unsloth`, output appended to `record.log`
-  (gitignored). Verified end-to-end under cron's minimal environment
+  hourly `record` + `import-unsloth`, output appended to
+  `~/.tokenstat/record.log` (the log path moved there on 2026-11-18 with the
+  state dir; the script path in the crontab is unchanged). Verified
+  end-to-end under cron's minimal environment
   (`env -i HOME=... PATH=/usr/bin:/bin`). Cron daemon is systemd-enabled,
-  so it survives reboots. If history ever looks stale, check `record.log`.
+  so it survives reboots. If history ever looks stale, check
+  `~/.tokenstat/record.log`. OpenCode prunes `session_v2`, so this hourly
+  snapshot is the only thing protecting that history — do not disable it.
 - No git remote; no PR workflow. If one is wanted, follow the parent
   workspace's GitHub App auth notes in `/home/elih/messinaround/AGENTS.md`
   (that setup is for the openmw repo — this repo has no bot access yet).

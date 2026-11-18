@@ -68,9 +68,10 @@ python3 tokenstat.py --from-runs
 python3 tokenstat.py --from-runs --daily
 python3 tokenstat.py --from-runs --total        # per-model, with SHARE/BAR
 
-# Opt-in dollar overlay (off by default; see "Cost estimates" below):
+# Opt-in dollar overlays (off by default; see "Cost estimates" below):
 python3 tokenstat.py --total --model --cost
-python3 tokenstat.py --from-runs --cost --cost-tier opus
+python3 tokenstat.py --from-runs --cost=opus-5
+python3 tokenstat.py --total --real-cost        # stored real USD, not an estimate
 
 # Opt-in cache column between OUT and TOTAL (see "Cache tokens" below):
 python3 tokenstat.py --total --model --cache
@@ -165,22 +166,39 @@ most-recent sessions) is unchanged.
 
 ## Cost estimates (`--cost`)
 
-`--cost` adds a `COST` column (formatted `$X.XXXX`) and, under `--json`, a
-`cost_est` field to any report except `reconcile`, which rejects the flag.
+`--cost[=TIER]` adds a `COST` column (formatted `$X.XX`) and, under `--json`,
+a `cost_est` field to any report except `reconcile`, which rejects the flag.
+Bare `--cost` means `--cost=sonnet-5`. The column header names the model the
+pricing is pinned to — e.g. `COST · Claude Sonnet 5 pricing` — so a stale
+price table is visible. `TIER` is a model slug (`haiku-4.5`, `sonnet-5`,
+`opus-5`, `gpt-5.1-codex-mini`, `gpt-5.1-codex`, `deepseek-v3.2`,
+`qwen-turbo`, `qwen-plus`, `qwen-max`) or a family name that resolves to the
+provider's mid-tier model (`claude`→sonnet-5, `codex`/`openai`→gpt-5.1-codex,
+`deepseek`→deepseek-v3.2, `qwen`→qwen-plus). Prefer the `--cost=TIER` form:
+the space form can swallow a following command.
+
 The number is a **reference estimate**, not money spent: all tracked traffic
-is priced at one Anthropic Claude tier's list prices — Sonnet 4.6 at $3/Mtok
-input / $15/Mtok output by default, switchable with `--cost-tier
-haiku|sonnet|opus` (Haiku 4.5 $1/$5, Opus 4.8 $5/$25; cache reads at 0.1x
-and cache writes at 1.25x each tier's input price) — as of 2026-11-14. Most
-tracked models are not Claude, so read it as "what this volume would cost at
-this tier," never as a bill. It is deliberately distinct from the `cost`
-OpenCode actually records and stores (still stored, still emitted by
-`--json`, no longer displayed). Row math follows the row shape: session-family
-rows price all four token classes (input + output + cache read/write); event
-rows price prompt + completion — since Unsloth's prompt includes KV-cache
-hits, that over-estimates the input side; run rows price progress tokens as
-output-only. The overlay is display/JSON only — nothing stored changes — and
-flag-less output is exactly as before.
+is priced at one model's list prices (verified 2026-11-17; Anthropic bills
+cache reads at 0.1x and cache writes at 1.25x input, the other vendors bill
+no cache-write premium). Most tracked models are not the pinned one, so read
+it as "what this volume would cost at this tier," never as a bill. Row math
+follows the row shape: session-family rows price all four token classes
+(input + output + cache read/write); event rows price prompt + completion —
+since Unsloth's prompt includes KV-cache hits, that over-estimates the input
+side; run rows price progress tokens as output-only. The overlay is
+display/JSON only — nothing stored changes — and flag-less output is exactly
+as before.
+
+## Real cost (`--real-cost`)
+
+`--real-cost` adds a `REAL COST` column with the **stored** `cost` — the real
+USD OpenCode reported for that traffic — as opposed to `--cost`'s reference
+estimate. The two coexist (estimate column first, real column after), and the
+dashboard hero gains a `· $X.XX` tail (no tilde: it is real). The value is
+the one `--json` has always carried, so `--json` output is unchanged. Only
+OpenCode sessions record real cost, so `--real-cost` is rejected with
+`--from-unsloth`, `--from-runs`, and `reconcile`. Free-tier traffic honestly
+renders `$0.00`.
 
 ## Cache tokens (`--cache`)
 

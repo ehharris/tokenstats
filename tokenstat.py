@@ -1730,11 +1730,11 @@ def main(argv):
                              " --from-unsloth or --from-runs)")
     parser.add_argument("--theme", nargs="?", const=THEME_LIST, default=None,
                         metavar="SLUG",
-                        help="paint this run with theme SLUG (bare --theme"
-                             " lists the themes and exits); display-only"
-                             " overlay like --cost, so the dashboard still"
-                             " renders. Prefer --theme=SLUG: the space form"
-                             " can swallow a following command")
+                        help="bare --theme lists all themes and exits; with"
+                             " SLUG, paints this run with that theme"
+                             " (display-only overlay like --cost, so the"
+                             " dashboard still renders). Prefer --theme=SLUG:"
+                             " the space form can swallow a following command")
     parser.add_argument("--theme-default", nargs="?", const=THEME_SAVE,
                         default=None, dest="theme_default", metavar="SLUG",
                         help="save SLUG as the default theme in"

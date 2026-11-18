@@ -3713,6 +3713,18 @@ class CliThemeTests(unittest.TestCase):
         neon = next(ln for ln in lines if ln.startswith("neon-midnight"))
         self.assertNotIn("(default)", neon)
 
+    def test_help_advertises_the_list_action(self):
+        # Listing is only useful if --help says it exists: the bare flag leads
+        # the --theme help line so it is not a hidden feature.
+        out = io.StringIO()
+        with self.assertRaises(SystemExit) as cm, \
+                contextlib.redirect_stdout(out):
+            main(["--help"])
+        self.assertEqual(cm.exception.code, 0)
+        # argparse wraps help at the terminal width, so compare reflowed text
+        help_text = " ".join(out.getvalue().split())
+        self.assertIn("bare --theme lists all themes and exits", help_text)
+
     def test_bare_theme_warns_about_a_broken_theme_file(self):
         # The list is where a user looks for the theme they just wrote, so a
         # file that failed validation must say why it is missing.

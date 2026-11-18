@@ -77,6 +77,10 @@ def default_store(state=None, legacy=None):
     """The store path main() opens when --db was not given: <state>/usage.db,
     after moving any state still sitting beside the script into <state>.
 
+    The path it returns always holds the history: a move that fails keeps using
+    the legacy file rather than trading it for an empty report, and a move lost
+    to a rival run lands on the store that run migrated.
+
     The only function here that creates directories or moves files, and main()
     is its only caller: importing tokenstat stays side-effect-free, and so is
     every run that names its own --db. `state` and `legacy` take their
@@ -95,19 +99,36 @@ def default_store(state=None, legacy=None):
               " instead", file=sys.stderr)
         return old_db
 
-    # The store first: history is the one thing a migration may not lose, so a
-    # store that will not move (another filesystem, a permission) stays exactly
-    # where it is and is used in place rather than traded for an empty new one.
+    # The siblings travel first and the store itself LAST: history is the one
+    # thing a migration may not lose, so the file that decides where the store
+    # lives is the last one to move. Anything that fails before it (a second
+    # filesystem, a permission, a live connection on the -wal, a rival run that
+    # won the race) leaves the store exactly where it was, and the files that
+    # did move are pulled back. A half-moved store is the failure this avoids:
+    # main() would open an empty database at the path it is handed and report
+    # nothing while the real history sat at the other one, and the next run —
+    # seeing both paths occupied — would never try again.
     used = new_db
     if os.path.exists(old_db) and not os.path.exists(new_db):
+        moved = []
         try:
-            for suffix in ("", "-wal", "-shm"):
+            for suffix in ("-wal", "-shm", ""):
                 if os.path.exists(old_db + suffix):
                     os.replace(old_db + suffix, new_db + suffix)
+                    moved.append(suffix)
         except OSError as exc:
-            print(f"warning: could not migrate {old_db}: {exc}; using it in"
-                  " place", file=sys.stderr)
-            used = old_db
+            for suffix in reversed(moved):
+                try:
+                    os.replace(new_db + suffix, old_db + suffix)
+                except OSError:
+                    pass
+            # Decide by what is on disk, not by what was attempted: a failed
+            # move leaves the legacy store in place, and a lost race leaves it
+            # gone — moved by the winner, whose store is the one to open.
+            used = old_db if os.path.exists(old_db) else new_db
+            if used == old_db:
+                print(f"warning: could not migrate {old_db}: {exc}; using it"
+                      " in place", file=sys.stderr)
         else:
             print(f"migrated store: {old_db} -> {new_db}", file=sys.stderr)
 

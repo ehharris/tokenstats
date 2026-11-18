@@ -670,7 +670,9 @@ cd /tmp/opencode/fresh/cwd && env -i HOME=/tmp/opencode/fresh/home \
   PATH=/usr/bin:/bin python3 /tmp/opencode/fresh/bin/tokenstat.py; echo "exit=$?"
 ```
 
-Expected: exit 0, `warning: could not read` lines for both sources, a rendered panel, and `/tmp/opencode/fresh/home/.tokenstat/usage.db` created.
+Expected: exit 0, `warning: could not read` lines for the missing sources (the Unsloth source warns twice — report-mode ingestion opens it once for events and once for runs), `no sessions match` on stdout, and `/tmp/opencode/fresh/home/.tokenstat/usage.db` created.
+
+*Amended during execution (Task 8 review, ruling in the SDD ledger): this step originally expected "a rendered panel". A truly empty `$HOME` holds no OpenCode data, so an empty report is the honest output — the panel only appears when the fake home has sessions, which is the case `FreshMachineTests` pins by seeding one.*
 
 - [ ] **Step 7: Commit**
 

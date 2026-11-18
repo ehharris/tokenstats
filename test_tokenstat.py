@@ -4132,6 +4132,94 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(used, old)                      # never an empty store
         self.assertIn("could not migrate", err.getvalue())
 
+    def test_a_sibling_that_will_not_move_leaves_the_legacy_store_whole(self):
+        # A sibling that refuses to move (immutable file, another filesystem, a
+        # live connection on the -wal) must not cost the history: if the main
+        # file has already crossed over, returning the legacy path hands main()
+        # a path with nothing at it, so sqlite3.connect creates a fresh EMPTY
+        # store there and the real history sits unseen at the new path forever
+        # (the next run sees both files and skips the migration block).
+        old = os.path.join(self.legacy, "usage.db")
+        for suffix in ("", "-wal"):
+            with open(old + suffix, "w") as fh:
+                fh.write("history" + suffix)
+        real_replace = os.replace
+
+        def replace(src, dst):
+            if src.endswith("-wal"):
+                raise OSError("locked by another connection")
+            return real_replace(src, dst)
+
+        with unittest.mock.patch.object(tokenstat.os, "replace",
+                                        side_effect=replace):
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                used = tokenstat.default_store(self.state, self.legacy)
+        # Whatever path comes back must be one that still holds the history.
+        self.assertTrue(os.path.exists(used), used)
+        self.assertEqual(used, old)
+        self.assertEqual(read_text(used), "history")
+        # A -wal must never be stranded on the legacy side: uncheckpointed
+        # commits live in the WAL, so it belongs with its main file or not at
+        # all — the two are either both here or both gone.
+        self.assertEqual(os.path.exists(old), os.path.exists(old + "-wal"),
+                         "-wal stranded away from its main db")
+        self.assertIn("could not migrate", err.getvalue())
+
+    def test_a_main_file_that_will_not_move_pulls_the_siblings_back(self):
+        # The rollback half: the siblings are already across when the store
+        # itself fails, so they must come back with it. A half-migrated store
+        # (main here, WAL there) is worse than either whole store.
+        old = os.path.join(self.legacy, "usage.db")
+        for suffix in ("", "-wal", "-shm"):
+            with open(old + suffix, "w") as fh:
+                fh.write("history" + suffix)
+        real_replace = os.replace
+
+        def replace(src, dst):
+            if src.endswith("usage.db"):
+                raise OSError("cross-device link")
+            return real_replace(src, dst)
+
+        with unittest.mock.patch.object(tokenstat.os, "replace",
+                                        side_effect=replace):
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                used = tokenstat.default_store(self.state, self.legacy)
+        self.assertEqual(used, old)
+        self.assertEqual(read_text(old), "history")
+        for suffix in ("-wal", "-shm"):
+            self.assertEqual(read_text(old + suffix), "history" + suffix)
+            self.assertFalse(os.path.exists(
+                os.path.join(self.state, "usage.db" + suffix)))
+        self.assertIn("could not migrate", err.getvalue())
+
+    def test_a_lost_migration_race_lands_on_the_winners_store(self):
+        # Two bare runs (the hourly cron and an interactive one) can both pass
+        # the "legacy exists and state does not" check. The winner moves the
+        # store; the loser's os.replace then raises FileNotFoundError, and the
+        # loser must end up on the winner's POPULATED store — returning the
+        # legacy path here would seed an empty store beside the script that
+        # cron then fills with fresh rows.
+        old = os.path.join(self.legacy, "usage.db")
+        new = os.path.join(self.state, "usage.db")
+        with open(old, "w") as fh:
+            fh.write("history")
+        real_replace = os.replace
+
+        def replace(src, dst):
+            real_replace(src, dst)     # the winner's move lands first
+            raise FileNotFoundError(2, "No such file or directory")
+
+        with unittest.mock.patch.object(tokenstat.os, "replace",
+                                        side_effect=replace):
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                used = tokenstat.default_store(self.state, self.legacy)
+        self.assertEqual(used, new)
+        self.assertEqual(read_text(new), "history")
+        self.assertFalse(os.path.exists(old))
+        # Nothing went wrong here, so nothing to warn about: the store is not
+        # empty and it is not the legacy one.
+        self.assertNotIn("could not migrate", err.getvalue())
+
     def test_an_unwritable_state_dir_falls_back_to_the_legacy_store(self):
         old = os.path.join(self.legacy, "usage.db")
         with open(old, "w") as fh:

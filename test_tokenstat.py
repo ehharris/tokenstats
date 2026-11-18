@@ -5471,5 +5471,83 @@ class HiddenOptionsTests(CliHarness):
                 self.assertEqual(code, 0)
 
 
+class ViewDispatchTests(CliHarness):
+    """The shape of main()'s view layer: one reject list, one dispatch, one
+    render path. Written as the net for the flattening refactor — every
+    assertion describes behavior the nested chain already had, so these may
+    pass before the extraction lands (that is the point: they pin it)."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = os.path.join(self.tmp.name, "usage.db")
+        self.src = os.path.join(self.tmp.name, "src.db")
+        self.udb = os.path.join(self.tmp.name, "studio.db")
+        # One populated store for every leg: sessions of two models, Studio
+        # events, and a run, so each source family has rows to render.
+        self.addCleanup(make_file_db(self.src, [
+            src_row(sid="s1", title="alpha", created=ms(2026, 11, 4)),
+            src_row(sid="s2", model=LEMONADE_JSON, title="beta",
+                    created=ms(2026, 11, 5)),
+        ]).close)
+        self.addCleanup(make_file_runs_db(
+            self.udb,
+            events=[unsloth_event("e1"),
+                    unsloth_event("e2", created=ms(2026, 11, 5))],
+            runs=[run_row("r1")]).close)
+        self.base = ["--db", self.db, "--src", self.src,
+                     "--unsloth-db", self.udb]
+
+    def error_stderr(self, argv):
+        """Run a rejection path: argparse raises SystemExit(2) after writing
+        the usage line and the message to stderr. Returns that stderr."""
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm, \
+                contextlib.redirect_stderr(err), \
+                contextlib.redirect_stdout(io.StringIO()):
+            main(argv)
+        self.assertEqual(cm.exception.code, 2)
+        return err.getvalue()
+
+    def test_reconcile_names_every_unsupported_flag(self):
+        # The guards used to pin exit 2 and nothing else; now that the reject
+        # list is data, the message is part of the contract too.
+        err = self.error_stderr(
+            self.base + ["reconcile", "--since", "2026-11-01", "--daily",
+                         "--total", "--cost", "--cache"])
+        self.assertIn("reconcile supports only --model; unsupported: --since, "
+                      "--daily, --total, --cost, --cache", err)
+        # ...and the full list, in the order the chain builds it. The two
+        # source flags get their own leg: --from-runs cannot ride on this one,
+        # an earlier guard rejects --from-runs x --min-in/--min-out/--cache/
+        # --real-cost/--sessions before reconcile's list is ever built.
+        err = self.error_stderr(
+            self.base + ["reconcile", "--since", "2026-11-01", "--until",
+                         "2026-11-02", "--min-in", "1", "--min-out", "1",
+                         "--daily", "--total", "--sessions=2", "--cost",
+                         "--real-cost", "--cache"])
+        self.assertIn("reconcile supports only --model; unsupported: --since, "
+                      "--until, --min-in, --min-out, --daily, --total, "
+                      "--sessions, --cost, --real-cost, --cache", err)
+        err = self.error_stderr(self.base + ["reconcile", "--from-unsloth",
+                                             "--from-runs", "--total"])
+        self.assertIn("reconcile supports only --model; unsupported: "
+                      "--from-unsloth, --from-runs, --total", err)
+
+    def test_every_view_pair_still_renders(self):
+        for extra in ([], ["--total"], ["--daily"], ["--from-runs"],
+                      ["--from-runs", "--daily"], ["--from-unsloth"],
+                      ["--from-unsloth", "--daily"], ["--sessions=2"],
+                      # the plain session list: a filter keeps it off the
+                      # bare-run dashboard
+                      ["--model", "unsloth"]):
+            with self.subTest(extra=extra):
+                code, out, err = self.run_main(self.base + extra)
+                self.assertEqual(code, 0, extra)
+                self.assertEqual(err, "", extra)
+                self.assertTrue(out.splitlines()[0].strip(), extra)
+
+
 if __name__ == "__main__":
     unittest.main()

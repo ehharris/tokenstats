@@ -2201,11 +2201,12 @@ class CliTotalTests(unittest.TestCase):
             ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
              "--total", "--cost"])
         self.assertEqual(code, 0)
-        # two-line header (human decision): "COST  ·" on the header line,
-        # "<model> Prices" wrapped onto the next, aligned under the column.
+        # two-line header (human decision): "COST  ·" floats on the first
+        # header line, "<model> Prices" bottom-aligns above the rule.
         lines = out.splitlines()
-        self.assertIn("COST  \u00b7", lines[0])
-        self.assertEqual(lines[1].strip(), "Claude Sonnet 5 Prices")
+        self.assertEqual(lines[0].strip(), "COST  \u00b7")
+        self.assertIn("Claude Sonnet 5 Prices", lines[1])
+        self.assertTrue(lines[2].startswith("\u2500"))
 
     def test_cost_slug_changes_header(self):
         code, out, _ = self.run_main(
@@ -2213,8 +2214,8 @@ class CliTotalTests(unittest.TestCase):
              "--total", "--cost=deepseek-v3.2"])
         self.assertEqual(code, 0)
         lines = out.splitlines()
-        self.assertIn("COST  \u00b7", lines[0])
-        self.assertEqual(lines[1].strip(), "DeepSeek V3.2 Prices")
+        self.assertEqual(lines[0].strip(), "COST  \u00b7")
+        self.assertIn("DeepSeek V3.2 Prices", lines[1])
 
     def test_cost_family_alias_equals_model_slug(self):
         base = ["--db", self.db, "--src", self.src, "--unsloth-db",
@@ -2223,8 +2224,8 @@ class CliTotalTests(unittest.TestCase):
         _, model, _ = self.run_main(base + ["--cost=qwen-plus"])
         self.assertEqual(alias, model)
         lines = alias.splitlines()
-        self.assertIn("COST  \u00b7", lines[0])
-        self.assertEqual(lines[1].strip(), "Qwen-Plus Prices")
+        self.assertEqual(lines[0].strip(), "COST  \u00b7")
+        self.assertIn("Qwen-Plus Prices", lines[1])
 
     def test_cost_invalid_slug_exits_2(self):
         with self.assertRaises(SystemExit) as cm, \
@@ -2309,8 +2310,11 @@ class RealCostTests(unittest.TestCase):
             ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
              "--total", "--cost", "--real-cost"])
         self.assertEqual(code, 0)
-        header = out.splitlines()[0]
-        self.assertLess(header.index("COST  \u00b7"), header.index("REAL COST"))
+        lines = out.splitlines()
+        # estimate column still left of the real one: compare column start
+        # positions across the two (bottom-aligned) header lines.
+        self.assertLess(lines[0].index("COST  \u00b7"),
+                        lines[1].index("REAL COST"))
 
     def test_real_cost_json_shape_unchanged(self):  # review-focus pin
         base = ["--db", self.db, "--src", self.src, "--unsloth-db",
@@ -2454,30 +2458,41 @@ class CostFormatTests(unittest.TestCase):
         self.assertEqual(row["cost"], "\x1b[38;2;244;240;255m$0.02\x1b[0m")
 
     def test_render_table_two_line_header(self):
-        # "\n" in a header wraps the cell: later header lines sit below,
-        # other columns' names stay on the first line (top-aligned).
+        # "\n" in a header wraps the cell; header text BOTTOM-aligns, so each
+        # column's last line sits on the rule directly above the data.
         from tokenstat import render_table
         table = render_table([{"a": 1, "cost_est": 14.7}],
                              [("A", "a", "int"),
                               ("COST  \u00b7\nClaude Sonnet 5 Prices",
                                "cost_est", "cost")])
         self.assertEqual(table.splitlines(),
-                         ["A  COST  \u00b7",
-                          "   Claude Sonnet 5 Prices",
+                         ["   COST  \u00b7",
+                          "A  Claude Sonnet 5 Prices",
+                          "\u2500" * 25,
                           "1  $14.70"])
 
     def test_render_table_two_line_header_pads_later_columns(self):
-        # A column AFTER the wrapped one: its header rides the first line and
-        # its data aligns past the widest header line of the wrapped column.
+        # A column AFTER the wrapped one: its name rides the bottom header
+        # line and its data aligns past the wrapped column's widest line.
         from tokenstat import render_table
         table = render_table([{"cost_est": 14.7, "z": 5}],
                              [("COST  \u00b7\nClaude Sonnet 5 Prices",
                                "cost_est", "cost"),
                               ("Z", "z", "int")])
         lines = table.splitlines()
-        self.assertEqual(lines[0], "COST  \u00b7" + " " * 17 + "Z")
-        self.assertEqual(lines[1], "Claude Sonnet 5 Prices")
-        self.assertEqual(lines[2], "$14.70" + " " * 18 + "5")
+        self.assertEqual(lines[0], "COST  \u00b7")
+        self.assertEqual(lines[1], "Claude Sonnet 5 Prices  Z")
+        self.assertEqual(lines[2], "\u2500" * 25)
+        self.assertEqual(lines[3], "$14.70" + " " * 18 + "5")
+
+    def test_render_table_rule_separates_header(self):
+        # every table gets a rule between head and body (human decision:
+        # the wrapped header floated ambiguously between the two).
+        from tokenstat import render_table
+        table = render_table([{"a": 1, "b": 2}],
+                             [("A", "a", "int"), ("B", "b", "int")])
+        self.assertEqual(table.splitlines(),
+                         ["A  B", "\u2500" * 4, "1  2"])
 
 
 class CacheOverlayTests(unittest.TestCase):
@@ -2587,9 +2602,9 @@ class CliCacheTests(unittest.TestCase):
     def test_cost_and_cache_together_show_both_columns(self):
         code, out, _ = self.base("--total", "--cost", "--cache")
         self.assertEqual(code, 0)
-        header = out.splitlines()[0]
-        self.assertIn("CACHE", header)
-        self.assertIn("COST", header)
+        head = "\n".join(out.splitlines()[:2])  # --cost wraps to two lines
+        self.assertIn("CACHE", head)
+        self.assertIn("COST", head)
 
     def test_json_shape_unchanged_by_cache(self):
         _, plain, _ = self.base("--total", "--json")
@@ -2644,7 +2659,8 @@ class DisplayAlignmentTests(unittest.TestCase):
         columns = [("N", "n", "int"), ("T", "t", "text")]
         rows = [{"n": 5, "t": "x"}, {"n": 1000, "t": "y"}]
         self.assertEqual(render_table(rows, columns),
-                         "N      T\n5      x\n1,000  y\n")
+                         "N      T\n" + "\u2500" * 8
+                         + "\n5      x\n1,000  y\n")
 
     def test_render_table_pads_ansi_cells_by_visible_width(self):
         # regression pin: --cost appends COST after painted BAR cells; width
@@ -2656,8 +2672,9 @@ class DisplayAlignmentTests(unittest.TestCase):
                 {"bar": "", "c": 1.25}]
         strip = lambda ln: re.sub(r"\x1b\[[0-9;]*m", "", ln)
         lines = [strip(ln) for ln in render_table(rows, columns).splitlines()]
-        self.assertEqual(lines[0].index("COST"), lines[1].index("$"))
-        self.assertEqual(lines[0].index("COST"), lines[2].index("$"))
+        head, data = lines[0], lines[2:]     # lines[1] is the header rule
+        self.assertEqual(head.index("COST"), data[0].index("$"))
+        self.assertEqual(head.index("COST"), data[1].index("$"))
 
     def test_report_tables_have_no_cost_column(self):
         # every displayed report (sessions, daily, total) drops COST...

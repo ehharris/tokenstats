@@ -1251,19 +1251,37 @@ def report_header(title, rows, theme=NEON, cost_est=None, real_cost=None,
 
 def _table_panel(title, rows, columns, share_view, color):
     """Panel of the rendered table; share views get padded (and colored)
-    bars first; the header row dims to the label role only in color."""
+    bars first; the header block and its rule dim to their roles in color."""
     if share_view:
         rows = paint_bars(rows, color=color)
     table = render_table(paint_cells(rows) if color else rows, columns)
     lines = table.splitlines()
-    if color:
-        r, g, b = NEON["label"]
-        lines[0] = f"\x1b[38;2;{r};{g};{b}m{lines[0]}\x1b[0m"
+    if color and table != "no sessions match\n":
+        paint_header_block(lines, columns)
     return panel(title, lines, color=color)
 
 
+def header_height(columns):
+    """Lines the header block occupies: 1, plus one per "\\n" wrap in a name."""
+    return max(name.count("\n") for name, _, _ in columns) + 1
+
+
+def paint_header_block(lines, columns):
+    """In place: header lines wear the label role (column names recede behind
+    the painted numbers below them) and the rule under them the border hue.
+    Color mode only; `lines` are render_table output for `columns`."""
+    h_h = header_height(columns)
+    r, g, b = NEON["label"]
+    for i in range(h_h):
+        lines[i] = f"\x1b[38;2;{r};{g};{b}m{lines[i]}\x1b[0m"
+    r, g, b = NEON["border"]
+    lines[h_h] = f"\x1b[38;2;{r};{g};{b}m{lines[h_h]}\x1b[0m"
+
+
 def render_table(rows, columns=None):
-    """Aligned report. `columns` is a list of (header, key, kind)."""
+    """Aligned report. `columns` is a list of (header, key, kind). A header
+    may contain "\\n" to wrap; header text bottom-left aligns and a rule
+    separates the header block from the data."""
     if columns is None:
         columns = SESSION_COLUMNS
     if not rows:
@@ -1285,6 +1303,7 @@ def render_table(rows, columns=None):
         return str(value)
 
     header = [name.split("\n") for name, _, _ in columns]
+    h_h = max(len(h) for h in header)
     body = [[fmt(r.get(key), kind) for _, key, kind in columns] for r in rows]
     widths = []
     for i, (name, _, kind) in enumerate(columns):
@@ -1304,14 +1323,16 @@ def render_table(rows, columns=None):
                 parts.append(cell + " " * (widths[i] - _visible(cell)))
         return "  ".join(parts).rstrip()
 
+    # Header text BOTTOM-aligns (human decision): a wrapped column (the
+    # --cost header) floats its first lines above, and every column's last
+    # line sits on the rule that separates the head from the data.
     out = []
-    # A header may carry "\n" (the --cost column wraps: "COST  ·" over
-    # "<model> Prices"). Header lines top-align: single-line columns keep
-    # their names on the first line, blanks below.
-    for j in range(max(len(h) for h in header)):
-        out.append(line_out([h[j] if j < len(h) else "" for h in header]))
+    for j in range(h_h):
+        out.append(line_out([h[j - h_h] if len(h) + j >= h_h else ""
+                             for h in header]))
     for row in body:
         out.append(line_out(row))
+    out.insert(h_h, "\u2500" * max(_visible(ln) for ln in out))
     return "\n".join(out) + "\n"
 
 
@@ -1733,10 +1754,9 @@ def main(argv):
                                  columns)
             if color and table != "no sessions match\n":
                 lines = table.splitlines()
-                # Header row dimmed to the label role (column names recede
-                # behind the painted numbers below them).
-                r, g, b = NEON["label"]
-                lines[0] = f"\x1b[38;2;{r};{g};{b}m{lines[0]}\x1b[0m"
+                # Header block dimmed to the label role, rule to the border
+                # hue (column names recede behind the painted numbers).
+                paint_header_block(lines, columns)
                 # Reconcile rows carry no summed token classes, so a hero
                 # header would imply zeros the view never computed — the
                 # compare view gets the table panel only.

@@ -12,7 +12,7 @@ in `docs/superpowers/plans/`.
 
 **State at handoff (2026-11-18):** work sits on `master` (no remote
 configured — local-only repo, no push; branch workflow used for increments,
-fast-forward merged after clean review rounds). 427 tests green. Connection
+fast-forward merged after clean review rounds). 435 tests green. Connection
 hygiene (2026-11-15): every sqlite
 connection main() opens is now closed — the store via try/finally and each
 read-only source by `_ingest` owning its open/close; `NoResourceWarningTests`
@@ -329,11 +329,20 @@ ingest path (`_upsert`, whose column classes are numeric / `overwrite` /
 that ever rewrote one could move the stored value; they are now written once and
 never touched again); and a flatter `main()` view layer
 (`_view_rows`, `_view_title`, `render_report`: one reject list, one dispatch,
-one render path). New test classes: `DefaultPathsTests`, `MigrationTests`,
+one render path). A later hardening pass (same day, plan
+`docs/superpowers/plans/2026-11-18-post-merge-hardening.md`) made `_upsert`
+reject a column-class name the table does not have — before writing any row, so
+a typo cannot demote a token column to the label class — widened its per-row
+isolation to `(sqlite3.Error, TypeError, ValueError)` to match
+`import_opencode_steps`, and gated the migration rollback on the legacy store
+still being there, so a move lost to a rival run leaves the `-wal`/`-shm`
+siblings with the winner instead of stranding them. New test classes:
+`DefaultPathsTests`, `MigrationTests`,
 `FreshMachineTests` (one copied file, an empty `$HOME`, an unrelated cwd — the
 end-user promise end to end), `HiddenOptionsTests`, `FilterHelperTests`,
 `AggregateRowShapeTests`, `UpsertEngineTests`, `ViewDispatchTests`. 427 tests,
-clean under `-W error::ResourceWarning`, `golden/` untouched.
+clean under `-W error::ResourceWarning`, `golden/` untouched (435 after the
+hardening pass above).
 Spec + plan in docs/superpowers/{specs,plans}/2026-11-18-deployment-readiness*.
 
 ## Commands (run from this directory)

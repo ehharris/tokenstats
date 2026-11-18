@@ -2075,6 +2075,82 @@ class TotalEventsTests(unittest.TestCase):
         self.assertEqual(sum(r["sessions"] for r in rows), 2)
 
 
+class AggregateRowShapeTests(unittest.TestCase):
+    """--json serialises rows in dict insertion order, so the key order of
+    every aggregate row is pinned output, not an implementation detail."""
+
+    KEYS = {
+        "daily_events": ["date", "sessions", "tokens_input", "tokens_output",
+                         "total", "cost", "tok_s"],
+        "daily_runs": ["date", "sessions", "tokens_input", "progress_tokens",
+                       "tokens_output", "total", "tok_s", "rate_weight"],
+        "daily_totals": ["date", "sessions", "tokens_input", "tokens_output",
+                         "total", "cost", "tokens_cache_read",
+                         "tokens_cache_write", "tok_s", "rate_weight"],
+        "total_events": ["model", "sessions", "tokens_input", "tokens_output",
+                         "total", "cost", "tok_s"],
+        "total_runs": ["model", "sessions", "tokens_input", "progress_tokens",
+                       "tokens_output", "total", "tok_s", "rate_weight"],
+        "total_totals": ["model", "sessions", "tokens_input", "tokens_output",
+                         "total", "cost", "tokens_cache_read",
+                         "tokens_cache_write", "tok_s", "rate_weight"],
+    }
+
+    def setUp(self):
+        self.dest = make_dest()
+        self.addCleanup(self.dest.close)
+        src = make_src([
+            src_row(sid="s1", created=ms(2026, 11, 1)),
+            src_row(sid="s2", model=LEMONADE_JSON, created=ms(2026, 11, 2)),
+        ])
+        self.addCleanup(src.close)
+        record(src, self.dest, now_ms=1)
+        usrc = make_unsloth_src([
+            unsloth_event("e1", created=ms(2026, 11, 1)),
+            unsloth_event("e2", model="other-model", created=ms(2026, 11, 2)),
+        ])
+        self.addCleanup(usrc.close)
+        import_unsloth(usrc, self.dest)
+        rsrc = make_runs_src([
+            run_row("r1", started=ms(2026, 11, 1),
+                    completed=ms(2026, 11, 1) + 10_000),
+            run_row("r2", model="other/run", started=ms(2026, 11, 2),
+                    completed=ms(2026, 11, 2) + 10_000),
+        ])
+        self.addCleanup(rsrc.close)
+        import_unsloth_runs(rsrc, self.dest)
+
+    def test_every_aggregate_view_keeps_its_key_order(self):
+        calls = {
+            "daily_events": lambda: daily_events(self.dest),
+            "daily_runs": lambda: daily_runs(self.dest),
+            "daily_totals": lambda: daily_totals(self.dest),
+            "total_events": lambda: total_events(self.dest),
+            "total_runs": lambda: total_runs(self.dest),
+            "total_totals": lambda: total_totals(self.dest),
+        }
+        for name, call in calls.items():
+            with self.subTest(view=name):
+                rows = call()
+                self.assertTrue(rows, "%s returned no rows to pin" % name)
+                self.assertEqual(list(rows[0]), self.KEYS[name])
+
+    def test_per_model_rows_keep_the_same_key_order(self):
+        # the per-model branch of the total_* family is a separate SQL path
+        # from the grand-total row; --json would expose a reordered dict
+        # there just the same, so pin it too
+        calls = {
+            "total_events": lambda: total_events(self.dest, by_model=True),
+            "total_runs": lambda: total_runs(self.dest, by_model=True),
+            "total_totals": lambda: total_totals(self.dest, by_model=True),
+        }
+        for name, call in calls.items():
+            with self.subTest(view=name):
+                rows = call()
+                self.assertTrue(rows, "%s returned no rows to pin" % name)
+                self.assertEqual(list(rows[0]), self.KEYS[name])
+
+
 class CliTotalTests(CliHarness):
     def setUp(self):
         import tempfile

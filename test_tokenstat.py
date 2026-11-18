@@ -5210,5 +5210,60 @@ class ByteIdentityGoldenTests(CliHarness):
                 os.remove(self.config)  # the next case starts flag-off again
 
 
+class HiddenOptionsTests(CliHarness):
+    """`-h` shows what a person needs and nothing else: the internal plumbing
+    options stay fully usable but unadvertised."""
+
+    HIDDEN = ("--min-in", "--min-out", "--db", "--src", "--unsloth-db",
+              "--from-unsloth")
+    VISIBLE = ("--model", "--since", "--until", "--daily", "--total",
+               "--sessions", "--json", "--from-runs", "--cost", "--real-cost",
+               "--cache", "--theme", "--theme-default")
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = os.path.join(self.tmp.name, "usage.db")
+        self.src = os.path.join(self.tmp.name, "src.db")
+        self.udb = os.path.join(self.tmp.name, "studio.db")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def help_text(self):
+        out = io.StringIO()
+        with self.assertRaises(SystemExit), contextlib.redirect_stdout(out):
+            main(["--help"])
+        return out.getvalue()
+
+    def test_internal_options_are_not_advertised(self):
+        text = self.help_text()
+        for flag in self.HIDDEN:
+            self.assertNotIn(flag, text)
+
+    def test_public_options_are_still_advertised(self):
+        text = self.help_text()
+        for flag in self.VISIBLE:
+            self.assertIn(flag, text)
+
+    def test_no_advertised_help_text_names_a_hidden_option(self):
+        # a flag -h does not document must not appear inside another option's
+        # help, or the help points at something it never lists
+        text = self.help_text()
+        self.assertNotIn("--from-unsloth", text.split("options:")[1])
+
+    def test_hidden_options_still_parse_and_run(self):
+        # hidden from -h, not removed: each still parses and exits 0
+        self.addCleanup(make_file_db(self.src, [src_row()]).close)
+        self.addCleanup(make_file_unsloth_db(
+            self.udb, [unsloth_event("e1")]).close)
+        base = ["--db", self.db, "--src", self.src, "--unsloth-db", self.udb]
+        for extra in (["--min-in", "5"], ["--from-unsloth"],
+                      ["--min-out", "5", "--daily"]):
+            with self.subTest(extra=extra):
+                code, _, _ = self.run_main(base + extra)
+                self.assertEqual(code, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

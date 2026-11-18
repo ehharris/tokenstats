@@ -578,21 +578,39 @@ def import_unsloth_runs(src: sqlite3.Connection,
     return counts
 
 
+def _like_pattern(model):
+    """Lowered substring LIKE pattern for `model`, with the LIKE metacharacters
+    `%` and `_` escaped so user text always matches literally (pairs with
+    ESCAPE '\\')."""
+    return "%" + model.lower().replace("%", "\\%").replace("_", "\\_") + "%"
+
+
+def _date_clauses(column, since_ms, until_ms):
+    """(where, params) for an inclusive date window over `column`: since is a
+    lower bound, until is exclusive at the end of the until-day (via
+    _day_end_ms, local-time and DST-safe). Empty lists when unbounded."""
+    where, params = [], []
+    if since_ms is not None:
+        where.append(column + " >= ?")
+        params.append(since_ms)
+    if until_ms is not None:
+        where.append(column + " < ?")
+        params.append(_day_end_ms(until_ms))  # until-day inclusive
+    return where, params
+
+
 def _event_filters(model, since_ms, until_ms, min_in, min_out):
     where, params = [], []
     if model:
-        pattern = "%" + model.lower().replace("%", "\\%").replace("_", "\\_") + "%"
+        pattern = _like_pattern(model)
         # Accept either the event's own model string or the provider-prefixed
         # form shown in session reports (e.g. "unsloth-studio/unsloth/Qwen...").
         where.append("(lower(model) LIKE ? ESCAPE '\\' OR "
                      "lower(? || '/' || model) LIKE ? ESCAPE '\\')")
         params.extend([pattern, UNSLOTH_PROVIDER, pattern])
-    if since_ms is not None:
-        where.append("created_at >= ?")
-        params.append(since_ms)
-    if until_ms is not None:
-        where.append("created_at < ?")
-        params.append(_day_end_ms(until_ms))  # until-day inclusive
+    date_where, date_params = _date_clauses("created_at", since_ms, until_ms)
+    where.extend(date_where)
+    params.extend(date_params)
     if min_in is not None:
         where.append("prompt_tokens >= ?")
         params.append(min_in)
@@ -680,15 +698,11 @@ def _run_filters(model, since_ms, until_ms):
     window applies to started_at with the until-day inclusive."""
     where, params = [], []
     if model:
-        pattern = "%" + model.lower().replace("%", "\\%").replace("_", "\\_") + "%"
         where.append("lower(model) LIKE ? ESCAPE '\\'")
-        params.append(pattern)
-    if since_ms is not None:
-        where.append("started_at >= ?")
-        params.append(since_ms)
-    if until_ms is not None:
-        where.append("started_at < ?")
-        params.append(_day_end_ms(until_ms))  # until-day inclusive
+        params.append(_like_pattern(model))
+    date_where, date_params = _date_clauses("started_at", since_ms, until_ms)
+    where.extend(date_where)
+    params.extend(date_params)
     return where, params
 
 
@@ -926,15 +940,11 @@ def parse_date(s: str) -> int:
 def _session_filters(model, since_ms, until_ms, min_in, min_out, limit=None):
     where, params = [], []
     if model:
-        pattern = "%" + model.lower().replace("%", "\\%").replace("_", "\\_") + "%"
         where.append("lower(provider || '/' || model_id) LIKE ? ESCAPE '\\'")
-        params.append(pattern)
-    if since_ms is not None:
-        where.append("time_created >= ?")
-        params.append(since_ms)
-    if until_ms is not None:
-        where.append("time_created < ?")
-        params.append(_day_end_ms(until_ms))  # until-day inclusive
+        params.append(_like_pattern(model))
+    date_where, date_params = _date_clauses("time_created", since_ms, until_ms)
+    where.extend(date_where)
+    params.extend(date_params)
     if min_in is not None:
         where.append("tokens_input >= ?")
         params.append(min_in)

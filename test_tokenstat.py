@@ -163,6 +163,37 @@ class UpsertEngineTests(unittest.TestCase):
         self.assertIsNone(self.stored("bad"))
         self.assertEqual(self.stored("good"), ("m", 4, None, None))
 
+    def test_a_class_name_that_is_not_a_column_is_a_hard_error(self):
+        # The silent failure this prevents: a typo in numeric= leaves the real
+        # column in the label class, where `new or old` can shrink a token
+        # count — invariant 1, broken with no error anywhere.
+        with self.assertRaises(ValueError) as cm:
+            tokenstat._upsert(self.dest, "t", "k", [{"k": "a", "n": 1}],
+                              numeric=["nn"])
+        self.assertIn("nn", str(cm.exception))
+        self.assertIsNone(self.stored("a"))   # and nothing was written
+
+    def test_a_column_in_two_classes_is_a_hard_error(self):
+        # Overlapping classes resolve in numeric's favor today: a mistake in
+        # the caller reads like a design choice.
+        with self.assertRaises(ValueError) as cm:
+            tokenstat._upsert(self.dest, "t", "k", [{"k": "a", "n": 1}],
+                              numeric=["n"], overwrite=["n"])
+        self.assertIn("n", str(cm.exception))
+
+    def test_the_primary_key_is_not_a_column_class(self):
+        with self.assertRaises(ValueError):
+            tokenstat._upsert(self.dest, "t", "k", [{"k": "a", "n": 1}],
+                              numeric=["k"])
+
+    def test_a_missing_table_is_a_hard_error_not_an_empty_run(self):
+        # PRAGMA on a table that is not there reports no columns, so every
+        # class name fails: a mis-wired ingest says so instead of quietly
+        # counting every row skipped.
+        with self.assertRaises(ValueError):
+            tokenstat._upsert(self.dest, "no_such_table", "k",
+                              [{"k": "a", "n": 1}], numeric=["n"])
+
 
 class RecordTests(unittest.TestCase):
     def setUp(self):

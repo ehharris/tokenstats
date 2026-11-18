@@ -2242,12 +2242,26 @@ class CliTotalTests(unittest.TestCase):
         self.assertEqual(cm.exception.code, 2)
 
     def test_cost_tier_flag_removed(self):
+        # Exit 2 is not enough: the old space form (--cost-tier opus, the
+        # documented form for a year) must say the flag was removed, not
+        # complain about the word argparse swallowed as the command.
+        err = io.StringIO()
         with self.assertRaises(SystemExit) as cm, \
-                contextlib.redirect_stderr(io.StringIO()):
+                contextlib.redirect_stderr(err):
             main(["--db", self.db, "--src", self.src,
                   "--unsloth-db", self.no_udb, "--total",
                   "--cost-tier", "opus"])
         self.assertEqual(cm.exception.code, 2)
+        self.assertIn("--cost-tier was removed", err.getvalue())
+        self.assertIn("--cost=", err.getvalue())
+
+    def test_cost_bare_equals_explicit_default_slug(self):
+        # spec "left to the builder" pin: bare --cost IS --cost=sonnet-5.
+        base = ["--db", self.db, "--src", self.src, "--unsloth-db",
+                self.no_udb, "--total"]
+        _, bare, _ = self.run_main(base + ["--cost"])
+        _, pinned, _ = self.run_main(base + ["--cost=sonnet-5"])
+        self.assertEqual(bare, pinned)
 
 
 class RealCostTests(unittest.TestCase):
@@ -2304,6 +2318,30 @@ class RealCostTests(unittest.TestCase):
                 main(["--db", self.db, "--src", self.src,
                       "--unsloth-db", self.no_udb] + extra + ["--real-cost"])
             self.assertEqual(cm.exception.code, 2)
+
+    def test_real_cost_on_daily_and_sessions_views(self):
+        # review fix: the column belongs to every session-family view, not
+        # just --total.
+        base = ["--db", self.db, "--src", self.src, "--unsloth-db",
+                self.no_udb]
+        code, out, _ = self.run_main(base + ["--daily", "--real-cost"])
+        self.assertEqual(code, 0)
+        self.assertIn("REAL COST", out)
+        self.assertIn("$0.02", out)          # both sessions share one day
+        code, out, _ = self.run_main(base + ["--sessions", "--real-cost"])
+        self.assertEqual(code, 0)
+        self.assertIn("REAL COST", out)
+        self.assertIn("$0.01", out)          # per-session stored cost
+
+    def test_real_cost_zero_renders_zero(self):
+        # README's "free-tier traffic honestly renders $0.00" pin.
+        free = os.path.join(self.tmp.name, "free.db")
+        self.addCleanup(make_file_db(free, [src_row(sid="s9", cost=0.0)]).close)
+        code, out, _ = self.run_main(
+            ["--db", self.db, "--src", free, "--unsloth-db", self.no_udb,
+             "--total", "--real-cost"])
+        self.assertEqual(code, 0)
+        self.assertIn("$0.00", out)
 
 
 class CostTests(unittest.TestCase):
@@ -2370,6 +2408,12 @@ class CostTests(unittest.TestCase):
         from tokenstat import resolve_cost_tier
         self.assertEqual(resolve_cost_tier("sonnet-5"), "sonnet-5")
 
+    def test_prices_and_family_aliases_do_not_collide(self):
+        # A collision would make resolve_cost_tier silently shadow a real
+        # model slug with the alias's target.
+        from tokenstat import PRICES, FAMILY_ALIASES
+        self.assertFalse(set(PRICES) & set(FAMILY_ALIASES))
+
 
 class CostFormatTests(unittest.TestCase):
     """cost-kind cells render $X.XX (2 decimals, human decision 2026-11-17)."""
@@ -2393,6 +2437,13 @@ class CostFormatTests(unittest.TestCase):
         from tokenstat import paint_cells
         (row,) = paint_cells([{"cost_est": 14.7}])
         self.assertIn("$14.70\x1b", row["cost_est"])  # cell ends at the reset
+
+    def test_paint_cells_paints_stored_cost_key(self):  # review fix: REAL COST
+        # The --real-cost column's key is "cost", not "cost_est" — it must be
+        # themed like every other numeric cell, not emitted bare.
+        from tokenstat import paint_cells
+        (row,) = paint_cells([{"cost": 0.02}])
+        self.assertEqual(row["cost"], "\x1b[38;2;244;240;255m$0.02\x1b[0m")
 
 
 class CacheOverlayTests(unittest.TestCase):

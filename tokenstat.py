@@ -511,23 +511,33 @@ def _aggregate_rate(total, first_started, last_end):
     return round(total / span, 1) if span >= 1 else None
 
 
+def _weighted_mean_rate_and_weight(pairs):
+    """(token-weighted mean rate, Σ weight of the rows that averaged into it).
+
+    Rows with no rate or no weight drop out of BOTH sides; `den` is exactly the
+    denominator the mean divided by, exposed so an aggregate row can carry the
+    weight it actually used rather than a sum over rows it ignored."""
+    num = den = 0
+    for rate, weight in pairs:
+        if rate is not None and weight:
+            num += rate * weight
+            den += weight
+    return (round(num / den, 1) if den else None), den
+
+
 def _weighted_mean_rate(pairs):
     """Token-weighted mean of `pairs`, a group's (rate, tokens moved) pairs,
     rounded to one decimal like every other rate; None when nothing is left.
 
     Each row's rate counts in proportion to the tokens it moved, so a session
     that carried 200k tokens speaks 200x one that carried 1k. Rows with no
-    rate (session with no `time_updated`, unfinished or failed run) and rows
-    with no tokens are dropped from BOTH sides: they cannot be averaged and
-    they carry no weight. The alternative — dividing the group's token sum by
-    its calendar span — counted every idle second between and inside
-    sessions, so one session left open overnight sank a model's average below
-    every row above it."""
-    num = sum(rate * weight for rate, weight in pairs
-              if rate is not None and weight)
-    den = sum(weight for rate, weight in pairs
-              if rate is not None and weight)
-    return round(num / den, 1) if den else None
+    rate (session with no valid turn, unfinished or failed run) and rows with
+    no tokens are dropped from BOTH sides: they cannot be averaged and they
+    carry no weight. The alternative — dividing the group's token sum by its
+    calendar span — counted every idle second between and inside sessions, so
+    one session left open overnight sank a model's average below every row
+    above it."""
+    return _weighted_mean_rate_and_weight(pairs)[0]
 
 
 def _session_rate_groups(dest, key_sql, where, params):
@@ -606,13 +616,14 @@ def daily_runs(dest, model=None, since_ms=None, until_ms=None):
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " GROUP BY day ORDER BY day ASC"
-    return [
-        {"date": day, "sessions": n, "tokens_input": p or 0,
-         "progress_tokens": p or 0,
-         "tokens_output": 0, "total": p or 0,
-         "tok_s": _weighted_mean_rate(rates.get(day, []))}
-        for day, n, p in dest.execute(sql, params)
-    ]
+    rows = []
+    for day, n, p in dest.execute(sql, params):
+        rate, weight = _weighted_mean_rate_and_weight(rates.get(day, []))
+        rows.append({"date": day, "sessions": n, "tokens_input": p or 0,
+                     "progress_tokens": p or 0,
+                     "tokens_output": 0, "total": p or 0,
+                     "tok_s": rate, "rate_weight": weight})
+    return rows
 
 
 def total_runs(dest, model=None, since_ms=None, until_ms=None, by_model=False):
@@ -630,20 +641,22 @@ def total_runs(dest, model=None, since_ms=None, until_ms=None, by_model=False):
         if not n:
             return []
         p = p or 0
+        rate, weight = _weighted_mean_rate_and_weight(rates.get("(all)", []))
         return [{"model": "(all)", "sessions": n, "tokens_input": p,
                  "progress_tokens": p,
                  "tokens_output": 0, "total": p,
-                 "tok_s": _weighted_mean_rate(rates.get("(all)", []))}]
+                 "tok_s": rate, "rate_weight": weight}]
     rates = _run_rate_groups(dest, "model", where, params)
-    return [
-        {"model": m, "sessions": n, "tokens_input": p or 0,
-         "progress_tokens": p or 0,
-         "tokens_output": 0, "total": p or 0,
-         "tok_s": _weighted_mean_rate(rates.get(m, []))}
-        for m, n, p in dest.execute(
+    rows = []
+    for m, n, p in dest.execute(
             "SELECT model," + sums + " FROM unsloth_runs" + tail
-            + " GROUP BY model ORDER BY model ASC", params)
-    ]
+            + " GROUP BY model ORDER BY model ASC", params):
+        rate, weight = _weighted_mean_rate_and_weight(rates.get(m, []))
+        rows.append({"model": m, "sessions": n, "tokens_input": p or 0,
+                     "progress_tokens": p or 0,
+                     "tokens_output": 0, "total": p or 0,
+                     "tok_s": rate, "rate_weight": weight})
+    return rows
 
 
 UNSLOTH_PROVIDER = "unsloth-studio"  # providerID OpenCode records for Studio traffic
@@ -1195,11 +1208,12 @@ def daily_totals(dest, model=None, since_ms=None, until_ms=None,
     rows = []
     for (day, n, tin, tout, cost, tcr, tcw) in dest.execute(sql, params):
         total = (tin or 0) + (tout or 0)
+        rate, weight = _weighted_mean_rate_and_weight(rates.get(day, []))
         rows.append({"date": day, "sessions": n, "tokens_input": tin or 0,
                      "tokens_output": tout or 0, "total": total,
                      "cost": cost or 0.0, "tokens_cache_read": tcr or 0,
                      "tokens_cache_write": tcw or 0,
-                     "tok_s": _weighted_mean_rate(rates.get(day, []))})
+                     "tok_s": rate, "rate_weight": weight})
     return rows
 
 
@@ -1220,28 +1234,30 @@ def total_totals(dest, model=None, since_ms=None, until_ms=None,
         if not found[0]:
             return []
         n, tin, tout, cost, tcr, tcw = found
+        rate, weight = _weighted_mean_rate_and_weight(rates.get("(all)", []))
         return [_total_row("(all)", n, tin, tout, cost, tcr, tcw,
-                           _weighted_mean_rate(rates.get("(all)", [])))]
+                           rate, weight)]
     rates = _session_rate_groups(dest, "provider || '/' || model_id",
                                  where, params)
     rows = []
     for m, n, tin, tout, cost, tcr, tcw in dest.execute(
             "SELECT provider || '/' || model_id AS m," + sums +
             " FROM usage" + tail + " GROUP BY m ORDER BY m ASC", params):
+        rate, weight = _weighted_mean_rate_and_weight(rates.get(m, []))
         rows.append(_total_row(m, n, tin, tout, cost, tcr, tcw,
-                               _weighted_mean_rate(rates.get(m, []))))
+                               rate, weight))
     return rows
 
 
-def _total_row(model, n, tin, tout, cost, tcr, tcw, rate):
-    """Row dict for total_totals: totals plus cache components and the
+def _total_row(model, n, tin, tout, cost, tcr, tcw, rate, weight):
+    """Row dict for total_totals: totals plus cache components, the
     token-weighted mean of the group's per-session rates (None if none of them
-    carries weight)."""
+    carries weight), and the Σ weight that produced it."""
     tin, tout = tin or 0, tout or 0
     return {"model": model, "sessions": n, "tokens_input": tin,
             "tokens_output": tout, "total": tin + tout, "cost": cost or 0.0,
             "tokens_cache_read": tcr or 0, "tokens_cache_write": tcw or 0,
-            "tok_s": rate}
+            "tok_s": rate, "rate_weight": weight}
 
 
 def _connect_src(path):

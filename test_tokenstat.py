@@ -684,7 +684,9 @@ class AggregateWeightedRateTests(unittest.TestCase):
             [self.step("a1", "s1", 240, 1000, base=day),
              self.step("a2", "s2", 5000, 50000, base=day)])
         # (240*240 + 100*5000) / 5240 = 106.4; flat mean says 170.0.
-        self.assertAlmostEqual(daily_totals(dest)[0]["tok_s"], 106.4, places=2)
+        day_row = daily_totals(dest)[0]
+        self.assertAlmostEqual(day_row["tok_s"], 106.4, places=2)
+        self.assertEqual(day_row["rate_weight"], 240 + 5000)
 
     def test_sessions_without_a_rate_are_excluded_from_the_mean(self):
         # A session with no steps has no rate: it must not contribute a 0 that
@@ -695,7 +697,11 @@ class AggregateWeightedRateTests(unittest.TestCase):
              src_row(sid="s2", model=LEMONADE_JSON, tin=9999, tout=9999,
                      created=self.BASE + 60_000, updated=None)],
             [self.step("a1", "s1", 240, 1000)])
-        self.assertAlmostEqual(total_totals(dest)[0]["tok_s"], 240.0, places=2)
+        row = total_totals(dest)[0]
+        self.assertAlmostEqual(row["tok_s"], 240.0, places=2)
+        # The rate-less session's 19,998 in+out tokens contribute to neither
+        # side of the mean: the only contributing weight is s1's 240 generated.
+        self.assertEqual(row["rate_weight"], 240)
 
     def test_zero_token_rows_carry_no_weight(self):
         # A step that generated no tokens yields no rate, so this row cannot
@@ -775,9 +781,13 @@ class AggregateWeightedRateTests(unittest.TestCase):
             run_row("r2", progress=100, started=self.BASE + 30_000,
                     completed=self.BASE + 31_000))     # 100 tok / 1 s = 100.0
         # (20*200 + 100*100) / 300 = 46.7; flat mean would say 60.0
-        self.assertAlmostEqual(total_runs(dest)[0]["tok_s"], 46.7, places=2)
+        row = total_runs(dest)[0]
+        self.assertAlmostEqual(row["tok_s"], 46.7, places=2)
+        self.assertEqual(row["rate_weight"], 200 + 100)
         self.assertAlmostEqual(total_runs(dest, by_model=True)[0]["tok_s"],
                                46.7, places=2)
+        self.assertEqual(total_runs(dest, by_model=True)[0]["rate_weight"],
+                         200 + 100)
 
     def test_daily_runs_rate_is_token_weighted_mean(self):
         day = ms(2026, 11, 1)
@@ -785,7 +795,9 @@ class AggregateWeightedRateTests(unittest.TestCase):
             run_row("r1", progress=200, started=day, completed=day + 10_000),
             run_row("r2", progress=100, started=day + 30_000,
                     completed=day + 31_000))
-        self.assertAlmostEqual(daily_runs(dest)[0]["tok_s"], 46.7, places=2)
+        row = daily_runs(dest)[0]
+        self.assertAlmostEqual(row["tok_s"], 46.7, places=2)
+        self.assertEqual(row["rate_weight"], 200 + 100)
 
     def test_runs_without_a_rate_are_excluded_from_the_mean(self):
         dest = self.runs_dest(
@@ -795,7 +807,11 @@ class AggregateWeightedRateTests(unittest.TestCase):
                     completed=self.BASE + 31_000),     # 100.0
             run_row("r3", progress=9999, started=self.BASE + 60_000,
                     completed=None))                   # unfinished: no rate
-        self.assertAlmostEqual(total_runs(dest)[0]["tok_s"], 46.7, places=2)
+        row = total_runs(dest)[0]
+        self.assertAlmostEqual(row["tok_s"], 46.7, places=2)
+        # r3 is unfinished (no rate): its 9,999 progress tokens must not add
+        # to the weight either.
+        self.assertEqual(row["rate_weight"], 200 + 100)
 
 
 class AggregateTurnWeightTests(unittest.TestCase):
@@ -865,6 +881,42 @@ class AggregateTurnWeightTests(unittest.TestCase):
         shown = f"{rows[0]['tok_s']:.1f}"
         self.assertIn(shown, table)
         self.assertIn(shown + " tok/s", hero)
+
+    def test_hero_over_per_model_rows_reproduces_grand_total(self):
+        # Two models, two sessions each with differing turn rates, and each
+        # model's generated tokens differ from its in+out total:
+        #   unsloth: (240 tok/s * 240 gen + 110 * 550) / 790 = 149.5
+        #   lemonade: (10 * 100 + 10 * 400) / 500 = 10.0
+        #   grand:    (240*240 + 110*550 + 10*100 + 10*400) / 1290 = 95.4
+        # Weighting the per-model rows by in+out instead would give 129.1.
+        dest = self.dest_with(
+            [src_row(sid="s1", tin=1000, tout=200, created=self.BASE,
+                     updated=self.BASE + 5_000),
+             src_row(sid="s2", tin=500, tout=50, created=self.BASE + 60_000,
+                     updated=self.BASE + 65_000),
+             src_row(sid="s3", model=LEMONADE_JSON, tin=90, tout=10,
+                     created=self.BASE, updated=self.BASE + 10_000),
+             src_row(sid="s4", model=LEMONADE_JSON, tin=190, tout=10,
+                     created=self.BASE + 30_000, updated=self.BASE + 50_000)],
+            [self.turn("a1", "s1", 240, 1000),
+             self.turn("a2", "s2", 550, 5000),
+             self.turn("a3", "s3", 100, 10000),
+             self.turn("a4", "s4", 400, 40000)])
+        grand = total_totals(dest)[0]["tok_s"]
+        rows = {r["model"]: r for r in total_totals(dest, by_model=True)}
+        unsloth = rows["unsloth-studio/" + UNSLOTH_MODEL_ID]
+        lemonade = rows["lemonade/gpt-oss-120b"]
+        # The weight each aggregate row carries is the Σ generated tokens of
+        # its rate-bearing sessions — NOT its in+out total.
+        self.assertEqual(unsloth["rate_weight"], 790)
+        self.assertEqual(lemonade["rate_weight"], 500)
+        self.assertNotEqual(unsloth["rate_weight"], unsloth["total"])
+        self.assertNotEqual(lemonade["rate_weight"], lemonade["total"])
+        hero = _ANSI_RE.sub("", "\n".join(
+            report_header("", list(rows.values()))))
+        shown = re.search(r"(-?\d+\.\d+) tok/s", hero)
+        self.assertIsNotNone(shown)
+        self.assertLessEqual(abs(float(shown.group(1)) - grand), 0.1)
 
     def runs_dest(self):
         dest = make_dest()
@@ -1072,7 +1124,8 @@ class CliTests(unittest.TestCase):
         self.assertEqual(sorted(days[0].keys()),
                          sorted(["date", "sessions", "tokens_input",
                                  "tokens_output", "total", "cost", "tok_s",
-                                 "tokens_cache_read", "tokens_cache_write"]))
+                                 "rate_weight", "tokens_cache_read",
+                                 "tokens_cache_write"]))
 
 
 class ReviewFixTests(unittest.TestCase):
@@ -1751,7 +1804,7 @@ class CliTotalTests(unittest.TestCase):
         self.assertEqual(
             set(rows[0]), {"model", "sessions", "tokens_input",
                            "tokens_output", "total", "cost", "share",
-                           "tok_s", "tokens_cache_read",
+                           "tok_s", "rate_weight", "tokens_cache_read",
                            "tokens_cache_write"})
 
     def test_total_rejects_daily(self):

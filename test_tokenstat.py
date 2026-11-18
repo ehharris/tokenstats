@@ -1839,6 +1839,167 @@ class TotalTotalsTests(unittest.TestCase):
         self.assertEqual({r["sessions"] for r in rows}, {1})
 
 
+class SessionLimitTests(unittest.TestCase):
+    """`limit` caps the set to the N most recent sessions (by time_created,
+    ties broken by session_id), applied AFTER the other filters."""
+
+    def store(self, rows):
+        dest = make_dest()
+        self.addCleanup(dest.close)
+        src = make_src(rows)
+        self.addCleanup(src.close)
+        record(src, dest, now_ms=1)
+        return dest
+
+    @staticmethod
+    def five():
+        """Five sessions with distinct time_created values (oldest first)."""
+        return [
+            src_row(sid="c1", title="oldest", created=ms(2026, 11, 1)),
+            src_row(sid="c2", title="second", created=ms(2026, 11, 2)),
+            src_row(sid="c3", title="third", created=ms(2026, 11, 3)),
+            src_row(sid="c4", title="fourth", created=ms(2026, 11, 4)),
+            src_row(sid="c5", title="newest", created=ms(2026, 11, 5)),
+        ]
+
+    @staticmethod
+    def titles(rows):
+        return [r["title"] for r in rows]
+
+    @staticmethod
+    def mixed_models():
+        """Five sessions: three provA, two provB; the overall two most recent
+        are a-newest (provA) and b-newest (provB)."""
+        prov_a = '{"id":"modA","providerID":"provA"}'
+        prov_b = '{"id":"modB","providerID":"provB"}'
+        return [
+            src_row(sid="a1", model=prov_a, title="a-old",
+                    created=ms(2026, 11, 1)),
+            src_row(sid="a2", model=prov_a, title="a-mid",
+                    created=ms(2026, 11, 2)),
+            src_row(sid="b1", model=prov_b, title="b-newer",
+                    created=ms(2026, 11, 3)),
+            src_row(sid="b2", model=prov_b, title="b-newest",
+                    created=ms(2026, 11, 4)),
+            src_row(sid="a3", model=prov_a, title="a-newest",
+                    created=ms(2026, 11, 5)),
+        ]
+
+    def test_no_limit_returns_every_session_oldest_first(self):
+        dest = self.store(self.five())
+        expected = ["oldest", "second", "third", "fourth", "newest"]
+        self.assertEqual(self.titles(query_sessions(dest, limit=None)),
+                         expected)
+        # limit=0 means "no cap" too — identical result set and order
+        self.assertEqual(self.titles(query_sessions(dest, limit=0)),
+                         self.titles(query_sessions(dest)))
+
+    def test_limit_two_returns_two_newest_oldest_first(self):
+        dest = self.store(self.five())
+        # oldest-first order is preserved so the caller can reverse for display
+        self.assertEqual(self.titles(query_sessions(dest, limit=2)),
+                         ["fourth", "newest"])
+
+    def test_limit_larger_than_population_returns_everything(self):
+        dest = self.store(self.five())
+        self.assertEqual(len(query_sessions(dest, limit=100)), 5)
+
+    def test_limit_applies_after_other_filters(self):
+        dest = self.store(self.mixed_models())
+        # the two most recent sessions OVERALL are a-newest and b-newest; the
+        # cap must count survivors of the model filter, so b-newest is skipped
+        self.assertEqual(
+            self.titles(query_sessions(dest, model="provA", limit=2)),
+            ["a-mid", "a-newest"])
+
+    def test_filter_and_cap_bind_in_order(self):
+        # the same call as above: every returned row must actually be provA —
+        # a mis-ordered positional bind raises, or returns the wrong set
+        dest = self.store(self.mixed_models())
+        rows_out = query_sessions(dest, model="provA", limit=2)
+        self.assertEqual(len(rows_out), 2)
+        for row in rows_out:
+            self.assertIn("provA", row["model"])
+
+    def test_ties_break_on_session_id(self):
+        # two sessions share time_created; the cap boundary lands on the tie,
+        # so the smaller session_id wins — deterministically across calls
+        tie = ms(2026, 11, 3)
+        dest = self.store([
+            src_row(sid="tie_b", title="later-tie", created=tie),
+            src_row(sid="tie_a", title="earlier-tie", created=tie),
+        ])
+        first = self.titles(query_sessions(dest, limit=1))
+        self.assertEqual(first, ["earlier-tie"])
+        self.assertEqual(self.titles(query_sessions(dest, limit=1)), first)
+
+
+class AggregateLimitTests(unittest.TestCase):
+    """The cap reaches the aggregate views: daily_totals and total_totals see
+    only the capped session set, and the rate side and sum side agree."""
+
+    def store(self, rows, messages):
+        dest = make_dest()
+        self.addCleanup(dest.close)
+        src = make_step_src(rows, messages)
+        self.addCleanup(src.close)
+        record(src, dest, now_ms=1)
+        return dest
+
+    @staticmethod
+    def fixture():
+        """Four sessions across two days and two models, each with one valid
+        step row (so every session has a rate and a rate_weight of 100). The
+        two most recent sessions are both the unsloth model on 2026-11-05."""
+        lem, uns = LEMONADE_JSON, UNSLOTH_JSON
+        d1, d3 = ms(2026, 11, 1), ms(2026, 11, 5)
+        rows = [
+            src_row(sid="d1", model=lem, created=d1),
+            src_row(sid="d2", model=uns, created=d1 + 1000),
+            src_row(sid="d3", model=uns, created=d3),
+            src_row(sid="d4", model=uns, created=d3 + 10_000),
+        ]
+        messages = [
+            step_msg("m-" + sid, sid=sid, created=created,
+                     first=created + 100, streamed=created + 2100,
+                     out=100, reasoning=0)
+            for sid, created in (("d1", d1), ("d2", d1 + 1000),
+                                 ("d3", d3), ("d4", d3 + 10_000))
+        ]
+        return rows, messages
+
+    def test_daily_totals_limit_returns_only_the_capped_days(self):
+        dest = self.store(*self.fixture())
+        days = daily_totals(dest, limit=2)
+        self.assertEqual([d["date"] for d in days], ["2026-11-05"])
+        self.assertEqual(days[0]["sessions"], 2)
+        # no cap still aggregates everything
+        uncapped = daily_totals(dest)
+        self.assertEqual([d["date"] for d in uncapped],
+                         ["2026-11-01", "2026-11-05"])
+        self.assertEqual(sum(d["sessions"] for d in uncapped), 4)
+
+    def test_total_totals_by_model_limit_returns_only_those_models(self):
+        dest = self.store(*self.fixture())
+        capped = total_totals(dest, by_model=True, limit=2)
+        # the two most recent sessions are both the unsloth model — the
+        # lemonade day-1 row must drop out entirely
+        self.assertEqual([r["model"] for r in capped],
+                         ["unsloth-studio/" + UNSLOTH_MODEL_ID])
+        self.assertEqual(capped[0]["sessions"], 2)
+        self.assertEqual(len(total_totals(dest, by_model=True)), 2)
+
+    def test_total_totals_rate_weight_matches_capped_sessions(self):
+        # Review Focus 1 pin: the rate side and the sum side saw the same set
+        dest = self.store(*self.fixture())
+        capped = query_sessions(dest, limit=2)
+        self.assertEqual(len(capped), 2)
+        total = total_totals(dest, limit=2)[0]
+        self.assertEqual(total["sessions"], 2)
+        self.assertEqual(total["rate_weight"],
+                         sum(r["rate_weight"] for r in capped))
+
+
 class TotalEventsTests(unittest.TestCase):
     def setUp(self):
         self.dest = make_dest()

@@ -777,7 +777,7 @@ def parse_date(s: str) -> int:
     return int(dt.timestamp() * 1000)
 
 
-def _session_filters(model, since_ms, until_ms, min_in, min_out):
+def _session_filters(model, since_ms, until_ms, min_in, min_out, limit=None):
     where, params = [], []
     if model:
         pattern = "%" + model.lower().replace("%", "\\%").replace("_", "\\_") + "%"
@@ -795,6 +795,12 @@ def _session_filters(model, since_ms, until_ms, min_in, min_out):
     if min_out is not None:
         where.append("tokens_output >= ?")
         params.append(min_out)
+    if limit:  # None and 0 both mean "no cap"
+        inner = list(params)
+        where.append("session_id IN (SELECT session_id FROM usage"
+                     + (" WHERE " + " AND ".join(where) if where else "")
+                     + " ORDER BY time_created DESC, session_id LIMIT ?)")
+        params = inner + inner + [int(limit)]
     return where, params
 
 
@@ -815,7 +821,7 @@ _GENERATED_SQL = (
 
 
 def query_sessions(dest, model=None, since_ms=None, until_ms=None,
-                   min_in=None, min_out=None):
+                   min_in=None, min_out=None, limit=None):
     """Session rows matching all given filters, oldest first.
 
     tok_s is the unweighted mean of the session's per-turn rates — the number
@@ -823,12 +829,14 @@ def query_sessions(dest, model=None, since_ms=None, until_ms=None,
     per turn, then averaged across turns. None when the session has no valid
     turn. rate_weight is the session's total generated tokens. There is
     deliberately no wall-clock fallback: mixing the two bases is the bug this
-    replaces."""
+    replaces. limit=N keeps only the N most recent matching sessions
+    (None/0 = uncapped)."""
     sql = ("SELECT time_created, provider, model_id, tokens_input,"
            " tokens_output, cost, title, tokens_cache_read,"
            " tokens_cache_write, " + _TURN_RATE_SQL + ", " + _GENERATED_SQL
            + " FROM usage")
-    where, params = _session_filters(model, since_ms, until_ms, min_in, min_out)
+    where, params = _session_filters(model, since_ms, until_ms, min_in,
+                                     min_out, limit)
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY time_created ASC"
@@ -1235,10 +1243,12 @@ def render_table(rows, columns=None):
 
 
 def daily_totals(dest, model=None, since_ms=None, until_ms=None,
-                 min_in=None, min_out=None):
+                 min_in=None, min_out=None, limit=None):
     """Per-day aggregates matching the filters, oldest day first. TOK/S is the
-    token-weighted mean of the day's per-session rates."""
-    where, params = _session_filters(model, since_ms, until_ms, min_in, min_out)
+    token-weighted mean of the day's per-session rates. limit=N aggregates
+    only the N most recent matching sessions (None/0 = uncapped)."""
+    where, params = _session_filters(model, since_ms, until_ms, min_in,
+                                     min_out, limit)
     day_sql = "date(time_created/1000, 'unixepoch', 'localtime')"
     rates = _session_rate_groups(dest, day_sql, where, params)
     sql = ("SELECT " + day_sql + " AS day,"
@@ -1260,12 +1270,15 @@ def daily_totals(dest, model=None, since_ms=None, until_ms=None,
 
 
 def total_totals(dest, model=None, since_ms=None, until_ms=None,
-                 min_in=None, min_out=None, by_model=False):
+                 min_in=None, min_out=None, by_model=False, limit=None):
     """All-time aggregates: one grand-total row; per-provider/model_id rows
     (ordered by that string) with a model filter or by_model=True. Empty
     when no rows match. TOK/S is the token-weighted mean of the group's
-    per-session rates."""
-    where, params = _session_filters(model, since_ms, until_ms, min_in, min_out)
+    per-session rates. limit=N aggregates only the N most recent matching
+    sessions, in both the grand-total and per-model branches
+    (None/0 = uncapped)."""
+    where, params = _session_filters(model, since_ms, until_ms, min_in,
+                                     min_out, limit)
     tail = " WHERE " + " AND ".join(where) if where else ""
     sums = (" COUNT(*), SUM(tokens_input), SUM(tokens_output), SUM(cost),"
             " SUM(tokens_cache_read), SUM(tokens_cache_write)")

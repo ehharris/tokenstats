@@ -1813,9 +1813,9 @@ def main(argv):
     parser.add_argument("--until", type=parse_date, metavar="YYYY-MM-DD",
                         help="last day of usage (inclusive)")
     parser.add_argument("--min-in", type=int, dest="min_in",
-                        help="minimum tokens in")
+                        help=argparse.SUPPRESS)
     parser.add_argument("--min-out", type=int, dest="min_out",
-                        help="minimum tokens out")
+                        help=argparse.SUPPRESS)
     parser.add_argument("--daily", action="store_true",
                         help="totals per day instead of per session")
     parser.add_argument("--total", action="store_true",
@@ -1830,15 +1830,15 @@ def main(argv):
                              " tok_s; --cost adds cost_est)")
     # No default to print: the store is created on first run, so --help would
     # otherwise advertise a path that does not exist yet. default=None means
-    # "ask default_store()", below. (Task 3 hides the rest of the plumbing.)
+    # "ask default_store()", below. The rest of the plumbing below is hidden
+    # for the same reason: fully usable, never advertised.
     parser.add_argument("--db", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--src", default=DEFAULT_SRC,
-                        help=f"OpenCode database (default: {DEFAULT_SRC})")
+                        help=argparse.SUPPRESS)
     parser.add_argument("--unsloth-db", default=DEFAULT_UNSLOTH_DB, dest="unsloth_db",
-                        help=f"Unsloth Studio database (default: {DEFAULT_UNSLOTH_DB})")
+                        help=argparse.SUPPRESS)
     parser.add_argument("--from-unsloth", action="store_true", dest="from_unsloth",
-                        help="report imported Unsloth request events instead of"
-                             " OpenCode sessions (IN=prompt incl. cache, OUT=completion)")
+                        help=argparse.SUPPRESS)
     parser.add_argument("--from-runs", action="store_true", dest="from_runs",
                         help="report imported Unsloth generation runs (IN ="
                              " progress tokens, no in/out split) with true"
@@ -1853,8 +1853,8 @@ def main(argv):
                              " can swallow a following command")
     parser.add_argument("--real-cost", action="store_true", dest="real_cost",
                         help="add a REAL COST column with the stored real USD"
-                             " OpenCode reported (session views only; not"
-                             " with reconcile, --from-unsloth or --from-runs)")
+                             " OpenCode reported (session views only; not with"
+                             " reconcile or the Unsloth source views)")
     # --cost-tier was removed with the --cost rework; kept as a suppressed
     # shim so stale shell-history invocations get a migration message
     # instead of argparse blaming the word it swallowed as the command.
@@ -1864,8 +1864,8 @@ def main(argv):
     parser.add_argument("--cache", action="store_true", dest="cache",
                         help="add a CACHE column (cache read + write) between"
                              " OUT and TOTAL in session views; informational,"
-                             " TOTAL unchanged (not with reconcile,"
-                             " --from-unsloth or --from-runs)")
+                             " TOTAL unchanged (not with reconcile or the"
+                             " Unsloth source views)")
     parser.add_argument("--theme", nargs="?", const=THEME_LIST, default=None,
                         metavar="SLUG",
                         help="bare --theme lists all themes and exits; with"

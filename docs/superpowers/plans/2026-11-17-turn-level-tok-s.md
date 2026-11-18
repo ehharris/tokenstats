@@ -418,6 +418,7 @@ Pins, built with `make_step_src` so each session has real turns:
 - **`daily_totals` matches `total_totals`** when every session falls on one day.
 - **The hero matches the table.** `report_header("", total_totals(dest))` contains the same `N.N tok/s` string as the table's TOK/S cell.
 - **`--from-runs` is unchanged:** run rows still carry `rate_weight == progress_tokens`, and the runs hero is byte-identical to before the change.
+- **The hero over per-model rows reproduces the grand total.** With at least two models, each with at least two sessions whose turn rates differ, assert `report_header("", total_totals(dest, by_model=True))` contains the same `N.N tok/s` as `total_totals(dest)[0]["tok_s"]` (allowing a 0.1 rounding difference), and that the aggregate rows expose a `rate_weight` equal to the Σ generated tokens of their rate-bearing sessions — a value that differs from their `total`, so the old fallback is provably not what produced the match.
 
 - [ ] **Step 2: Run them to verify they fail**
 
@@ -446,6 +447,12 @@ rate = _weighted_mean_rate([(r.get("tok_s"),
 ```
 
 Views whose rows carry no `rate_weight` keep behaving exactly as before.
+
+- [ ] **Step 4b: Aggregate rows carry their own weight**
+
+`report_header`'s fallback keeps event views unchanged, but it also means a hero over *aggregate* rows (`--daily`, `--total --model`) still weights by `tokens_input + tokens_output` while the rows it summarizes are generated-token weighted — two weights on one screen. Give every aggregate row a `rate_weight` equal to the Σ weight of the rows that actually contributed to its rate (the same pairs `_weighted_mean_rate` consumed, so rate-less and zero-weight rows are excluded from both sides). Apply in `daily_totals`, `total_totals`/`_total_row`, `daily_runs` and `total_runs`.
+
+The property this buys, and the property to pin: **the hero over per-model rows reproduces the grand-total row's rate** (to one-decimal rounding), because Σ_model(rate_model × gen_model) / Σ gen_model telescopes to the pooled mean over all underlying sessions. Weighting the same rows by `in+out` does not reproduce it. Run aggregate rows get `Σ progress` of contributing rows; on data where every run has a rate this is the value the old `total` fallback already produced, so the runs hero does not move.
 
 - [ ] **Step 5: Give run rows an explicit `rate_weight`**
 

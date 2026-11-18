@@ -171,6 +171,38 @@ OpenCode's own 134 assistant message rows is exactly 77,696, while
 so `rate_weight` is faithful to the message rows it is defined over (see Known
 gotchas). Spec + plan in docs/superpowers/{specs,plans}/2026-11-17-turn-level-tok-s*.
 
+Sessions-cap increment (2026-11-17): `--sessions[=N]` scopes the OpenCode
+session views to the N most recent sessions (by creation time, newest
+first). Semantics: a valueless `--sessions` means the 20 most recent in the
+list view but ALL sessions in the aggregate views (an aggregate is a
+summary by default and only a list needs a bound; `--total` alone already
+IS the all-sessions view — the `--sessions=0` end of the same dial);
+`--sessions=0` means all matching sessions in any view; an explicit N caps
+every view the same way; `--daily`/`--total` without the flag are unchanged
+and uncapped. The cap is ONE predicate inside `_session_filters`
+(`session_id IN (SELECT session_id FROM usage <same where-params> ORDER BY
+time_created DESC, session_id LIMIT ?)` — the cap takes the N most recent
+of what survives the existing --model/--since/--until/threshold filters),
+which `query_sessions`, `daily_totals`, `total_totals`, and the rate groups
+all funnel through, so rows, aggregates, and the hero's TOK/S share one
+scope and an aggregate can never total a different session set than the
+rows on screen (None and 0 simply add no cap predicate — the uncapped case
+is reached by omission, not a second code path). Alone (no other view flag)
+it renders the capped rows newest first — the same `most_recent` recency
+step the dashboard's panel shares — titled `sessions · N most recent` or
+`sessions · all`; with a POSITIVE cap in force the aggregate titles say so
+(`daily · last 3 sessions`, `totals ·
+last 3 sessions`, `usage by model · sorted by share · last 3 sessions`) and
+with no cap or a 0 cap every title stays byte-identical to today;
+`hero_unit` values never change. Rejected (exit 2, after implicit
+ingestion like the other guards) with `--from-unsloth`, `--from-runs`, and
+`reconcile` — none of them are sessions — and for negative N (SQLite
+degenerates a negative LIMIT to no-limit, so the CLI is the only rejection
+point). The bare-run dashboard is UNCHANGED: its trigger stays a truly
+bare invocation and its 5-session panel keeps its own title. Spec in
+docs/superpowers/specs/2026-11-17-sessions-view-design.md, plan in
+docs/superpowers/plans/2026-11-17-sessions-cap.md.
+
 ## Commands (run from this directory)
 
 ```bash
@@ -181,6 +213,8 @@ python3 tokenstat.py --total                           # all-time grand total, o
 python3 tokenstat.py --total --model unsloth           # all-time totals, one row per model
 python3 tokenstat.py --total --model                   # ...for ALL models (bare --model)
 python3 tokenstat.py --model                           # same as --total --model (shortcut)
+python3 tokenstat.py --sessions                        # list the 20 most recent sessions, newest first
+python3 tokenstat.py --sessions=10 --daily             # daily aggregates over the 10 most recent sessions
 python3 tokenstat.py --from-unsloth [--daily|--json]   # Unsloth's own per-request log
 python3 tokenstat.py --from-runs [--daily|--total]     # Studio runs, TRUE generation tok/s
 python3 tokenstat.py --cost [--cost-tier haiku|opus]   # reference $ overlay (off by default)

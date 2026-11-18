@@ -44,6 +44,11 @@ python3 tokenstat.py --total --model unsloth
 python3 tokenstat.py --total --model
 python3 tokenstat.py --model
 
+# The 10 most recent sessions — alone it lists them newest first, and with
+# --daily/--total it caps the session set those aggregates cover:
+python3 tokenstat.py --sessions=10
+python3 tokenstat.py --sessions=10 --total --model
+
 # Machine-readable (rows carry `tok_s`; with --cost every row also gains
 # `cost_est`; run rows and run aggregates carry `progress_tokens`; --total
 # rows carry `share`, the row's percent of the overall displayed total):
@@ -137,6 +142,25 @@ those numbers typically sit well above session-mode averages. In `--json` the
 value is the float `tok_s` (null when blank); session-family rows also carry
 `rate_weight`, the sum of the generated tokens of the rows that contributed
 to their rate.
+
+## Session scope (`--sessions`)
+
+`--sessions` lists the **20 most recent sessions**, newest first;
+`--sessions=50` lists 50. With `--daily` or `--total` (including bare
+`--model`, the `--total` shortcut) the same cap instead narrows the session
+set the aggregate covers, so the aggregate describes exactly those sessions
+and nothing else — the table title says so (`daily · last 3 sessions`,
+`totals · last 3 sessions`, `usage by model · sorted by share · last 3
+sessions`). A valueless `--sessions` means **all** sessions in the
+aggregate views — an aggregate is a summary by default, so `--total` and
+`--daily` alone stay the everything views — and `--sessions=0` means all
+matching sessions in any view. Existing filters (`--model`, `--since`,
+`--until`, `--min-in`, `--min-out`) narrow the candidate set first; the cap
+then takes the N most recent of what survives. `--json` emits the displayed
+rows, newest first in the list view. The flag is rejected (exit 2) with
+`--from-unsloth`, `--from-runs`, and `reconcile` — none of them are
+sessions — and for a negative N. The bare-run dashboard (top-5 models, 5
+most-recent sessions) is unchanged.
 
 ## Cost estimates (`--cost`)
 

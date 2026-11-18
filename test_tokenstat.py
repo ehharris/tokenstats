@@ -3599,6 +3599,50 @@ class CliSessionsTests(unittest.TestCase):
         days = json.loads(out)
         self.assertEqual(sorted(d["date"] for d in days), spans)
 
+    # -- aggregate titles --
+
+    def title_of(self, out):
+        """The visible panel title, as rendered in the strip (colour
+        stripped): the top border reads `╭ tokenstat · {title} ───╮`."""
+        text = self.plain(out)
+        m = re.search(r"tokenstat \u00b7 (.*?) \u2500+\u256e", text)
+        self.assertIsNotNone(m, f"no title strip in:\n{text}")
+        return m.group(1)
+
+    def test_daily_three_titles_last_3_sessions(self):
+        _, out, _ = self.sess_colored("--sessions=3", "--daily")
+        self.assertEqual(self.title_of(out), "daily \u00b7 last 3 sessions")
+
+    def test_total_three_titles_last_3_sessions(self):
+        _, out, _ = self.sess_colored("--sessions=3", "--total")
+        self.assertEqual(self.title_of(out), "totals \u00b7 last 3 sessions")
+
+    def test_share_view_title_carries_both_parts(self):
+        _, out, _ = self.sess_colored("--sessions=3", "--total", "--model")
+        title = self.title_of(out)
+        self.assertIn("usage by model", title)
+        self.assertIn("last 3 sessions", title)
+
+    def test_uncapped_titles_stay_exact(self):
+        # No cap in force: every view keeps the title it rendered before the
+        # flag existed, byte for byte.
+        for argv, expected in ((["--daily"], "daily"),
+                               (["--total"], "totals"),
+                               (["--model"], "usage by model \u00b7 sorted by share"),
+                               (["--model", "unsloth"], "sessions")):
+            with self.subTest(argv=argv):
+                _, out, _ = self.sess_colored(*argv)
+                self.assertEqual(self.title_of(out), expected)
+
+    def test_zero_cap_titles_match_uncapped_output(self):
+        # 0 means "all": the suffix must not appear, so the whole output is
+        # byte-identical to the plain view.
+        for argv in (["--total"], ["--daily"], ["--model"]):
+            with self.subTest(argv=argv):
+                _, bare, _ = self.sess_colored(*argv)
+                _, capped, _ = self.sess_colored("--sessions=0", *argv)
+                self.assertEqual(bare, capped)
+
     # -- model filter and JSON --
 
     def test_model_pattern_lists_four_most_recent_matching(self):

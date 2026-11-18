@@ -10,6 +10,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import tokenstat
 import unittest
 import unittest.mock
@@ -4717,6 +4718,212 @@ class CliSessionsTests(CliHarness):
             self.assertIn(kept, text)
         for gone in ("t-20", "t-00"):
             self.assertNotIn(gone, text)
+
+
+GOLDEN_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "golden")
+
+
+class ByteIdentityGoldenTests(CliHarness):
+    """The committed byte-identity harness: what the CLI prints, pinned to the byte.
+
+    The theme increment promised that a theme only moves a byte when you ask
+    for one: flag-off output is exactly what it was before themes existed, and
+    piped / `--json` output stays plain under every palette. That was proven
+    once against the pre-theme tree by a throwaway harness; this is the version
+    that stays, so the next refactor cannot move a byte quietly.
+
+    Each case runs twice — piped (color gate closed) and on a fake terminal
+    (gate forced open) — and both streams are compared against a file in
+    `golden/`. When a change is *meant* to move bytes, read the diff, then
+    regenerate deliberately:
+
+        TOKENSTAT_UPDATE_GOLDEN=1 python3 -m unittest test_tokenstat
+
+    The bytes are clock-independent (every fixture row carries an explicit
+    timestamp) and TZ is pinned to UTC, because date columns render in local
+    time. The themes folder is redirected to an empty temp dir: a saved default
+    on this machine must not repaint a golden.
+    """
+
+    # 18 invocations x {piped, tty} = the 36 comparisons the theme review made.
+    CASES = (
+        ("bare", ()),
+        ("total", ("--total",)),
+        ("total-model", ("--total", "--model")),
+        ("daily", ("--daily",)),
+        ("cache", ("--cache",)),
+        ("cost", ("--cost",)),
+        ("real-cost", ("--real-cost",)),
+        ("sessions3", ("--sessions=3",)),
+        ("json", ("--json",)),
+        ("json-total-model", ("--json", "--total", "--model")),
+        ("total-model-cache-cost", ("--total", "--model", "--cache", "--cost")),
+        ("daily-cost", ("--daily", "--cost")),
+        ("model-filter", ("--total", "--model", "gpt-oss")),
+        ("since", ("--since", "2026-11-05")),
+        ("min-in", ("--total", "--model", "--min-in", "2000")),
+        ("unsloth-total", ("--from-unsloth", "--total")),
+        ("unsloth-json", ("--from-unsloth", "--json")),
+        ("runs-total-model", ("--from-runs", "--total", "--model")),
+    )
+    # The two views the overlay tests sweep every palette through: the dashboard
+    # and the share table, i.e. panels and a painted table.
+    OVERLAY_CASES = (("bare", ()), ("total-model", ("--total", "--model")))
+
+    maxDiff = None
+
+    @classmethod
+    def setUpClass(cls):
+        # Date columns come from datetime.fromtimestamp(), i.e. local time, so
+        # a golden captured in one zone has to be read in the same one.
+        cls._tz = os.environ.get("TZ")
+        os.environ["TZ"] = "UTC"
+        time.tzset()
+
+    @classmethod
+    def tearDownClass(cls):
+        if cls._tz is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = cls._tz
+        time.tzset()
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = os.path.join(self.tmp.name, "usage.db")
+        self.src = os.path.join(self.tmp.name, "src.db")
+        self.addCleanup(make_file_db(self.src, [
+            src_row(sid="s1", tin=9000, tout=1200, tcr=7000, tcw=100,
+                    title="alpha", created=ms(2026, 11, 4)),
+            src_row(sid="s2", model=LEMONADE_JSON, tin=4500, tout=500,
+                    tcr=0, tcw=0, cost=0.02, title="beta",
+                    created=ms(2026, 11, 5)),
+            src_row(sid="s3", model=LEMONADE_JSON, tin=1500, tout=250,
+                    cost=0.03, title="gamma", created=ms(2026, 11, 6)),
+            src_row(sid="s4", tin=250, tout=60, title="delta",
+                    created=ms(2026, 11, 7)),
+        ]).close)
+        self.udb = os.path.join(self.tmp.name, "studio.db")
+        self.addCleanup(make_file_runs_db(
+            self.udb,
+            events=[unsloth_event("e1", prompt=3000, completion=400),
+                    unsloth_event("e2", prompt=800, completion=90,
+                                  created=ms(2026, 11, 6))],
+            runs=[run_row("r1"), run_row("r2", progress=40)]).close)
+        self.base = ["--db", self.db, "--src", self.src,
+                     "--unsloth-db", self.udb]
+        self.themes = os.path.join(self.tmp.name, "themes")
+        self.config = os.path.join(self.themes, "config.json")
+        for name, value in (("THEMES_DIR", self.themes),
+                            ("THEME_CONFIG", self.config)):
+            patcher = unittest.mock.patch.object(tokenstat, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def run_case(self, extra, tty):
+        """One invocation, piped or on a fake terminal; stdout must be the only
+        thing it writes."""
+        code, out, err = (self.colored_main if tty else self.run_main)(
+            self.base + list(extra))
+        self.assertEqual(code, 0, extra)
+        self.assertEqual(err, "", extra)
+        return out
+
+    def golden_path(self, name, tty):
+        return os.path.join(GOLDEN_DIR,
+                            "%s.%s.txt" % (name, "tty" if tty else "piped"))
+
+    def assert_golden(self, name, tty, text):
+        path = self.golden_path(name, tty)
+        if os.environ.get("TOKENSTAT_UPDATE_GOLDEN") == "1":
+            os.makedirs(GOLDEN_DIR, exist_ok=True)
+            with open(path, "w", encoding="utf-8", newline="") as fh:
+                fh.write(text)
+            return
+        self.assertTrue(
+            os.path.exists(path),
+            "no golden for %r yet: TOKENSTAT_UPDATE_GOLDEN=1 "
+            "python3 -m unittest test_tokenstat" % name)
+        with open(path, encoding="utf-8", newline="") as fh:
+            self.assertEqual(
+                fh.read(), text,
+                "bytes moved in %s mode for case %r" % (
+                    "tty" if tty else "piped", name))
+
+    def test_flag_off_bytes_match_the_goldens(self):
+        for name, extra in self.CASES:
+            for tty in (False, True):
+                with self.subTest(case=name, tty=tty):
+                    self.assert_golden(name, tty, self.run_case(extra, tty))
+
+    def test_golden_folder_holds_exactly_the_matrix(self):
+        # A renamed or dropped case must not leave a golden nobody reads.
+        want = {os.path.basename(self.golden_path(n, t))
+                for n, _ in self.CASES for t in (False, True)}
+        have = {f for f in os.listdir(GOLDEN_DIR) if f.endswith(".txt")}
+        self.assertEqual(have, want)
+
+    def test_piped_bytes_carry_no_escapes(self):
+        for name, extra in self.CASES:
+            with self.subTest(case=name):
+                self.assertNotIn("\x1b", self.run_case(extra, tty=False))
+
+    def test_tty_bytes_paint_except_for_json(self):
+        # Harness guard, not a product claim: if the color gate ever broke, the
+        # tty goldens would go plain and still match their (plain) files.
+        for name, extra in self.CASES:
+            with self.subTest(case=name):
+                painted = "38;2;" in self.run_case(extra, tty=True)
+                self.assertEqual(painted, "--json" not in extra, name)
+
+    def test_default_tty_bytes_are_neon_midnight_bytes(self):
+        """NEON (frozen) and the neon-midnight theme are one palette, so naming
+        it must not move a byte — and drift between the two shows up here."""
+        for name, extra in self.CASES:
+            with self.subTest(case=name):
+                self.assertEqual(
+                    self.run_case(extra, tty=True),
+                    self.run_case(list(extra) + ["--theme=neon-midnight"],
+                                  tty=True), name)
+
+    def test_no_theme_moves_a_piped_byte(self):
+        for name, extra in self.OVERLAY_CASES:
+            plain = self.run_case(extra, tty=False)
+            for slug in sorted(THEMES):
+                with self.subTest(case=name, theme=slug):
+                    self.assertEqual(
+                        self.run_case(list(extra) + ["--theme=" + slug],
+                                      tty=False), plain, slug)
+
+    def test_every_theme_does_move_a_tty_byte(self):
+        # The mirror of the test above: without it, "no theme moves a piped
+        # byte" would also pass if --theme were silently ignored.
+        for name, extra in self.OVERLAY_CASES:
+            plain = self.run_case(extra, tty=True)
+            for slug in sorted(THEMES):
+                with self.subTest(case=name, theme=slug):
+                    painted = self.run_case(list(extra) + ["--theme=" + slug],
+                                            tty=True)
+                    if slug == "neon-midnight":
+                        self.assertEqual(painted, plain, slug)
+                    else:
+                        self.assertNotEqual(painted, plain, slug)
+
+    def test_a_saved_default_repaints_but_never_repipes(self):
+        for name, extra in self.OVERLAY_CASES:
+            plain, painted = (self.run_case(extra, tty=False),
+                              self.run_case(extra, tty=True))
+            write_default_theme(self.config, "dracula")
+            try:
+                with self.subTest(case=name):
+                    self.assertEqual(self.run_case(extra, tty=False), plain,
+                                     name)
+                    self.assertNotEqual(self.run_case(extra, tty=True),
+                                        painted, name)
+            finally:
+                os.remove(self.config)  # the next case starts flag-off again
 
 
 if __name__ == "__main__":

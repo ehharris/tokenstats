@@ -2919,6 +2919,42 @@ class PaintBarsTests(unittest.TestCase):
         self.assertEqual(colors[0], TOKEN_IN_RGB)   # left end: pure input hue
         self.assertEqual(colors[-1], TOKEN_OUT_RGB)  # right end: pure output hue
 
+    def test_gradient_endpoints_follow_an_arbitrary_theme(self):
+        # the gradient must read its endpoints from the theme it is handed,
+        # not from the import-time TOKEN_IN_RGB/TOKEN_OUT_RGB globals
+        def rgbs(bar):
+            return [tuple(int(g) for g in m) for m in
+                    re.findall(r"\x1b\[38;2;(\d+);(\d+);(\d+)m", bar)]
+
+        theme = dict(NEON, tin=(10, 200, 190), tout=(250, 30, 90))
+        rows = [{"model": "a", "total": 10, "share": 100.0, "bar": "█" * 8,
+                 "tokens_input": 5, "tokens_output": 5}]
+        colors = rgbs(paint_bars(rows, color=True, theme=theme)[0]["bar"])
+        self.assertEqual(colors[0], (10, 200, 190))   # left end = theme tin
+        self.assertEqual(colors[-1], (250, 30, 90))   # right end = theme tout
+
+    def test_gradient_endpoints_round_trip_for_every_theme(self):
+        from tokenstat import _token_rgb, gradient_stops
+        for slug, (_, theme) in THEMES.items():
+            stops = gradient_stops(theme)
+            self.assertEqual(len(stops), 7, slug)
+            self.assertEqual(_token_rgb(0.0, stops), theme["tin"], slug)
+            self.assertEqual(_token_rgb(1.0, stops), theme["tout"], slug)
+
+    def test_default_paint_bars_unchanged_without_theme_arg(self):
+        # the default path (no theme=) still paints the NEON-derived pins
+        from tokenstat import TOKEN_IN_RGB, TOKEN_OUT_RGB
+
+        def rgbs(bar):
+            return [tuple(int(g) for g in m) for m in
+                    re.findall(r"\x1b\[38;2;(\d+);(\d+);(\d+)m", bar)]
+
+        rows = [{"model": "a", "total": 10, "share": 100.0, "bar": "█" * 8,
+                 "tokens_input": 5, "tokens_output": 5}]
+        colors = rgbs(paint_bars(rows, color=True)[0]["bar"])
+        self.assertEqual(colors[0], TOKEN_IN_RGB)
+        self.assertEqual(colors[-1], TOKEN_OUT_RGB)
+
     def test_gradient_transition_sits_at_in_out_ratio(self):
         def blue_count(tin, tout):
             rows = [{"model": "a", "total": tin + tout, "share": 100.0,

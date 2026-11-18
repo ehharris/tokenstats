@@ -1204,28 +1204,36 @@ def scan_themes(dir=THEMES_DIR, warn=None):
 # output-token pink, with the transition centered where the input share of
 # the row's total ends. Interpolated in HSL sweeping UP from blue through
 # violet (never through gray); hue, lightness AND saturation are lerped
-# between the endpoints so both ends reproduce TOKEN_IN/OUT_RGB exactly.
+# between the endpoints so both ends reproduce them exactly. Those endpoints
+# now come from the resolved theme paint_bars is handed (its `tin`/`tout`
+# roles), not from import-time globals; the two constants below are only the
+# default theme's (NEON) endpoints, kept for callers that want them.
 TOKEN_IN_RGB = NEON["tin"]
 TOKEN_OUT_RGB = NEON["tout"]
 
 
-_HUE_IN, _LUM_IN, _SAT = colorsys.rgb_to_hls(*(v / 255 for v in TOKEN_IN_RGB))
-_HUE_OUT, _LUM_OUT, _SAT_OUT = colorsys.rgb_to_hls(*(v / 255 for v in TOKEN_OUT_RGB))
-# sweep UP (blue -> violet -> pink), wrapping past 1.0 when needed; for
-# this pair it is the short arc
-_HUE_SPAN = (_HUE_OUT - _HUE_IN) % 1.0
+def gradient_stops(theme):
+    """The seven precomputed HLS values a theme's gradient runs on:
+    (hue_in, lum_in, sat_in, hue_out, lum_out, sat_out, hue_span)."""
+    hue_in, lum_in, sat_in = colorsys.rgb_to_hls(*(v / 255 for v in theme["tin"]))
+    hue_out, lum_out, sat_out = colorsys.rgb_to_hls(*(v / 255 for v in theme["tout"]))
+    # sweep UP (blue -> violet -> pink), wrapping past 1.0 when needed; for
+    # the default pair it is the short arc
+    return (hue_in, lum_in, sat_in, hue_out, lum_out, sat_out,
+            (hue_out - hue_in) % 1.0)
 
 
-def _token_rgb(t):
-    """Blend from TOKEN_IN_RGB (t=0) to TOKEN_OUT_RGB (t=1), lerping hue
+def _token_rgb(t, stops):
+    """Blend from the theme's tin (t=0) to its tout (t=1), lerping hue
     (UP sweep), lightness, and saturation; endpoints round-trip exactly."""
-    r, g, b = colorsys.hls_to_rgb((_HUE_IN + t * _HUE_SPAN) % 1.0,
-                                  _LUM_IN + (_LUM_OUT - _LUM_IN) * t,
-                                  _SAT + (_SAT_OUT - _SAT) * t)
+    hue_in, lum_in, sat_in, hue_out, lum_out, sat_out, hue_span = stops
+    r, g, b = colorsys.hls_to_rgb((hue_in + t * hue_span) % 1.0,
+                                  lum_in + (lum_out - lum_in) * t,
+                                  sat_in + (sat_out - sat_in) * t)
     return (round(r * 255), round(g * 255), round(b * 255))
 
 
-def _paint_gradient(bar, frac_in):
+def _paint_gradient(bar, frac_in, stops):
     """Per-glyph true-color sweep; the IN->OUT midpoint lands at frac_in."""
     n = len(bar)
     parts = []
@@ -1238,7 +1246,7 @@ def _paint_gradient(bar, frac_in):
             p = i / (n - 1) if n > 1 else 0.5
             t = 0.5 * p / frac_in if p <= frac_in \
                 else 0.5 + 0.5 * (p - frac_in) / (1 - frac_in)
-        r, g, b = _token_rgb(t)
+        r, g, b = _token_rgb(t, stops)
         parts.append(f"\x1b[38;2;{r};{g};{b}m{ch}")
     return "".join(parts) + "\x1b[0m"
 
@@ -1248,15 +1256,18 @@ def _color_enabled(out, environ):
     return bool(out.isatty()) and "NO_COLOR" not in environ
 
 
-def paint_bars(rows, color):
+def paint_bars(rows, color, theme=NEON):
     """Copy of `rows` with BAR cells padded by one space either side; when
-    color is true, nonzero bars get a per-glyph blue->pink gradient whose
-    transition marks the row's input/output split. Table-only."""
+    color is true, nonzero bars get a per-glyph gradient from `theme`'s tin to
+    its tout whose transition marks the row's input/output split. Defaults to
+    the Neon Midnight palette, so callers that pass no theme are unchanged.
+    Table-only."""
+    stops = gradient_stops(theme) if color else None
     out = []
     for r in rows:
         bar = r["bar"]
         if color and r["total"]:
-            bar = _paint_gradient(bar, r["tokens_input"] / r["total"])
+            bar = _paint_gradient(bar, r["tokens_input"] / r["total"], stops)
         out.append({**r, "bar": f" {bar} "})
     return out
 

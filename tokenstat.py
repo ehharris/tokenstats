@@ -72,6 +72,77 @@ DEFAULT_UNSLOTH_DB = unsloth_db()
 THEMES_DIR = themes_dir()
 THEME_CONFIG = theme_config()
 
+
+def default_store(state=None, legacy=None):
+    """The store path main() opens when --db was not given: <state>/usage.db,
+    after moving any state still sitting beside the script into <state>.
+
+    The only function here that creates directories or moves files, and main()
+    is its only caller: importing tokenstat stays side-effect-free, and so is
+    every run that names its own --db. `state` and `legacy` take their
+    defaults from the module globals at CALL time (the same reason main()
+    reads THEMES_DIR there) so a caller that repoints the globals steers the
+    migration.
+    """
+    state = STATE_DIR if state is None else state
+    legacy = LEGACY_DIR if legacy is None else legacy
+    old_db = os.path.join(legacy, "usage.db")
+    new_db = os.path.join(state, "usage.db")
+    try:
+        os.makedirs(state, exist_ok=True)
+    except OSError as exc:
+        print(f"warning: could not create {state}: {exc}; using {old_db}"
+              " instead", file=sys.stderr)
+        return old_db
+
+    # The store first: history is the one thing a migration may not lose, so a
+    # store that will not move (another filesystem, a permission) stays exactly
+    # where it is and is used in place rather than traded for an empty new one.
+    used = new_db
+    if os.path.exists(old_db) and not os.path.exists(new_db):
+        try:
+            for suffix in ("", "-wal", "-shm"):
+                if os.path.exists(old_db + suffix):
+                    os.replace(old_db + suffix, new_db + suffix)
+        except OSError as exc:
+            print(f"warning: could not migrate {old_db}: {exc}; using it in"
+                  " place", file=sys.stderr)
+            used = old_db
+        else:
+            print(f"migrated store: {old_db} -> {new_db}", file=sys.stderr)
+
+    # Themes travel with it, but only as long as the state dir has none of its
+    # own: a theme is cosmetic, so a file that will not move is a warning and a
+    # skipped file, never a lost report. Only top-level *.json files move —
+    # README.md and examples/ are shipped documentation, not personal state.
+    old_themes = os.path.join(legacy, "themes")
+    new_themes = os.path.join(state, "themes")
+    if os.path.isdir(old_themes) and not os.path.isdir(new_themes):
+        try:
+            os.makedirs(new_themes)
+            names = sorted(os.listdir(old_themes))
+        except OSError as exc:
+            print(f"warning: could not migrate {old_themes}: {exc}; leaving"
+                  " theme files in place", file=sys.stderr)
+            names = []
+        for name in names:
+            if not name.endswith(".json"):
+                continue
+            old_file = os.path.join(old_themes, name)
+            new_file = os.path.join(new_themes, name)
+            if not os.path.isfile(old_file):
+                continue
+            try:
+                os.replace(old_file, new_file)
+            except OSError as exc:
+                print(f"warning: could not migrate {old_file}: {exc}; using"
+                      " it in place", file=sys.stderr)
+                continue
+            print(f"migrated theme file: {old_file} -> {new_file}",
+                  file=sys.stderr)
+    return used
+
+
 MODEL_ANY = object()  # --model with no value (valid only with --total)
 SESSIONS_BARE = object()  # --sessions with no value; argparse skips type on
 # a non-str const, so the sentinel distinguishes the valueless flag from
@@ -1736,8 +1807,10 @@ def main(argv):
     parser.add_argument("--json", action="store_true", dest="as_json",
                         help="emit JSON instead of a table (rows carry"
                              " tok_s; --cost adds cost_est)")
-    parser.add_argument("--db", default=DEFAULT_DB,
-                        help=f"our store (default: {DEFAULT_DB})")
+    # No default to print: the store is created on first run, so --help would
+    # otherwise advertise a path that does not exist yet. default=None means
+    # "ask default_store()", below. (Task 3 hides the rest of the plumbing.)
+    parser.add_argument("--db", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--src", default=DEFAULT_SRC,
                         help=f"OpenCode database (default: {DEFAULT_SRC})")
     parser.add_argument("--unsloth-db", default=DEFAULT_UNSLOTH_DB, dest="unsloth_db",
@@ -1878,6 +1951,12 @@ def main(argv):
     dest = None
     try:
         try:
+            # Only a run that was not told where the store lives has a state
+            # dir to create (and possibly a store to migrate): this is the
+            # module's only call to default_store(), so every run that passes
+            # --db — and every test — never touches $HOME.
+            if args.db is None:
+                args.db = default_store()
             dest = sqlite3.connect(args.db)
             # WAL + busy_timeout so a scheduled `record` and an interactive
             # query can overlap without either failing.

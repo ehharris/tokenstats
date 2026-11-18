@@ -6,6 +6,7 @@ import io
 import json
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -4068,6 +4069,146 @@ class DefaultPathsTests(unittest.TestCase):
                          "/tmp/fake-home/.local/share/opencode/opencode.db")
         self.assertEqual(fresh.DEFAULT_UNSLOTH_DB,
                          "/tmp/fake-home/.unsloth/studio/studio.db")
+
+
+def read_text(path):
+    """Small file's contents, closed on the way out: the suite must stay clean
+    under -W error::ResourceWarning, so no bare open(...).read() here."""
+    with open(path) as fh:
+        return fh.read()
+
+
+class MigrationTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.state = os.path.join(self.tmp.name, "state")
+        self.legacy = os.path.join(self.tmp.name, "legacy")
+        os.makedirs(self.legacy)
+
+    def test_creates_the_state_dir_and_uses_it_when_empty(self):
+        self.assertEqual(tokenstat.default_store(self.state, self.legacy),
+                         os.path.join(self.state, "usage.db"))
+        self.assertTrue(os.path.isdir(self.state))
+
+    def test_a_legacy_store_moves_into_the_state_dir(self):
+        old = os.path.join(self.legacy, "usage.db")
+        with open(old, "w") as fh:
+            fh.write("history")
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            used = tokenstat.default_store(self.state, self.legacy)
+        self.assertEqual(used, os.path.join(self.state, "usage.db"))
+        self.assertEqual(read_text(used), "history")
+        self.assertFalse(os.path.exists(old))
+        self.assertIn("migrated", err.getvalue())
+
+    def test_wal_and_shm_siblings_move_too(self):
+        for suffix in ("", "-wal", "-shm"):
+            with open(os.path.join(self.legacy, "usage.db" + suffix), "w") as fh:
+                fh.write(suffix)
+        tokenstat.default_store(self.state, self.legacy)
+        for suffix in ("", "-wal", "-shm"):
+            self.assertFalse(os.path.exists(
+                os.path.join(self.legacy, "usage.db" + suffix)))
+
+    def test_migration_is_a_no_op_once_the_store_exists(self):
+        os.makedirs(self.state)
+        keep = os.path.join(self.state, "usage.db")
+        with open(keep, "w") as fh:
+            fh.write("new")
+        with open(os.path.join(self.legacy, "usage.db"), "w") as fh:
+            fh.write("old")
+        tokenstat.default_store(self.state, self.legacy)
+        self.assertEqual(read_text(keep), "new")
+
+    def test_an_unmovable_legacy_store_is_used_in_place(self):
+        old = os.path.join(self.legacy, "usage.db")
+        with open(old, "w") as fh:
+            fh.write("history")
+        with unittest.mock.patch.object(tokenstat.os, "replace",
+                                        side_effect=OSError("cross-device")):
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                used = tokenstat.default_store(self.state, self.legacy)
+        self.assertEqual(used, old)                      # never an empty store
+        self.assertIn("could not migrate", err.getvalue())
+
+    def test_an_unwritable_state_dir_falls_back_to_the_legacy_store(self):
+        old = os.path.join(self.legacy, "usage.db")
+        with open(old, "w") as fh:
+            fh.write("history")
+        with unittest.mock.patch.object(tokenstat.os, "makedirs",
+                                        side_effect=OSError("read-only")):
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                used = tokenstat.default_store(self.state, self.legacy)
+        self.assertEqual(used, old)
+        self.assertIn("could not create", err.getvalue())
+
+    def test_the_module_globals_steer_the_defaults_at_call_time(self):
+        # state/legacy are read from the globals when the function runs, not
+        # frozen into def-time defaults: that is what lets a caller repoint
+        # STATE_DIR and LEGACY_DIR (and what keeps main()'s run out of $HOME
+        # the moment the globals move).
+        with unittest.mock.patch.object(tokenstat, "STATE_DIR", self.state), \
+                unittest.mock.patch.object(tokenstat, "LEGACY_DIR",
+                                           self.legacy):
+            self.assertEqual(tokenstat.default_store(),
+                             os.path.join(self.state, "usage.db"))
+        self.assertTrue(os.path.isdir(self.state))
+
+    def test_legacy_theme_files_move_with_the_store(self):
+        old_themes = os.path.join(self.legacy, "themes")
+        os.makedirs(os.path.join(old_themes, "examples"))
+        with open(os.path.join(old_themes, "mine.json"), "w") as fh:
+            fh.write("{}")
+        with open(os.path.join(old_themes, "README.md"), "w") as fh:
+            fh.write("docs")
+        with open(os.path.join(old_themes, "examples", "gta.json"), "w") as fh:
+            fh.write("{}")
+        with contextlib.redirect_stderr(io.StringIO()):
+            tokenstat.default_store(self.state, self.legacy)
+        self.assertTrue(os.path.exists(
+            os.path.join(self.state, "themes", "mine.json")))
+        self.assertTrue(os.path.exists(os.path.join(old_themes, "README.md")))
+        self.assertTrue(os.path.exists(
+            os.path.join(old_themes, "examples", "gta.json")))
+
+
+class FreshMachineTests(unittest.TestCase):
+    """The end-user promise, end to end: a machine that has never run tokenstat
+    gets a report, and tokenstat's own state appears under $HOME — never
+    beside the script, and never depending on the working directory."""
+
+    def test_runs_from_anywhere_against_an_empty_home(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = os.path.join(tmp, "bin")
+            home = os.path.join(tmp, "home")
+            elsewhere = os.path.join(tmp, "elsewhere")
+            for path in (bin_dir, home, elsewhere):
+                os.makedirs(path)
+            # A copy of the script with no legacy state beside it: this is a
+            # machine that has never seen tokenstat, not this working tree.
+            script = os.path.join(bin_dir, "tokenstat.py")
+            shutil.copyfile(tokenstat.__file__, script)
+            # OpenCode history but no tokenstat state: the dashboard needs a
+            # session to render, and the absent studio.db is what leaves the
+            # two "could not read" warnings on stderr (report mode snapshots
+            # events and runs, so it warns once per step).
+            src_dir = os.path.join(home, ".local", "share", "opencode")
+            os.makedirs(src_dir)
+            make_file_db(os.path.join(src_dir, "opencode.db"),
+                         [src_row(sid="s1", title="alpha")]).close()
+            proc = subprocess.run(
+                [sys.executable, script], cwd=elsewhere,
+                env={"HOME": home, "PATH": "/usr/bin:/bin"},
+                capture_output=True, text=True)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertTrue(os.path.isfile(
+                os.path.join(home, ".tokenstat", "usage.db")))
+            self.assertIn("tokenstat", proc.stdout)
+            self.assertEqual(proc.stderr.count("could not read"), 2)
+            self.assertIn(tokenstat.unsloth_db(home), proc.stderr)
+            # Nothing was written next to the script it ran from.
+            self.assertFalse(os.path.exists(os.path.join(bin_dir, "usage.db")))
 
 
 class SchemaTests(unittest.TestCase):

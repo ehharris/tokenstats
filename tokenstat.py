@@ -1172,9 +1172,12 @@ def _theme_from_obj(obj, origin):
 def load_theme_file(path):
     """Read + validate one theme JSON file; returns (display name, colors)."""
     try:
-        with open(path) as fh:
+        # encoding pinned so a theme file parses identically in every locale;
+        # undecodable bytes (UTF-16-authored, binary misnamed .json) are a
+        # ThemeError like any other parse failure, never a traceback.
+        with open(path, encoding="utf-8") as fh:
             obj = json.load(fh)
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ThemeError(f"{path}: {exc}") from exc
     return _theme_from_obj(obj, path)
 

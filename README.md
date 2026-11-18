@@ -88,26 +88,45 @@ metrics rag the bottom edge in many fonts) padded with a space on either
 side and scaled to the largest row so the mix is visible at a glance (the
 bar's length is the row against the LARGEST row, not the percent tick). On a
 terminal the same glyph bar is additionally colored truecolor, one color per
-glyph: a blue→orange gradient whose transition sits at the row's
-input/output split (runs in `--from-runs` have no in/out split, so their
-bars ride the pure input-blue end, like any other all-input row). Piped
-output, `NO_COLOR`, and `--json` render the same bar without the coloring —
-exactly as before. Rows sort by `SHARE` descending —
+glyph: a gradient from the theme's `tin` into its `tout` whose transition
+sits at the row's input/output split (runs in `--from-runs` have no in/out
+split, so their bars ride the pure input end, like any other all-input row).
+Piped output, `NO_COLOR`, and `--json` render the same bar without the
+coloring — exactly as before. Rows sort by `SHARE` descending —
 biggest share first, ties alphabetical by model — in both the table and
 `--json`; session and daily views keep their chronological order.
 
-Terminal output also wears the sunset theme. Above the table a hero header
-panel summarizes the report — grand total tokens, row count, the in/out
-split in compact form (`7.77M`, `12.3k`), and the date range — and the table
-itself sits in a rounded border panel titled `tokenstat · <view>` (for
-example `tokenstat · sessions` or `tokenstat · daily`). The table header row
-is dimmed, and the token columns are colored by class: `IN` blue, `OUT`
-orange, `CACHE` amber, `TOTAL` bold, `TOK/S` magenta and `SESSIONS` teal (the
-hero's TOK/S and row-count stats wear those same hues). `reconcile` gets the
-panel but no hero header — its rows carry no summed token classes. All of this
-is decoration only: `NO_COLOR` strips the colors and `--json` stays plain.
-Flagged views print a plain table when their output is piped; the bare
-dashboard keeps its panel framing even down a pipe (without color).
+Terminal output is painted by a theme. Above the table a hero header panel
+summarizes the report — grand total tokens, row count, the in/out split in
+compact form (`7.77M`, `12.3k`), and the date range — and the table itself sits
+in a rounded border panel titled `tokenstat · <view>` (for example
+`tokenstat · sessions` or `tokenstat · daily`). The table header row is dimmed,
+and the token columns are colored by class: `IN` and `OUT` wear the theme's
+input/output pair, `CACHE` its cache hue, `TOTAL` its total hue in bold, `TOK/S`
+the accent and `SESSIONS` the share hue (the hero's TOK/S and row-count stats
+wear those same hues). `reconcile` gets the panel but no hero header — its rows
+carry no summed token classes. All of this is decoration only: `NO_COLOR` strips
+the colors and `--json` stays plain. Flagged views print a plain table when
+their output is piped; the bare dashboard keeps its panel framing even down a
+pipe (without color).
+
+Ten themes ship built in: `neon-midnight` (the default — indigo chrome, blue
+`IN` / pink `OUT`, lime cache, violet totals, teal derived stats),
+`tokyo-night`, `dracula`, `nord`, `gruvbox-dark`, `solarized-dark`, `monokai`,
+`one-dark`, and two for light terminals, `solarized-light` and `paper`.
+`--theme=SLUG` paints one run — a display overlay like `--cost`, so
+`--theme=nord` still renders the dashboard — and bare `--theme` lists the slugs
+and marks the default. `--theme-default=SLUG` saves one into
+`themes/config.json` for every later run (bare `--theme-default` saves the
+`--theme=SLUG` of the same invocation); precedence is `--theme` >
+`themes/config.json` > Neon Midnight. An unknown `--theme=SLUG` exits 2 and
+lists what is available, while a saved default that no longer resolves warns
+naming `themes/config.json` and renders in Neon Midnight rather than costing
+you the report. Your own themes are one `.json` each in `themes/` — filename
+stem = slug, and a file shadows a built-in of the same slug; `themes/README.md`
+is the format reference. Color is all a theme touches: piped output, `NO_COLOR`,
+and `--json` stay byte-plain under every theme, and flag-less output is
+byte-identical to the tool from before themes existed.
 
 A bare run renders a compact **dashboard** instead of one table: a hero
 panel with grand totals over all sessions, a `usage by model · top 5 by

@@ -239,6 +239,43 @@ over ALL sessions on the dashboard; rejected with `--from-unsloth`/
 `--from-runs` (their stored cost is always 0.0) and `reconcile`. Spec + plan
 in docs/superpowers/{specs,plans}/2026-11-17-cost-rework*.
 
+Custom themes increment (2026-11-17): the one built-in palette became ten
+selectable ones — `THEMES` maps slug → (display name, colors) for
+`neon-midnight` (`NEON` minus the legacy `track`), `tokyo-night`, `dracula`, `nord`,
+`gruvbox-dark`, `solarized-dark`, `monokai`, `one-dark`, `solarized-light` and
+`paper` (the last two for light terminals). `THEME_ROLES` is the nine-role schema
+(`border`, `accent`, `label`, `num`, `tin`, `tout`, `tcach`, `ttotal`, `tshare`);
+`track` is LEGACY — it stays in `NEON` (a test pins the key set), is read by
+nothing, and is not in the file schema. `main` resolves ONE theme (`resolve_theme`)
+and threads it explicitly through `report_header`/`panel`/`_table_panel`/
+`paint_cells`/`paint_bars`/`paint_header_block` — no mutable module state — and
+the bar gradient takes its HLS endpoints from the theme's `tin`/`tout`
+(`gradient_stops`); `TOKEN_IN_RGB`/`TOKEN_OUT_RGB` are now only Neon Midnight's
+endpoints. CLI: `--theme=SLUG` paints one run (a display overlay like `--cost`,
+so the bare dashboard still renders), bare `--theme` lists the themes and marks
+the default, `--theme-default=SLUG` saves the default into `themes/config.json`
+(`{"default": "<slug>"}`, written by `write_default_theme`, read every run by
+`read_default_theme`; bare `--theme-default` saves the same run's `--theme=SLUG`,
+and a save wins over a list when both flags are given). Both actions
+short-circuit before implicit ingestion and never touch SQLite. Precedence:
+`--theme` > `themes/config.json` > Neon Midnight, and the two failure modes split
+on purpose: an explicit `--theme=<unknown>` is exit 2 naming the slug and
+listing the slugs, while a saved default that no longer resolves warns naming
+`themes/config.json` and renders in Neon Midnight (a cosmetic default never costs
+a report). `themes/` is scanned every run by `scan_themes`: one `.json` per
+theme, filename stem = slug, a folder file shadows a built-in of the same slug,
+a file named exactly `config.json` is skipped (it is the saved default, not a
+theme), and a file that fails to parse or validate is skipped with a one-line
+stderr warning — so an explicitly named broken slug reads as an unknown theme,
+and `--theme`'s list prints the reason. Layout: `themes/*.json` and
+`themes/config.json` are gitignored (personal state); `themes/README.md` is the
+tracked format reference, so a fresh clone has the folder holding only that doc
+and the ten palettes live in `tokenstat.py`.
+Neon Midnight remains the default and flag-off output stays byte-identical
+(existing pins untouched); piped/`NO_COLOR`/`--json` output stays byte-plain
+under every theme. Spec + plan in docs/superpowers/{specs,plans}/
+2026-11-17-custom-themes*.
+
 ## Commands (run from this directory)
 
 ```bash
@@ -256,6 +293,8 @@ python3 tokenstat.py --from-runs [--daily|--total]     # Studio runs, TRUE gener
 python3 tokenstat.py --cost[=<slug>]                   # reference $ overlay (default sonnet-5; slugs + family aliases)
 python3 tokenstat.py --total --real-cost               # stored real USD column (session views only)
 python3 tokenstat.py --total --model --cache           # combined cache column (session views only)
+python3 tokenstat.py --theme[=SLUG]                    # list themes / paint this run (display-only overlay)
+python3 tokenstat.py --theme-default=SLUG              # save the default theme in themes/config.json
 python3 tokenstat.py reconcile                         # lost-history view per model
 python3 tokenstat.py record | import-unsloth           # explicit snapshots (import-unsloth = events + runs; exit 1 if source unreadable)
 python3 -m unittest test_tokenstat -v                  # tests (~0.15s, no deps)

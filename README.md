@@ -169,8 +169,9 @@ most-recent sessions) is unchanged.
 `--cost[=TIER]` adds a `COST` column (formatted `$X.XX`) and, under `--json`,
 a `cost_est` field to any report except `reconcile`, which rejects the flag.
 Bare `--cost` means `--cost=sonnet-5`. The column header names the model the
-pricing is pinned to — e.g. `COST · Claude Sonnet 5 Prices` — so a stale
-price table is visible. `TIER` is a model slug (`haiku-4.5`, `sonnet-5`,
+pricing is pinned to, wrapped over two lines — `COST  ·` above e.g.
+`Claude Sonnet 5 Prices` — so a stale price table is visible while the column
+stays narrow. `TIER` is a model slug (`haiku-4.5`, `sonnet-5`,
 `opus-5`, `gpt-5.1-codex-mini`, `gpt-5.1-codex`, `deepseek-v3.2`,
 `qwen-turbo`, `qwen-plus`, `qwen-max`) or a family name that resolves to the
 provider's mid-tier model (`claude`→sonnet-5, `codex`/`openai`→gpt-5.1-codex,

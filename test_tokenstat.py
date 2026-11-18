@@ -9,6 +9,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import tokenstat
 import unittest
 import unittest.mock
@@ -3326,6 +3327,40 @@ class ThemeFileTests(unittest.TestCase):
         self.assertNotIn("config", found)
         self.assertEqual(warnings, [])
         self.assertEqual(set(self.BUILTIN_SLUGS) | {"mine"}, set(found))
+
+
+class ThemeExampleTests(unittest.TestCase):
+    """themes/examples/ ships reference themes in git: they must stay loadable,
+    or the docs teach a format that no longer parses."""
+
+    EXAMPLES = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "themes", "examples")
+
+    def test_every_example_theme_validates(self):
+        files = sorted(f for f in os.listdir(self.EXAMPLES)
+                       if f.endswith(".json"))
+        self.assertTrue(files, "themes/examples/ should ship an example")
+        for fname in files:
+            with self.subTest(theme=fname):
+                name, colors = tokenstat.load_theme_file(
+                    os.path.join(self.EXAMPLES, fname))
+                self.assertTrue(name.strip(), fname)
+                self.assertEqual(set(colors), set(THEME_ROLES), fname)
+
+    def test_examples_are_not_scanned_as_themes(self):
+        # A subfolder is a library, not an active theme: scan_themes lists one
+        # folder and does not walk, so an example only becomes a slug when the
+        # file itself is copied into themes/.
+        with tempfile.TemporaryDirectory() as tmp:
+            nested = os.path.join(tmp, "examples")
+            os.makedirs(nested)
+            src = os.path.join(self.EXAMPLES, "gta-vi.json")
+            with open(src, encoding="utf-8") as fh:
+                text = fh.read()
+            with open(os.path.join(nested, "gta-vi.json"), "w",
+                      encoding="utf-8") as fh:
+                fh.write(text)
+            self.assertNotIn("gta-vi", scan_themes(dir=tmp))
 
 
 class ThemeConfigTests(unittest.TestCase):

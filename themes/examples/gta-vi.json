@@ -1,0 +1,14 @@
+{
+  "name": "GTA VI",
+  "colors": {
+    "border": "#42235C",
+    "accent": "#C81DA0",
+    "label": "#A79BC9",
+    "num": "#FFE9F4",
+    "tin": "#00E5D0",
+    "tout": "#FF4FA3",
+    "tcach": "#FF8A3D",
+    "ttotal": "#B57BFF",
+    "tshare": "#FFE45E"
+  }
+}

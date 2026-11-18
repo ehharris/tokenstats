@@ -4367,6 +4367,24 @@ class TurnIndexTests(unittest.TestCase):
         self.assertEqual(_turn_index(["assistant", "assistant"], 2, False), -1)
 
 
+class FilterHelperTests(unittest.TestCase):
+    """Shared filter primitives: one LIKE pattern builder and one date window,
+    used by all three _*_filters builders."""
+
+    def test_like_pattern_is_lowered_and_escaped(self):
+        self.assertEqual(tokenstat._like_pattern("A%B_C"), "%a\\%b\\_c%")
+
+    def test_date_clauses_are_inclusive_and_until_day_end(self):
+        since, until = ms(2026, 11, 1), ms(2026, 11, 3)
+        where, params = tokenstat._date_clauses("time_created", since, until)
+        self.assertEqual(where, ["time_created >= ?", "time_created < ?"])
+        self.assertEqual(params, [since, tokenstat._day_end_ms(until)])
+
+    def test_date_clauses_are_empty_when_unbounded(self):
+        self.assertEqual(tokenstat._date_clauses("created_at", None, None),
+                         ([], []))
+
+
 class LikeEscapingTests(unittest.TestCase):
     """LIKE metacharacters in --model patterns are escaped before wrapping,
     so they match literally and can never act as wildcards."""

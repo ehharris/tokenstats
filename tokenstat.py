@@ -1191,6 +1191,11 @@ def scan_themes(dir=THEMES_DIR, warn=None):
         for fname in sorted(os.listdir(dir)):
             if not fname.endswith(".json"):
                 continue
+            # config.json is the saved-default file that lives in this same
+            # folder (see THEME_CONFIG), not a theme: skip it so a scan neither
+            # warns about it nor lists "config" as an available slug.
+            if fname == "config.json":
+                continue
             try:
                 found[os.path.splitext(fname)[0]] = \
                     load_theme_file(os.path.join(dir, fname))

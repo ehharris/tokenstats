@@ -23,6 +23,9 @@ import time
 DEFAULT_SRC = os.path.expanduser("~/.local/share/opencode/opencode.db")
 DEFAULT_UNSLOTH_DB = os.path.expanduser("~/.unsloth/studio/studio.db")
 MODEL_ANY = object()  # --model with no value (valid only with --total)
+SESSIONS_BARE = object()  # --sessions with no value; argparse skips type on
+# a non-str const, so the sentinel distinguishes the valueless flag from
+# --sessions=0 (a plain string const would be run through type=int).
 DEFAULT_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "usage.db")
 
 TOKEN_COLUMNS = (
@@ -854,6 +857,30 @@ def query_sessions(dest, model=None, since_ms=None, until_ms=None,
     return rows
 
 
+def most_recent(rows, n):
+    """`rows` oldest-first in, newest-first out, truncated to `n`;
+    n <= 0 keeps all. The one recency step shared by the default
+    dashboard's session panel and the --sessions list view."""
+    rev = list(reversed(rows))
+    return rev[:n] if n else rev
+
+
+def _sessions_limit(value, daily, total):
+    """Resolve --sessions into the `limit=` the query functions take
+    (None = flag absent, 0 = uncapped, N = N most recent).
+
+    A valueless --sessions lists the 20 most recent sessions, but means ALL
+    sessions in the aggregate views: with --daily/--total the view is about
+    coverage, not recency. `total` is the EFFECTIVE total flag — bare
+    --model is the --total shortcut and counts, so a valueless --sessions
+    with `--sessions --model` also means all sessions."""
+    if value is None:
+        return None
+    if value is SESSIONS_BARE:
+        return 0 if (daily or total) else 20
+    return value
+
+
 SESSION_COLUMNS = [
     ("DATE", "date", "text"), ("MODEL", "model", "text"),
     ("IN", "tokens_input", "int"), ("OUT", "tokens_output", "int"),
@@ -1347,6 +1374,10 @@ def main(argv):
     parser.add_argument("--total", action="store_true",
                         help="grand total (with --model: per-model totals) "
                              "instead of per-session rows")
+    parser.add_argument("--sessions", nargs="?", const=SESSIONS_BARE,
+                        type=int, default=None, metavar="N",
+                        help="scope to the N most recent sessions "
+                             "(default 20 when listing, all when aggregating)")
     parser.add_argument("--json", action="store_true", dest="as_json",
                         help="emit JSON instead of a table (rows carry"
                              " tok_s; --cost adds cost_est)")
@@ -1443,6 +1474,7 @@ def main(argv):
         compact_dash = (args.command is None and args.model is None
                         and not args.daily and not args.total
                         and not args.from_unsloth and not args.from_runs
+                        and args.sessions is None
                         and args.since is None and args.until is None
                         and args.min_in is None and args.min_out is None)
         if compact_dash and not args.as_json:
@@ -1453,7 +1485,7 @@ def main(argv):
             model_rows = add_shares(total_totals(dest, by_model=True))
             model_rows.sort(key=lambda r: -r["share"])  # stable: ties keep
             # SQL's alphabetical-by-model order (mirrors the share view).
-            sess_rows = list(reversed(all_rows))[:5]
+            sess_rows = most_recent(all_rows, 5)
             model_rows = model_rows[:5]
             color = _color_enabled(sys.stdout, os.environ)
             m_cols, s_cols = SHARE_COLUMNS, SESSION_COLUMNS
@@ -1494,6 +1526,15 @@ def main(argv):
             parser.error("--cache requires OpenCode session rows; Unsloth"
                          " event/run sources fold cache hits into prompt"
                          " tokens with no split")
+        if args.sessions is not None and (args.from_unsloth or args.from_runs):
+            parser.error("--sessions applies to OpenCode session views only;"
+                         " unsupported with --from-unsloth/--from-runs")
+        # The SQL layer can't guard this: a negative LIMIT silently
+        # degenerates to no cap, so the CLI is the only rejection point.
+        limit = _sessions_limit(args.sessions, args.daily, want_total)
+        if limit is not None and limit < 0:
+            parser.error("--sessions must be a non-negative number of"
+                         " sessions (0 = all)")
         if args.command == "reconcile":
             unsupported = [flag for flag, val in (
                 ("--since", args.since), ("--until", args.until),
@@ -1502,6 +1543,7 @@ def main(argv):
                 + (["--from-unsloth"] if args.from_unsloth else []) \
                 + (["--from-runs"] if args.from_runs else []) \
                 + (["--total"] if args.total else []) \
+                + (["--sessions"] if args.sessions is not None else []) \
                 + (["--cost"] if args.cost else []) \
                 + (["--cache"] if args.cache else [])
             if unsupported:
@@ -1521,7 +1563,8 @@ def main(argv):
                     if args.from_unsloth else
                     total_totals(dest, model=model, since_ms=args.since,
                                  until_ms=args.until, min_in=args.min_in,
-                                 min_out=args.min_out, by_model=model_any))
+                                 min_out=args.min_out, by_model=model_any,
+                                 limit=limit))
             rows = add_shares(rows)
             rows.sort(key=lambda r: -r["share"])  # biggest share first.
             # Ties keep SQL's alphabetical-by-model order (stable sort).
@@ -1543,10 +1586,15 @@ def main(argv):
         else:
             rows = (daily_totals(dest, model=model, since_ms=args.since,
                                  until_ms=args.until, min_in=args.min_in,
-                                 min_out=args.min_out) if args.daily else
+                                 min_out=args.min_out, limit=limit)
+                    if args.daily else
                     query_sessions(dest, model=model, since_ms=args.since,
                                    until_ms=args.until, min_in=args.min_in,
-                                   min_out=args.min_out))
+                                   min_out=args.min_out, limit=limit))
+            if not args.daily and args.sessions is not None:
+                # The list view renders newest first; --json serialises the
+                # same rows, so the reversal happens on the row list itself.
+                rows = most_recent(rows, limit)
             columns = DAILY_COLUMNS if args.daily else SESSION_COLUMNS
         # Opt-in --cost overlay: reference pricing on row copies, never stored
         # data; reconcile keeps its own reject list above. The share-view flag
@@ -1575,6 +1623,9 @@ def main(argv):
         else:
             title = "sessions"
             hero_unit = "sessions"
+            if args.sessions is not None:
+                title = (f"sessions \u00b7 {limit} most recent" if limit
+                         else "sessions \u00b7 all")
         if args.cost and columns is not RECON_COLUMNS:
             rows = annotate_cost(rows, args.cost_tier)
             columns = columns + [COST_COLUMN]

@@ -3430,5 +3430,217 @@ class HeroUnitTests(unittest.TestCase):
         self.assertIn("2 runs", self.run_hero("--from-runs"))
 
 
+class CliSessionsTests(unittest.TestCase):
+    """--sessions[=N] scopes session views to the N most recent sessions."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = os.path.join(self.tmp.name, "usage.db")
+        self.no_udb = os.path.join(self.tmp.name, "no-studio.db")
+        self.src = os.path.join(self.tmp.name, "src.db")
+        # 26 sessions of distinct time_created, s00 oldest: --sessions
+        # (default 20) must drop s00..s05 and keep s06..s25.
+        base = ms(2026, 11, 1)
+        self.addCleanup(make_file_db(self.src, [
+            src_row(sid=f"s{i:02d}", title=f"t-{i:02d}",
+                    created=base + i * 3_600_000)   # hourly, all distinct
+            for i in range(26)]).close)
+
+    def run_main(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(argv)
+        return code, out.getvalue(), err.getvalue()
+
+    def colored(self, argv):
+        # Titles/heroes only print on a tty; fake one, then strip colour.
+        with unittest.mock.patch("tokenstat._color_enabled",
+                                 lambda *a: True):
+            return self.run_main(argv)
+
+    def sess(self, *extra):
+        return self.run_main(
+            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb]
+            + list(extra))
+
+    def sess_colored(self, *extra):
+        return self.colored(
+            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb]
+            + list(extra))
+
+    def plain(self, out):
+        return _ANSI_RE.sub("", out)
+
+    def assert_exit_2(self, *extra):
+        """parser.error paths: exit 2, stderr names --sessions, no table.
+
+        Calls main directly (as CliTotalTests' exit-2 pins do): run_main
+        wraps its own stderr, which a raised SystemExit never reaches."""
+        err, out = io.StringIO(), io.StringIO()
+        with self.assertRaises(SystemExit) as cm, \
+                contextlib.redirect_stderr(err), \
+                contextlib.redirect_stdout(out):
+            main(["--db", self.db, "--src", self.src,
+                  "--unsloth-db", self.no_udb] + list(extra))
+        self.assertEqual(cm.exception.code, 2)
+        self.assertIn("--sessions", err.getvalue())
+        return err.getvalue(), out.getvalue()
+
+    # -- direct unit pins for the two new helpers --
+
+    def test_most_recent_reverses_and_truncates(self):
+        from tokenstat import most_recent
+        rows = [{"n": 1}, {"n": 2}, {"n": 3}]
+        self.assertEqual(most_recent(rows, 2), [{"n": 3}, {"n": 2}])
+        self.assertEqual(most_recent(rows, 0), rows[::-1])   # 0 = all
+        self.assertEqual(most_recent(rows, 9), rows[::-1])
+        self.assertEqual(rows, [{"n": 1}, {"n": 2}, {"n": 3}])  # no mutation
+
+    def test_sessions_limit_resolver(self):
+        from tokenstat import SESSIONS_BARE, _sessions_limit
+        self.assertIsNone(_sessions_limit(None, False, False))
+        self.assertEqual(_sessions_limit(SESSIONS_BARE, False, False), 20)
+        self.assertEqual(_sessions_limit(SESSIONS_BARE, True, False), 0)
+        self.assertEqual(_sessions_limit(SESSIONS_BARE, False, True), 0)
+        self.assertEqual(_sessions_limit(5, False, False), 5)
+        self.assertEqual(_sessions_limit(0, False, False), 0)
+        self.assertEqual(_sessions_limit(-1, False, False), -1)  # CLI rejects
+
+    # -- the list view --
+
+    def test_bare_flag_lists_20_newest_first(self):
+        code, out, _ = self.sess_colored("--sessions")
+        self.assertEqual(code, 0)
+        text = self.plain(out)
+        self.assertIn("sessions \u00b7 20 most recent", text)
+        for gone in (f"t-{i:02d}" for i in range(6)):
+            self.assertNotIn(gone, text)
+        for kept in ("t-06", "t-12", "t-25"):
+            self.assertIn(kept, text)
+        self.assertLess(text.index("t-25"), text.index("t-06"))
+
+    def test_five_form_lists_five(self):
+        code, out, _ = self.sess_colored("--sessions=5")
+        self.assertEqual(code, 0)
+        text = self.plain(out)
+        self.assertIn("sessions \u00b7 5 most recent", text)
+        for kept in ("t-21", "t-22", "t-23", "t-24", "t-25"):
+            self.assertIn(kept, text)
+        for gone in ("t-20", "t-00"):
+            self.assertNotIn(gone, text)
+        self.assertLess(text.index("t-25"), text.index("t-21"))
+
+    def test_space_form_behaves_identically(self):
+        _, eq_out, _ = self.sess("--sessions=5")
+        _, sp_out, _ = self.sess("--sessions", "5")
+        self.assertEqual(eq_out, sp_out)
+
+    def test_zero_lists_all(self):
+        code, out, _ = self.sess_colored("--sessions=0")
+        self.assertEqual(code, 0)
+        text = self.plain(out)
+        self.assertIn("sessions \u00b7 all", text)
+        for i in range(26):
+            self.assertIn(f"t-{i:02d}", text)
+        self.assertLess(text.index("t-25"), text.index("t-00"))
+
+    def test_sessions_does_not_trigger_dashboard(self):
+        code, out, _ = self.sess("--sessions")
+        self.assertEqual(code, 0)
+        self.assertNotIn("usage by model \u00b7 top 5 by share", out)
+
+    def test_negative_exits_2_without_a_table(self):
+        err, out = self.assert_exit_2("--sessions=-1")
+        self.assertEqual(out.strip(), "")  # no table printed
+
+    def test_non_integer_exits_2(self):
+        self.assert_exit_2("--sessions=abc")
+
+    def test_unsupported_with_from_unsloth(self):
+        err, _ = self.assert_exit_2("--from-unsloth", "--sessions")
+        self.assertIn("--from-unsloth", err)
+
+    def test_unsupported_with_from_runs(self):
+        err, _ = self.assert_exit_2("--from-runs", "--sessions")
+        self.assertIn("--from-runs", err)
+
+    def test_unsupported_with_reconcile(self):
+        err, _ = self.assert_exit_2("reconcile", "--sessions")
+        self.assertIn("reconcile", err)
+
+    # -- aggregates under the cap --
+
+    def test_total_three_totals_only_those_three(self):
+        _, out, _ = self.sess("--sessions=3", "--json")
+        listed = json.loads(out)
+        self.assertEqual(len(listed), 3)
+        _, out, _ = self.sess("--sessions=3", "--total", "--json")
+        (grand,) = json.loads(out)
+        self.assertEqual(grand["total"],
+                         sum(r["total"] for r in listed))
+
+    def test_sessions_total_equals_plain_total(self):
+        _, bare, _ = self.sess("--total")
+        _, capped, _ = self.sess("--sessions", "--total")
+        self.assertEqual(bare, capped)
+
+    def test_sessions_daily_equals_plain_daily(self):
+        _, bare, _ = self.sess("--daily")
+        _, capped, _ = self.sess("--sessions", "--daily")
+        self.assertEqual(bare, capped)
+
+    def test_daily_three_spans_only_those_sessions_days(self):
+        _, out, _ = self.sess("--sessions=3", "--json")
+        spans = sorted({r["date"] for r in json.loads(out)})
+        _, out, _ = self.sess("--sessions=3", "--daily", "--json")
+        days = json.loads(out)
+        self.assertEqual(sorted(d["date"] for d in days), spans)
+
+    # -- model filter and JSON --
+
+    def test_model_pattern_lists_four_most_recent_matching(self):
+        lemon = os.path.join(self.tmp.name, "lemon.db")
+        base = ms(2026, 11, 1)
+        self.addCleanup(make_file_db(lemon, [
+            src_row(sid=f"L{i}", model=LEMONADE_JSON, title=f"t-L{i}",
+                    created=base + i * 3_600_000)
+            for i in range(6)]
+            + [src_row(sid="u1", title="t-u1", created=base + 7 * 3_600_000)]
+        ).close)
+        db = os.path.join(self.tmp.name, "usage2.db")
+        code, out, _ = self.colored(
+            ["--db", db, "--src", lemon, "--unsloth-db", self.no_udb,
+             "--sessions=4", "--model", "lemonade"])
+        self.assertEqual(code, 0)
+        text = self.plain(out)
+        self.assertIn("sessions \u00b7 4 most recent", text)
+        for kept in ("t-L2", "t-L3", "t-L4", "t-L5"):
+            self.assertIn(kept, text)
+        for gone in ("t-L0", "t-L1", "t-u1"):
+            self.assertNotIn(gone, text)
+
+    def test_json_emits_20_newest_first(self):
+        code, out, _ = self.sess("--sessions", "--json")
+        self.assertEqual(code, 0)
+        rows = json.loads(out)
+        self.assertEqual(len(rows), 20)
+        self.assertEqual([r["title"] for r in rows],
+                         [f"t-{i:02d}" for i in range(25, 5, -1)])
+
+    # -- dashboard regression --
+
+    def test_bare_dashboard_still_five_most_recent(self):
+        code, out, _ = self.sess_colored()
+        self.assertEqual(code, 0)
+        text = self.plain(out)
+        self.assertIn("sessions \u00b7 5 most recent", text)
+        for kept in ("t-21", "t-22", "t-23", "t-24", "t-25"):
+            self.assertIn(kept, text)
+        for gone in ("t-20", "t-00"):
+            self.assertNotIn(gone, text)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -53,7 +53,8 @@ runs have no in/out split; `--daily` buckets by started_at; `--total`/bare
 supports `--model`, `--since`, `--until`; rejects `--min-in`/`--min-out`);
 derived `tok_s` on every report-view row plus a `TOK/S` column (reconcile
 excepted — session rows show the unweighted mean of their per-turn rates,
-Σ(output+reasoning)/Σ(streamed−firstToken) per turn then averaged across turns
+Σ(output+reasoning)/Σ(streamed−firstToken, or streamed−created when firstToken
+is NULL) per turn then averaged across turns
 — the number OpenCode shows per prompt — blank when no turn qualifies (no step
 rows, a never-streamed step, a sub-second span, or zero generated tokens),
 deliberately NO wall-clock fallback; per-event rows have no
@@ -146,12 +147,13 @@ Turn-level TOK/S increment (2026-11-17): new store table `opencode_steps`
 filled by `import_opencode_steps` inside `record()` — one row per OpenCode
 assistant message. `turn` is a dense 0-based ordinal (first-appearance order of
 the input boundary returned by the ported `_turn_index`), `step_ms` is the step
-duration (streamed − firstToken, NULL when the step never streamed) and
-`tokens_generated` = output+reasoning. Session `tok_s` is now the UNWEIGHTED
-MEAN of the session's per-turn rates — Σ(tokens_generated)*1000/Σ(step_ms) per
-turn (a turn is excluded when any step never streamed, when it moved no
-tokens, or when its pooled span is < 1 s), then averaged across the surviving
-turns — the number OpenCode shows per prompt; the reference session
+duration (streamed − firstToken, or streamed − created when firstToken is NULL,
+NULL when the step never streamed) and `tokens_generated` = output+reasoning.
+Session `tok_s` is now the UNWEIGHTED MEAN of the session's per-turn rates —
+Σ(tokens_generated)*1000/Σ(step_ms) per turn (a turn is excluded when any step
+never streamed, when it moved no tokens, or when its pooled span is < 1 s), then
+averaged across the surviving turns — the number OpenCode shows per prompt; the
+reference session
 `ses_e14c64b0bffe3hKJ8qniK45xCS` reads 70.6 TOK/S (was 13.1 on the old
 wall-clock basis). No wall-clock fallback: mixing the two bases is the bug
 this replaces. Session and aggregate `rate_weight` is Σ generated tokens (see
@@ -217,8 +219,9 @@ python3 -W error::ResourceWarning -m unittest test_tokenstat   # strict variant:
    `step_ms`/`tokens_generated` kept at the monotonic max and rows never
    deleted, so ingested steps survive OpenCode pruning `session_message`
    (a NULL `step_ms` means "never streamed" and never maxes against a real
-   duration). Re-running any import is a provable no-op. Reports always SUM
-   over distinct keys.
+   duration). Re-running any import is a provable no-op (the numeric token
+   columns and step rows are unchanged; `last_seen` is the one field that
+   moves, and it is not a token count). Reports always SUM over distinct keys.
 2. **The two sources describe the same traffic** — never sum them together.
    `reconcile` exists to compare them; positive gap = OpenCode lost it,
    negative gap = Studio log missing it (rotation/retry).

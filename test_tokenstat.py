@@ -2310,6 +2310,30 @@ class CostTests(unittest.TestCase):
         self.assertEqual(resolve_cost_tier("sonnet-5"), "sonnet-5")
 
 
+class CostFormatTests(unittest.TestCase):
+    """cost-kind cells render $X.XX (2 decimals, human decision 2026-11-17)."""
+
+    def test_render_table_cost_two_decimals(self):
+        from tokenstat import render_table
+        table = render_table([{"cost_est": 14.7}],
+                             [("COST", "cost_est", "cost")])
+        # "$14.70" alone would also match the old "$14.7000" — pin the cell.
+        self.assertIn("$14.70\n", table)
+        self.assertNotIn("$14.7000", table)
+
+    def test_render_table_sub_cent_cost_renders_zero(self):  # review-focus pin
+        from tokenstat import render_table
+        table = render_table([{"cost_est": 0.004}],
+                             [("COST", "cost_est", "cost")])
+        self.assertIn("$0.00\n", table)
+        self.assertNotIn("$0.0040", table)
+
+    def test_paint_cells_cost_two_decimals(self):
+        from tokenstat import paint_cells
+        (row,) = paint_cells([{"cost_est": 14.7}])
+        self.assertIn("$14.70\x1b", row["cost_est"])  # cell ends at the reset
+
+
 class CacheOverlayTests(unittest.TestCase):
     """annotate_cache/with_cache: display-only CACHE overlay primitives."""
 

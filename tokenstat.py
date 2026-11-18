@@ -1123,7 +1123,7 @@ def paint_cells(rows, theme=NEON):
             return f"{value:,}"
         if kind == "rate":
             return f"{value:.1f}"
-        return f"${value:.4f}"               # cost_est
+        return f"${value:.2f}"               # cost_est / cost
 
     out = []
     for row in rows:
@@ -1261,7 +1261,7 @@ def render_table(rows, columns=None):
         if kind == "rate":
             return f"{value:.1f}"
         if kind == "cost":
-            return f"${value:.4f}"
+            return f"${value:.2f}"
         if kind == "int":
             return f"{value:,}"
         if kind == "title":

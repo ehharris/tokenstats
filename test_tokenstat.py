@@ -3693,9 +3693,9 @@ class CliThemeTests(unittest.TestCase):
         self.assertIn("broken.json", err)
 
     def test_a_stale_default_marks_no_line(self):
-        # a saved slug whose file is gone marks nothing in the list (the marker
-        # only ever lands on a listed theme); the run itself is resolve_theme's
-        # ThemeError to raise, which Task 5 already pins.
+        # a saved slug whose file is gone marks nothing in the list: the marker
+        # only ever lands on a listed theme. The run itself warns and falls back
+        # (pinned by test_a_stale_default_warns_and_still_renders).
         write_default_theme(self.config, "gone")
         _, out, _ = self.run_main(["--theme"])
         self.assertEqual(len([ln for ln in out.splitlines()
@@ -3720,6 +3720,17 @@ class CliThemeTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("default theme: nord (Nord)", out)
         self.assertEqual(read_default_theme(self.config), "nord")
+
+    def test_theme_default_wins_over_the_list_action(self):
+        # Both flags at once: `--theme=SLUG --theme-default` is the documented
+        # "save this run's theme" form, so the save short-circuits before the
+        # list is ever considered — the list must not be printed instead.
+        for argv in (["--theme=nord", "--theme-default"],
+                     ["--theme-default=nord", "--theme"]):
+            code, out, _ = self.run_main(argv)
+            self.assertEqual(code, 0, argv)
+            self.assertEqual(out, "default theme: nord (Nord)\n", argv)
+            self.assertEqual(read_default_theme(self.config), "nord")
 
     def test_theme_default_without_a_theme_errors(self):
         err = self.exit_two(["--theme-default"])
@@ -3748,6 +3759,37 @@ class CliThemeTests(unittest.TestCase):
         self.assertIn("reconcile", err)
         self.assertIn("available", err)
         self.assertNotIn("invalid choice", err)
+
+    def test_a_stale_default_warns_and_still_renders(self):
+        # A saved default naming a theme file that no longer exists is a config
+        # that cannot be used: warn naming the config, and render with Neon
+        # Midnight. The data is fine — a cosmetic default must not cost the user
+        # their report until they hand-edit a file.
+        write_default_theme(self.config, "gone")
+        code, out, err = self.run_main(self.base)
+        self.assertEqual(code, 0)
+        self.assertIn("tokens \u00b7", _ANSI_RE.sub("", out))   # the report rendered
+        self.assertIn("config.json", err)
+        self.assertIn("gone", err)                             # and why
+        self.assertNotIn("\x1b", out)                          # piped stays plain
+        # the fallback is the built-in default theme, painted on a terminal
+        code, out, _ = self.colored_main(self.base + ["--total", "--model"])
+        self.assertEqual(code, 0)
+        self.assertIn("38;2;{};{};{}m".format(*NEON["tin"]), out)
+
+    def test_an_explicit_missing_theme_still_fails_loudly(self):
+        # The fallback is only for the saved default: a slug the user typed this
+        # run is their own request, so an unknown one stays a hard exit 2.
+        write_default_theme(self.config, "gone")
+        err = self.exit_two(self.base + ["--theme=gone"])
+        self.assertIn("gone", err)
+        # an explicit, valid theme wins over the broken config and says nothing
+        # about it (the fixture's absent studio.db warns by design — the config
+        # must not add to that noise)
+        code, out, err = self.colored_main(self.base + ["--theme=nord"])
+        self.assertEqual(code, 0)
+        self.assertIn("38;2;{};{};{}m".format(*NORD["tin"]), out)
+        self.assertNotIn("config.json", err)
 
     # -- painting --
 

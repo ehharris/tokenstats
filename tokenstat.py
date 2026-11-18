@@ -1777,13 +1777,25 @@ def main(argv):
             print(f"{slug} \u2014 {found[slug][0]}"
                   + (" (default)" if slug == default else ""))
         return 0
-    # Precedence: --theme=SLUG > themes/config.json > Neon Midnight (the None
-    # case resolve_theme already handles).
-    wanted = args.theme or read_default_theme(THEME_CONFIG, warn=theme_warn)
-    try:
-        theme = resolve_theme(wanted, THEMES_DIR)
-    except ThemeError as exc:
-        parser.error(str(exc))
+    # Precedence: --theme=SLUG > themes/config.json > Neon Midnight. The two
+    # sources fail differently on purpose: a slug typed for this run is the
+    # user's own request, so an unknown one is a hard exit 2; a *saved* default
+    # that cannot be resolved is a config that cannot be used — warn naming the
+    # file and render with Neon Midnight, because a cosmetic default must not
+    # cost the user a report whose data is fine.
+    if args.theme:
+        try:
+            theme = resolve_theme(args.theme, THEMES_DIR)
+        except ThemeError as exc:
+            parser.error(str(exc))
+    else:
+        try:
+            theme = resolve_theme(read_default_theme(THEME_CONFIG,
+                                                     warn=theme_warn),
+                                  THEMES_DIR)
+        except ThemeError as exc:
+            theme_warn(f"warning: {THEME_CONFIG}: {exc}; using Neon Midnight")
+            theme = NEON
 
     dest = None
     try:

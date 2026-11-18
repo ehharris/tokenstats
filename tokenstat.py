@@ -648,18 +648,17 @@ def daily_events(dest, model=None, since_ms=None, until_ms=None,
     Events carry no duration, so there is no per-row rate to average: tok_s
     spans the bucket's created_at range instead."""
     where, params = _event_filters(model, since_ms, until_ms, min_in, min_out)
-    sql = ("SELECT date(created_at/1000, 'unixepoch', 'localtime') AS day,"
-           " COUNT(*), SUM(prompt_tokens), SUM(completion_tokens),"
-           " MIN(created_at), MAX(created_at) FROM unsloth_events")
-    if where:
-        sql += " WHERE " + " AND ".join(where)
-    sql += " GROUP BY day ORDER BY day ASC"
-    return [
-        {"date": day, "sessions": n, "tokens_input": p or 0,
-         "tokens_output": c or 0, "total": (p or 0) + (c or 0), "cost": 0.0,
-         "tok_s": _aggregate_rate((p or 0) + (c or 0), first, last)}
-        for day, n, p, c, first, last in dest.execute(sql, params)
-    ]
+    return _grouped_aggregates(
+        dest, "unsloth_events",
+        "date(created_at/1000, 'unixepoch', 'localtime')",
+        " COUNT(*), SUM(prompt_tokens), SUM(completion_tokens),"
+        " MIN(created_at), MAX(created_at)", where, params, None,
+        lambda day, counts, rate, weight: {
+            "date": day, "sessions": counts[0], "tokens_input": counts[1] or 0,
+            "tokens_output": counts[2] or 0,
+            "total": (counts[1] or 0) + (counts[2] or 0), "cost": 0.0,
+            "tok_s": _aggregate_rate((counts[1] or 0) + (counts[2] or 0),
+                                     counts[3], counts[4])})
 
 
 def total_events(dest, model=None, since_ms=None, until_ms=None,
@@ -670,26 +669,19 @@ def total_events(dest, model=None, since_ms=None, until_ms=None,
     with no per-event duration to average, tok_s spans each row's created_at
     range."""
     where, params = _event_filters(model, since_ms, until_ms, min_in, min_out)
-    tail = " WHERE " + " AND ".join(where) if where else ""
     sums = (" COUNT(*), SUM(prompt_tokens), SUM(completion_tokens),"
             " MIN(created_at), MAX(created_at)")
+    builder = lambda m, counts, rate, weight: {
+        "model": m, "sessions": counts[0], "tokens_input": counts[1] or 0,
+        "tokens_output": counts[2] or 0,
+        "total": (counts[1] or 0) + (counts[2] or 0), "cost": 0.0,
+        "tok_s": _aggregate_rate((counts[1] or 0) + (counts[2] or 0),
+                                 counts[3], counts[4])}
     if not model and not by_model:
-        n, p, c, first, last = dest.execute(
-            "SELECT" + sums + " FROM unsloth_events" + tail, params).fetchone()
-        if not n:
-            return []
-        p, c = p or 0, c or 0
-        return [{"model": "(all)", "sessions": n, "tokens_input": p,
-                 "tokens_output": c, "total": p + c, "cost": 0.0,
-                 "tok_s": _aggregate_rate(p + c, first, last)}]
-    return [
-        {"model": m, "sessions": n, "tokens_input": p or 0,
-         "tokens_output": c or 0, "total": (p or 0) + (c or 0), "cost": 0.0,
-         "tok_s": _aggregate_rate((p or 0) + (c or 0), first, last)}
-        for m, n, p, c, first, last in dest.execute(
-            "SELECT model," + sums + " FROM unsloth_events" + tail
-            + " GROUP BY model ORDER BY model ASC", params)
-    ]
+        return _total_aggregates(dest, "unsloth_events", sums, where, params,
+                                 None, builder)
+    return _total_aggregates(dest, "unsloth_events", sums, where, params,
+                             None, builder, group_key_sql="model")
 
 
 def _run_filters(model, since_ms, until_ms):
@@ -775,6 +767,53 @@ def _run_rate_groups(dest, key_sql, where, params):
     return groups
 
 
+def _grouped_aggregates(dest, table, key_sql, sums, where, params, groups,
+                        row_builder):
+    """One engine for every grouped aggregate view: SELECT key + `sums`,
+    GROUP BY key ORDER BY key ASC, one row dict per group from
+    row_builder(key, counts, rate, weight).
+
+    `counts` is the aggregate tuple (the `sums` columns of the row). `groups`
+    maps a key to the (rate, weight) pairs to average for that row; None
+    means the family has no per-row rate to weight, and rate/weight arrive
+    None. Rows come back in query order."""
+    sql = "SELECT " + key_sql + " AS key," + sums + " FROM " + table
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " GROUP BY key ORDER BY key ASC"
+    rows = []
+    for row in dest.execute(sql, params):
+        key, counts = row[0], tuple(row[1:])
+        if groups is None:
+            rate = weight = None
+        else:
+            rate, weight = _weighted_mean_rate_and_weight(groups.get(key, []))
+        rows.append(row_builder(key, counts, rate, weight))
+    return rows
+
+
+def _total_aggregates(dest, table, sums, where, params, groups, row_builder,
+                      group_key_sql=None):
+    """All-time aggregates: with `group_key_sql`, the same grouped rows
+    _grouped_aggregates would build; without it, one grand-total row keyed
+    "(all)" (empty when nothing matches — COUNT(*) is 0), whose rate group is
+    groups.get("(all)", [])."""
+    if group_key_sql is not None:
+        return _grouped_aggregates(dest, table, group_key_sql, sums, where,
+                                   params, groups, row_builder)
+    sql = "SELECT" + sums + " FROM " + table
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    found = dest.execute(sql, params).fetchone()
+    if not found[0]:
+        return []
+    if groups is None:
+        rate = weight = None
+    else:
+        rate, weight = _weighted_mean_rate_and_weight(groups.get("(all)", []))
+    return [row_builder("(all)", tuple(found), rate, weight)]
+
+
 def query_runs(dest, model=None, since_ms=None, until_ms=None):
     """Imported Unsloth generation runs matching all filters, oldest first.
 
@@ -812,20 +851,14 @@ def daily_runs(dest, model=None, since_ms=None, until_ms=None):
     per-run rates."""
     where, params = _run_filters(model, since_ms, until_ms)
     day_sql = "date(started_at/1000, 'unixepoch', 'localtime')"
-    rates = _run_rate_groups(dest, day_sql, where, params)
-    sql = ("SELECT " + day_sql + " AS day, COUNT(*), SUM(progress_tokens)"
-           " FROM unsloth_runs")
-    if where:
-        sql += " WHERE " + " AND ".join(where)
-    sql += " GROUP BY day ORDER BY day ASC"
-    rows = []
-    for day, n, p in dest.execute(sql, params):
-        rate, weight = _weighted_mean_rate_and_weight(rates.get(day, []))
-        rows.append({"date": day, "sessions": n, "tokens_input": p or 0,
-                     "progress_tokens": p or 0,
-                     "tokens_output": 0, "total": p or 0,
-                     "tok_s": rate, "rate_weight": weight})
-    return rows
+    return _grouped_aggregates(
+        dest, "unsloth_runs", day_sql, " COUNT(*), SUM(progress_tokens)",
+        where, params, _run_rate_groups(dest, day_sql, where, params),
+        lambda day, counts, rate, weight: {
+            "date": day, "sessions": counts[0], "tokens_input": counts[1] or 0,
+            "progress_tokens": counts[1] or 0,
+            "tokens_output": 0, "total": counts[1] or 0,
+            "tok_s": rate, "rate_weight": weight})
 
 
 def total_runs(dest, model=None, since_ms=None, until_ms=None, by_model=False):
@@ -834,31 +867,20 @@ def total_runs(dest, model=None, since_ms=None, until_ms=None, by_model=False):
     by_model=True. Empty when no runs match. Mirrors total_events; TOK/S is
     the token-weighted mean of the group's per-run rates."""
     where, params = _run_filters(model, since_ms, until_ms)
-    tail = " WHERE " + " AND ".join(where) if where else ""
     sums = " COUNT(*), SUM(progress_tokens)"
+    builder = lambda m, counts, rate, weight: {
+        "model": m, "sessions": counts[0], "tokens_input": counts[1] or 0,
+        "progress_tokens": counts[1] or 0,
+        "tokens_output": 0, "total": counts[1] or 0,
+        "tok_s": rate, "rate_weight": weight}
     if not model and not by_model:
-        rates = _run_rate_groups(dest, "'(all)'", where, params)
-        n, p = dest.execute(
-            "SELECT" + sums + " FROM unsloth_runs" + tail, params).fetchone()
-        if not n:
-            return []
-        p = p or 0
-        rate, weight = _weighted_mean_rate_and_weight(rates.get("(all)", []))
-        return [{"model": "(all)", "sessions": n, "tokens_input": p,
-                 "progress_tokens": p,
-                 "tokens_output": 0, "total": p,
-                 "tok_s": rate, "rate_weight": weight}]
-    rates = _run_rate_groups(dest, "model", where, params)
-    rows = []
-    for m, n, p in dest.execute(
-            "SELECT model," + sums + " FROM unsloth_runs" + tail
-            + " GROUP BY model ORDER BY model ASC", params):
-        rate, weight = _weighted_mean_rate_and_weight(rates.get(m, []))
-        rows.append({"model": m, "sessions": n, "tokens_input": p or 0,
-                     "progress_tokens": p or 0,
-                     "tokens_output": 0, "total": p or 0,
-                     "tok_s": rate, "rate_weight": weight})
-    return rows
+        return _total_aggregates(
+            dest, "unsloth_runs", sums, where, params,
+            _run_rate_groups(dest, "'(all)'", where, params), builder)
+    return _total_aggregates(
+        dest, "unsloth_runs", sums, where, params,
+        _run_rate_groups(dest, "model", where, params), builder,
+        group_key_sql="model")
 
 
 UNSLOTH_PROVIDER = "unsloth-studio"  # providerID OpenCode records for Studio traffic
@@ -1734,23 +1756,18 @@ def daily_totals(dest, model=None, since_ms=None, until_ms=None,
     where, params = _session_filters(model, since_ms, until_ms, min_in,
                                      min_out, limit)
     day_sql = "date(time_created/1000, 'unixepoch', 'localtime')"
-    rates = _session_rate_groups(dest, day_sql, where, params)
-    sql = ("SELECT " + day_sql + " AS day,"
-           " COUNT(*), SUM(tokens_input), SUM(tokens_output), SUM(cost),"
-           " SUM(tokens_cache_read), SUM(tokens_cache_write) FROM usage")
-    if where:
-        sql += " WHERE " + " AND ".join(where)
-    sql += " GROUP BY day ORDER BY day ASC"
-    rows = []
-    for (day, n, tin, tout, cost, tcr, tcw) in dest.execute(sql, params):
-        total = (tin or 0) + (tout or 0)
-        rate, weight = _weighted_mean_rate_and_weight(rates.get(day, []))
-        rows.append({"date": day, "sessions": n, "tokens_input": tin or 0,
-                     "tokens_output": tout or 0, "total": total,
-                     "cost": cost or 0.0, "tokens_cache_read": tcr or 0,
-                     "tokens_cache_write": tcw or 0,
-                     "tok_s": rate, "rate_weight": weight})
-    return rows
+    return _grouped_aggregates(
+        dest, "usage", day_sql,
+        " COUNT(*), SUM(tokens_input), SUM(tokens_output), SUM(cost),"
+        " SUM(tokens_cache_read), SUM(tokens_cache_write)",
+        where, params, _session_rate_groups(dest, day_sql, where, params),
+        lambda day, counts, rate, weight: {
+            "date": day, "sessions": counts[0], "tokens_input": counts[1] or 0,
+            "tokens_output": counts[2] or 0,
+            "total": (counts[1] or 0) + (counts[2] or 0),
+            "cost": counts[3] or 0.0, "tokens_cache_read": counts[4] or 0,
+            "tokens_cache_write": counts[5] or 0,
+            "tok_s": rate, "rate_weight": weight})
 
 
 def total_totals(dest, model=None, since_ms=None, until_ms=None,
@@ -1763,29 +1780,19 @@ def total_totals(dest, model=None, since_ms=None, until_ms=None,
     (None/0 = uncapped)."""
     where, params = _session_filters(model, since_ms, until_ms, min_in,
                                      min_out, limit)
-    tail = " WHERE " + " AND ".join(where) if where else ""
     sums = (" COUNT(*), SUM(tokens_input), SUM(tokens_output), SUM(cost),"
             " SUM(tokens_cache_read), SUM(tokens_cache_write)")
+    builder = lambda m, counts, rate, weight: _total_row(
+        m, *counts, rate, weight)
     if not model and not by_model:
-        rates = _session_rate_groups(dest, "'(all)'", where, params)
-        found = dest.execute(
-            "SELECT" + sums + " FROM usage" + tail, params).fetchone()
-        if not found[0]:
-            return []
-        n, tin, tout, cost, tcr, tcw = found
-        rate, weight = _weighted_mean_rate_and_weight(rates.get("(all)", []))
-        return [_total_row("(all)", n, tin, tout, cost, tcr, tcw,
-                           rate, weight)]
-    rates = _session_rate_groups(dest, "provider || '/' || model_id",
-                                 where, params)
-    rows = []
-    for m, n, tin, tout, cost, tcr, tcw in dest.execute(
-            "SELECT provider || '/' || model_id AS m," + sums +
-            " FROM usage" + tail + " GROUP BY m ORDER BY m ASC", params):
-        rate, weight = _weighted_mean_rate_and_weight(rates.get(m, []))
-        rows.append(_total_row(m, n, tin, tout, cost, tcr, tcw,
-                               rate, weight))
-    return rows
+        return _total_aggregates(
+            dest, "usage", sums, where, params,
+            _session_rate_groups(dest, "'(all)'", where, params), builder)
+    return _total_aggregates(
+        dest, "usage", sums, where, params,
+        _session_rate_groups(dest, "provider || '/' || model_id", where,
+                             params), builder,
+        group_key_sql="provider || '/' || model_id")
 
 
 def _total_row(model, n, tin, tout, cost, tcr, tcw, rate, weight):

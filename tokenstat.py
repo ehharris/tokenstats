@@ -66,7 +66,6 @@ def default_src(home=None):
 
 STATE_DIR = state_dir()
 LEGACY_DIR = os.path.dirname(os.path.abspath(__file__))
-LEGACY_THEMES_DIR = os.path.join(LEGACY_DIR, "themes")
 DEFAULT_DB = default_db()
 DEFAULT_SRC = default_src()
 DEFAULT_UNSLOTH_DB = unsloth_db()
@@ -82,12 +81,13 @@ def default_store(state=None, legacy=None):
     the legacy file rather than trading it for an empty report, and a move lost
     to a rival run lands on the store that run migrated.
 
-    The only function here that creates directories or moves files, and main()
-    is its only caller: importing tokenstat stays side-effect-free, and so is
-    every run that names its own --db. `state` and `legacy` take their
-    defaults from the module globals at CALL time (the same reason main()
-    reads THEMES_DIR there) so a caller that repoints the globals steers the
-    migration.
+    The only function here that creates directories or moves files on its own
+    (`write_default_theme` also writes, but only because `--theme-default`
+    asked it to), and main() is its only caller: importing tokenstat stays
+    side-effect-free, and so is every run that names its own --db. `state` and
+    `legacy` take their defaults from the module globals at CALL time (the
+    same reason main() reads THEMES_DIR there) so a caller that repoints the
+    globals steers the migration.
     """
     state = STATE_DIR if state is None else state
     legacy = LEGACY_DIR if legacy is None else legacy

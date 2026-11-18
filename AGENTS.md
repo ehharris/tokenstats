@@ -315,11 +315,12 @@ else `~/.local/share/opencode/opencode.db`, matching how OpenCode resolves it;
 Unsloth stays `~/.unsloth/studio/studio.db`. `--help` now advertises only the 13
 user-facing options (plus the `record`/`import-unsloth`/`reconcile` positional):
 `--min-in`, `--min-out`, `--db`, `--src`, `--unsloth-db` and `--from-unsloth`
-are `argparse.SUPPRESS`ed — fully usable, never listed, as is the removed
-`--cost-tier` shim, kept only to answer stale shell history with a migration
-message. Redundancy pass, behavior and on-screen bytes unchanged: one
-LIKE-escape helper and one date-window builder behind all three filter paths (`_like_pattern`,
-`_date_clauses`); one aggregate engine behind the daily and total views
+are `argparse.SUPPRESS`ed — fully usable, never listed. The removed
+`--cost-tier` shim is suppressed too, kept only to answer stale shell history
+with a migration message. Redundancy pass, behavior and on-screen bytes
+unchanged: one LIKE-escape helper and one date-window builder behind all three
+filter paths (`_like_pattern`, `_date_clauses`); one aggregate engine behind
+the daily and total views
 (`_grouped_aggregates`, `_total_aggregates`); one monotonic-max upsert for every
 ingest path (`_upsert`, whose column classes are numeric / `overwrite` /
 `insert_only` / label — `insert_only` caught a real bug in pass one: usage's

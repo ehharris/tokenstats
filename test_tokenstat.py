@@ -358,6 +358,125 @@ class ImportStepsTests(unittest.TestCase):
                          {"a1": 0, "a2": 0})
 
 
+class TurnStabilityTests(unittest.TestCase):
+    """A session's turn labels are frozen only when the source has lost a
+    stored step. A live session keeps recomputing, so the legacy->idle flip
+    still improves grouping; a pruned session keeps its historical turns so a
+    displayed rate cannot drift without new generation."""
+
+    BASE = 1_764_000_000_000
+
+    def boundary(self, mid, kind, created):
+        return step_msg(mid, kind=kind, created=created)
+
+    def assistant(self, mid, created, out=100, span=1000):
+        return step_msg(mid, created=created, first=self.BASE,
+                        streamed=self.BASE + span, out=out, reasoning=0)
+
+    def make(self, messages):
+        dest = make_dest()
+        self.addCleanup(dest.close)
+        src = make_step_src([src_row()], list(messages))
+        self.addCleanup(src.close)
+        return dest, src
+
+    def turns(self, dest):
+        return dict(dest.execute(
+            "SELECT message_id, turn FROM opencode_steps"
+            " ORDER BY message_id").fetchall())
+
+    def test_pruning_preserves_stored_turns_and_rate(self):
+        messages = [
+            self.boundary("u1", "user", self.BASE + 1),
+            self.assistant("a0", self.BASE + 2, out=100),   # turn 0: 100 tok/s
+            self.boundary("i1", "idle", self.BASE + 3),
+            self.boundary("u2", "user", self.BASE + 4),
+            self.assistant("a1", self.BASE + 5, out=200),   # turn 1: 200 tok/s
+            self.boundary("i2", "idle", self.BASE + 6),
+            self.boundary("u3", "user", self.BASE + 7),
+            self.assistant("a2", self.BASE + 8, out=300),   # turn 2: 300 tok/s
+        ]
+        dest, src = self.make(messages)
+        record(src, dest, now_ms=1)
+        before = self.turns(dest)
+        self.assertEqual(before, {"a0": 0, "a1": 1, "a2": 2})
+        rate = query_sessions(dest)[0]["tok_s"]
+        self.assertEqual(rate, 200.0)
+
+        # OpenCode prunes an idle boundary (i2) and the middle assistant (a1,
+        # a stored id — the detectable signal). The recomputed walk would
+        # renumber a2 from turn 2 to turn 1 and pool its 300 tok/s into a1's
+        # turn — moving the displayed rate with no new generation.
+        src.execute("DELETE FROM session_message WHERE id IN ('a1', 'i2')")
+        record(src, dest, now_ms=2)
+        self.assertEqual(self.turns(dest), before)
+        self.assertEqual(query_sessions(dest)[0]["tok_s"], rate)
+
+    def test_new_rows_after_pruning_continue_the_stored_ordinals(self):
+        messages = [
+            self.boundary("u1", "user", self.BASE + 1),
+            self.assistant("a0", self.BASE + 2, out=100),
+            self.boundary("i1", "idle", self.BASE + 3),
+            self.boundary("u2", "user", self.BASE + 4),
+            self.assistant("a1", self.BASE + 5, out=200),
+        ]
+        dest, src = self.make(messages)
+        record(src, dest, now_ms=1)
+        self.assertEqual(self.turns(dest), {"a0": 0, "a1": 1})
+
+        src.execute("DELETE FROM session_message WHERE id = 'a1'")
+        src.execute("INSERT INTO session_message VALUES (?,?,?,?,?)",
+                    self.boundary("i2", "idle", self.BASE + 6))
+        src.execute("INSERT INTO session_message VALUES (?,?,?,?,?)",
+                    self.boundary("u3", "user", self.BASE + 7))
+        src.execute("INSERT INTO session_message VALUES (?,?,?,?,?)",
+                    self.assistant("a2", self.BASE + 8, out=300))
+        record(src, dest, now_ms=2)
+        turns = self.turns(dest)
+        # The pruned a1 row still owns turn 1; the new assistant must continue
+        # the stored sequence at 2, not collide with the frozen ordinal.
+        self.assertEqual(turns["a2"], 2)
+        self.assertEqual(turns, {"a0": 0, "a1": 1, "a2": 2})
+
+    def test_legacy_flip_still_regroups_when_nothing_was_pruned(self):
+        # No idle rows at first ingest -> legacy walk: each user opens a turn.
+        messages = [
+            self.boundary("u1", "user", self.BASE + 1),
+            self.assistant("a0", self.BASE + 2, out=100),
+            self.boundary("u2", "user", self.BASE + 3),
+            self.assistant("a1", self.BASE + 4, out=100, span=2000),
+        ]
+        dest, src = self.make(messages)
+        record(src, dest, now_ms=1)
+        self.assertEqual(self.turns(dest), {"a0": 0, "a1": 1})
+
+        # No stored id was lost — an idle boundary simply arrived. The live
+        # session must regroup: non-legacy walks back past both users to the
+        # idle, so a1 moves from turn 1 into turn 0.
+        src.execute("INSERT INTO session_message VALUES (?,?,?,?,?)",
+                    self.boundary("i0", "idle", self.BASE + 0))
+        record(src, dest, now_ms=2)
+        self.assertEqual(self.turns(dest), {"a0": 0, "a1": 0})
+
+    def test_unchanged_source_is_a_provable_noop(self):
+        messages = [
+            self.boundary("u1", "user", self.BASE + 1),
+            self.assistant("a0", self.BASE + 2, out=100),
+            self.boundary("i1", "idle", self.BASE + 3),
+            self.boundary("u2", "user", self.BASE + 4),
+            self.assistant("a1", self.BASE + 5, out=200),
+        ]
+        dest, src = self.make(messages)
+        counts = record(src, dest, now_ms=1)
+        self.assertEqual(counts["inserted"], 3)  # one session + two steps
+        sql = ("SELECT message_id, session_id, turn, step_ms, tokens_generated,"
+               " time_created FROM opencode_steps ORDER BY message_id")
+        before = dest.execute(sql).fetchall()
+        counts = record(src, dest, now_ms=2)
+        self.assertEqual(counts["inserted"], 0)
+        self.assertEqual(dest.execute(sql).fetchall(), before)
+
+
 class ParseModelTests(unittest.TestCase):
     def test_parse_model_extracts_provider_and_id(self):
         self.assertEqual(

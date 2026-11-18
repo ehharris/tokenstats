@@ -1828,6 +1828,115 @@ def _connect_src(path):
     return sqlite3.connect(f"file:{path}?mode=ro", uri=True)
 
 
+def _view_rows(dest, args, model, model_any, want_total, limit):
+    """(rows, columns) for the view the flags ask for: one branch per source.
+
+    The total family ends with SHARE and the share-descending sort (ties keep
+    SQL's alphabetical-by-model order, because the sort is stable); the session
+    list renders newest first when a --sessions cap is in force. main has
+    already rejected reconcile's unsupported flags and --total x --daily by
+    the time this runs."""
+    if args.command == "reconcile":
+        return reconcile(dest, model=model), RECON_COLUMNS
+    if want_total:
+        rows = (total_runs(dest, model=model, since_ms=args.since,
+                           until_ms=args.until, by_model=model_any)
+                if args.from_runs else
+                total_events(dest, model=model, since_ms=args.since,
+                             until_ms=args.until, min_in=args.min_in,
+                             min_out=args.min_out, by_model=model_any)
+                if args.from_unsloth else
+                total_totals(dest, model=model, since_ms=args.since,
+                             until_ms=args.until, min_in=args.min_in,
+                             min_out=args.min_out, by_model=model_any,
+                             limit=limit))
+        rows = add_shares(rows)
+        rows.sort(key=lambda r: -r["share"])  # biggest share first
+        return rows, SHARE_COLUMNS
+    if args.from_runs:
+        rows = (daily_runs(dest, model=model, since_ms=args.since,
+                           until_ms=args.until) if args.daily else
+                query_runs(dest, model=model, since_ms=args.since,
+                           until_ms=args.until))
+        return rows, (DAILY_COLUMNS if args.daily else RUNS_COLUMNS)
+    if args.from_unsloth:
+        rows = (daily_events(dest, model=model, since_ms=args.since,
+                             until_ms=args.until, min_in=args.min_in,
+                             min_out=args.min_out) if args.daily else
+                query_events(dest, model=model, since_ms=args.since,
+                             until_ms=args.until, min_in=args.min_in,
+                             min_out=args.min_out))
+        return rows, (DAILY_COLUMNS if args.daily else SESSION_COLUMNS)
+    rows = (daily_totals(dest, model=model, since_ms=args.since,
+                         until_ms=args.until, min_in=args.min_in,
+                         min_out=args.min_out, limit=limit)
+            if args.daily else
+            query_sessions(dest, model=model, since_ms=args.since,
+                           until_ms=args.until, min_in=args.min_in,
+                           min_out=args.min_out, limit=limit))
+    if not args.daily and args.sessions is not None:
+        # The list view renders newest first; --json serialises the same rows,
+        # so the reversal happens on the row list itself.
+        rows = most_recent(rows, limit)
+    return rows, (DAILY_COLUMNS if args.daily else SESSION_COLUMNS)
+
+
+def _view_title(args, share_view, limit):
+    """(panel title, hero row-unit) for the view those flags picked.
+
+    Reconcile gets no hero, so its unit is never read. A positive --sessions
+    cap on an aggregate says so in the title (` · last N sessions`); the list
+    view names its scope instead (`sessions · N most recent`, `sessions ·
+    all`), and a 0 cap leaves every title byte-identical to the uncapped
+    view."""
+    if args.command == "reconcile":
+        title, hero_unit = "reconcile", "rows"  # reconcile gets no hero
+    elif share_view:
+        # Rows here are per-model totals, or the single grand total.
+        title = ("usage by model · sorted by share"
+                 if args.model is not None else "totals")
+        hero_unit = "models" if args.model is not None else "totals"
+    elif args.daily:
+        title, hero_unit = "daily", "days"
+    elif args.from_runs:
+        title, hero_unit = "studio runs", "runs"
+    elif args.from_unsloth:
+        title, hero_unit = "unsloth events", "requests"
+    else:
+        title, hero_unit = "sessions", "sessions"
+        if args.sessions is not None:
+            title = (f"sessions · {limit} most recent" if limit
+                     else "sessions · all")
+    # Aggregate views fold sessions up, so a positive cap must say so in the
+    # title: ` · last N sessions` on --daily and the totals/share views
+    # (bare --model counts — it is the --total shortcut). The list view's title
+    # already names its scope, and a limit of 0 (all) leaves every title
+    # byte-identical to the uncapped view.
+    if limit and (share_view or args.daily):
+        title = f"{title} · last {limit} sessions"
+    return title, hero_unit
+
+
+def render_report(title, rows, columns, share_view, color, theme, head=()):
+    """The exact text main() prints for a table view.
+
+    A terminal with rows gets `head` — the hero lines, empty for the views
+    that get no hero — above the framed table, and the frame comes from
+    _table_panel, so one path paints the table, the bars and the header block.
+    Everything else (piped, NO_COLOR, or the empty view) is the bare
+    render_table text: byte-plain, unframed, and printed with no extra newline
+    — the golden piped cases compare these bytes exactly. A share view gets its
+    bars padded there too: paint_bars' one space either side is layout, not
+    color, and the plain table has always had it."""
+    if color and rows:
+        return "\n".join(list(head) + _table_panel(title, rows, columns,
+                                                   share_view, color,
+                                                   theme)) + "\n"
+    if share_view:
+        rows = paint_bars(rows, color=False, theme=theme)
+    return render_table(rows, columns)
+
+
 def main(argv):
     parser = argparse.ArgumentParser(
         prog="tokenstat",
@@ -2147,104 +2256,37 @@ def main(argv):
             parser.error("--sessions must be a non-negative number of"
                          " sessions (0 = all)")
         if args.command == "reconcile":
-            unsupported = [flag for flag, val in (
-                ("--since", args.since), ("--until", args.until),
-                ("--min-in", args.min_in), ("--min-out", args.min_out))
-                if val is not None] + (["--daily"] if args.daily else []) \
-                + (["--from-unsloth"] if args.from_unsloth else []) \
-                + (["--from-runs"] if args.from_runs else []) \
-                + (["--total"] if args.total else []) \
-                + (["--sessions"] if args.sessions is not None else []) \
-                + (["--cost"] if args.cost else []) \
-                + (["--real-cost"] if args.real_cost else []) \
-                + (["--cache"] if args.cache else [])
+            # One list of what reconcile cannot do, in the order the message
+            # has always listed it (the guards above never see these flags, and
+            # --model is the only one it accepts).
+            rejected = [("--since", args.since is not None),
+                        ("--until", args.until is not None),
+                        ("--min-in", args.min_in is not None),
+                        ("--min-out", args.min_out is not None),
+                        ("--daily", bool(args.daily)),
+                        ("--from-unsloth", bool(args.from_unsloth)),
+                        ("--from-runs", bool(args.from_runs)),
+                        ("--total", bool(args.total)),
+                        ("--sessions", args.sessions is not None),
+                        ("--cost", bool(args.cost)),
+                        ("--real-cost", bool(args.real_cost)),
+                        ("--cache", bool(args.cache))]
+            unsupported = [flag for flag, is_set in rejected if is_set]
             if unsupported:
                 parser.error("reconcile supports only --model; unsupported:"
                              f" {', '.join(unsupported)}")
-            rows = reconcile(dest, model=model)
-            columns = RECON_COLUMNS
         elif want_total and args.daily:
             parser.error("--total cannot be combined with --daily")
-        elif want_total:
-            rows = (total_runs(dest, model=model, since_ms=args.since,
-                               until_ms=args.until, by_model=model_any)
-                    if args.from_runs else
-                    total_events(dest, model=model, since_ms=args.since,
-                                 until_ms=args.until, min_in=args.min_in,
-                                 min_out=args.min_out, by_model=model_any)
-                    if args.from_unsloth else
-                    total_totals(dest, model=model, since_ms=args.since,
-                                 until_ms=args.until, min_in=args.min_in,
-                                 min_out=args.min_out, by_model=model_any,
-                                 limit=limit))
-            rows = add_shares(rows)
-            rows.sort(key=lambda r: -r["share"])  # biggest share first.
-            # Ties keep SQL's alphabetical-by-model order (stable sort).
-            columns = SHARE_COLUMNS
-        elif args.from_runs:
-            rows = (daily_runs(dest, model=model, since_ms=args.since,
-                               until_ms=args.until) if args.daily else
-                    query_runs(dest, model=model, since_ms=args.since,
-                               until_ms=args.until))
-            columns = DAILY_COLUMNS if args.daily else RUNS_COLUMNS
-        elif args.from_unsloth:
-            rows = (daily_events(dest, model=model, since_ms=args.since,
-                                 until_ms=args.until, min_in=args.min_in,
-                                 min_out=args.min_out) if args.daily else
-                    query_events(dest, model=model, since_ms=args.since,
-                                 until_ms=args.until, min_in=args.min_in,
-                                 min_out=args.min_out))
-            columns = DAILY_COLUMNS if args.daily else SESSION_COLUMNS
-        else:
-            rows = (daily_totals(dest, model=model, since_ms=args.since,
-                                 until_ms=args.until, min_in=args.min_in,
-                                 min_out=args.min_out, limit=limit)
-                    if args.daily else
-                    query_sessions(dest, model=model, since_ms=args.since,
-                                   until_ms=args.until, min_in=args.min_in,
-                                   min_out=args.min_out, limit=limit))
-            if not args.daily and args.sessions is not None:
-                # The list view renders newest first; --json serialises the
-                # same rows, so the reversal happens on the row list itself.
-                rows = most_recent(rows, limit)
-            columns = DAILY_COLUMNS if args.daily else SESSION_COLUMNS
+        rows, columns = _view_rows(dest, args, model, model_any, want_total,
+                                   limit)
         # Opt-in --cost overlay: reference pricing on row copies, never stored
         # data; reconcile keeps its own reject list above. The share-view flag
         # is captured BEFORE appending cost_column — the append creates a new
-        # list, and paint_bars below must still recognize the share view.
+        # list, and render_report must still recognize the share view.
         share_view = columns is SHARE_COLUMNS
         # Panel title, derived from the same flags that picked `columns`
         # (a daily share view cannot occur: --total rejects --daily).
-        if args.command == "reconcile":
-            title = "reconcile"
-            hero_unit = "rows"  # reconcile gets no hero; value unused
-        elif share_view:
-            # Rows here are per-model totals, or the single grand total.
-            title = ("usage by model · sorted by share"
-                     if args.model is not None else "totals")
-            hero_unit = "models" if args.model is not None else "totals"
-        elif args.daily:
-            title = "daily"
-            hero_unit = "days"
-        elif args.from_runs:
-            title = "studio runs"
-            hero_unit = "runs"
-        elif args.from_unsloth:
-            title = "unsloth events"
-            hero_unit = "requests"
-        else:
-            title = "sessions"
-            hero_unit = "sessions"
-            if args.sessions is not None:
-                title = (f"sessions \u00b7 {limit} most recent" if limit
-                         else "sessions \u00b7 all")
-        # Aggregate views fold sessions up, so a positive cap must say so in
-        # the title: ` · last N sessions` on --daily and the totals/share
-        # views (bare --model counts — it is the --total shortcut). The list
-        # view's title already names its scope, and a limit of 0 (all)
-        # leaves every title byte-identical to the uncapped view.
-        if limit and (share_view or args.daily):
-            title = f"{title} \u00b7 last {limit} sessions"
+        title, hero_unit = _view_title(args, share_view, limit)
         if args.cost and columns is not RECON_COLUMNS:
             rows = annotate_cost(rows, cost_tier)
             columns = columns + [cost_column(cost_tier)]
@@ -2264,31 +2306,16 @@ def main(argv):
                               for r in rows], indent=2))
         else:
             color = _color_enabled(sys.stdout, os.environ)
-            if share_view:
-                # Style A bars on every path: the plain glyphs padded by
-                # paint_bars, plus its per-glyph blue->orange gradient when
-                # this is a terminal (a direct master-behavior restoration —
-                # master called paint_bars(rows, color=_color_enabled(...))).
-                rows = paint_bars(rows, color=color, theme=theme)
-            table = render_table(paint_cells(rows, theme) if color else rows,
-                                 columns)
-            if color and table != "no sessions match\n":
-                lines = table.splitlines()
-                # Header block dimmed to the label role, rule to the border
-                # hue (column names recede behind the painted numbers).
-                paint_header_block(lines, columns, theme=theme)
-                # Reconcile rows carry no summed token classes, so a hero
-                # header would imply zeros the view never computed — the
-                # compare view gets the table panel only.
-                # A total view narrowed to a single aggregate row already
-                # shows the grand total in-table — the hero would be a pure
-                # echo (reconcile skips its own for the same kind of reason).
-                head = ([] if args.command == "reconcile"
-                        or (want_total and len(rows) == 1)
-                        else report_header(title, rows, theme, unit=hero_unit))
-                print("\n".join(head + panel(title, lines, theme)))
-            else:
-                print(table, end="")
+            # Reconcile rows carry no summed token classes, so a hero header
+            # would imply zeros the view never computed — the compare view gets
+            # the table panel only. A total view narrowed to a single aggregate
+            # row already shows the grand total in-table — the hero would be a
+            # pure echo (reconcile skips its own for the same kind of reason).
+            head = ([] if args.command == "reconcile"
+                    or (want_total and len(rows) == 1)
+                    else report_header(title, rows, theme, unit=hero_unit))
+            print(render_report(title, rows, columns, share_view, color, theme,
+                                head=head), end="")
         return 0
     finally:
         if dest is not None:

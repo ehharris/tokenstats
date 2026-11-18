@@ -23,7 +23,7 @@ Why the bytes are stable:
 - every fixture row carries an explicit timestamp, so nothing depends on today;
 - `TZ` is pinned to UTC during the run (date columns render in local time);
 - the themes folder is redirected to an empty temp dir, so a saved
-  `themes/config.json` on the machine cannot repaint a golden;
+  `~/.tokenstat/themes/config.json` on the machine cannot repaint a golden;
 - the same test file proves the goldens are not vacuous: piped bytes contain no
   escapes, tty bytes paint 24-bit color except under `--json`, and every theme
   changes the tty bytes while leaving the piped bytes alone.

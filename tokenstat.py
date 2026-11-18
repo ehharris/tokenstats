@@ -1128,6 +1128,75 @@ THEMES = {
     "paper": ("Paper", PAPER),
 }
 
+# User-supplied theme files live next to this script, one .json per theme.
+THEMES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "themes")
+
+# Strict hex for user-supplied files: exactly '#rrggbb', digits or a-f, any
+# case. (The _hex() helper above is deliberately NOT reused — it is permissive
+# and only for the built-in palettes.)
+_THEME_HEX_RE = re.compile(r"#[0-9a-fA-F]{6}\Z")
+
+
+class ThemeError(Exception):
+    """A theme file or slug could not be used."""
+
+
+def _theme_from_obj(obj, origin):
+    """Validate one parsed theme object: a str `name` and a `colors` dict
+    holding every THEME_ROLES key (extra keys ignored), each value a 7-char
+    '#rrggbb' string. Returns (display name, colors) with (r, g, b) triples;
+    `origin` names the file in the user-facing messages."""
+    if not isinstance(obj, dict):
+        raise ThemeError(f"{origin}: theme must be a JSON object with "
+                         f"'name' and 'colors'")
+    name = obj.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise ThemeError(f"{origin}: theme 'name' must be a non-empty string")
+    raw = obj.get("colors")
+    if not isinstance(raw, dict):
+        raise ThemeError(f"{origin}: theme 'colors' must be a JSON object")
+    missing = [role for role in THEME_ROLES if role not in raw]
+    if missing:
+        raise ThemeError(f"{origin}: theme colors missing {', '.join(missing)}")
+    colors = {}
+    for role in THEME_ROLES:
+        hexstr = raw[role]
+        if not isinstance(hexstr, str) or not _THEME_HEX_RE.match(hexstr):
+            raise ThemeError(f"{origin}: role '{role}' is not a #rrggbb "
+                             f"color: {hexstr!r}")
+        colors[role] = (int(hexstr[1:3], 16), int(hexstr[3:5], 16),
+                        int(hexstr[5:7], 16))
+    return name, colors
+
+
+def load_theme_file(path):
+    """Read + validate one theme JSON file; returns (display name, colors)."""
+    try:
+        with open(path) as fh:
+            obj = json.load(fh)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ThemeError(f"{path}: {exc}") from exc
+    return _theme_from_obj(obj, path)
+
+
+def scan_themes(dir=THEMES_DIR, warn=None):
+    """Built-in THEMES merged with every *.json in `dir` (folder wins on slug
+    collision). A file that raises ThemeError is skipped, reported through
+    warn(f"warning: ...") when given; a missing dir is a no-op."""
+    found = dict(THEMES)
+    if os.path.isdir(dir):
+        for fname in sorted(os.listdir(dir)):
+            if not fname.endswith(".json"):
+                continue
+            try:
+                found[os.path.splitext(fname)[0]] = \
+                    load_theme_file(os.path.join(dir, fname))
+            except ThemeError as exc:
+                if warn is not None:
+                    warn(f"warning: {exc}")
+    return found
+
+
 # Bars are a left-to-right color gradient: input tokens blue fading into
 # output-token pink, with the transition centered where the input share of
 # the row's total ends. Interpolated in HSL sweeping UP from blue through

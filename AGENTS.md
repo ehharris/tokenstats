@@ -217,10 +217,12 @@ premium → `cache_write = in`), plus `FAMILY_ALIASES` mapping a family name to
 the provider's MID-TIER model (claude→sonnet-5, codex/openai→gpt-5.1-codex,
 deepseek→deepseek-v3.2, qwen→qwen-plus; two-model lineups: the standard model
 is the mid), resolved once in `main` via `resolve_cost_tier`. The COST header
-is built per-run by `cost_column(tier)` and names the pinned model, wrapped
-over two lines (`COST  ·` / `Claude Sonnet 5 Prices`; `render_table` now
-splits header names on `"\n"`) — a stale price table is visible and the
-column stays narrow. Table head increment (human decision, same day):
+is built per-run by `cost_column(tier)` and names the pinned model on ONE
+line (`COST · Claude Sonnet 5 Prices`) — a stale price table is visible and
+the head stays one line tall (an earlier two-line wrap was reverted: the
+floating first line read as a gap above the rule). `render_table` still
+splits header names on `"\n"` if a column ever wants a wrap. Table head
+increment (human decision, same day):
 header text BOTTOM-left aligns and every table gets a `─` rule between the
 header block and the data (`header_height`/`paint_header_block`; rule wears
 the border hue in color) — flag-less table output gained that one rule line.

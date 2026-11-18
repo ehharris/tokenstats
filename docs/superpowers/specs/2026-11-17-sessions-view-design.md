@@ -1,4 +1,4 @@
-# `--sessions` view — design
+# `--sessions` cap — design
 
 Date: 2026-11-17. Status: awaiting approval.
 Builds on: `docs/superpowers/specs/2026-11-17-turn-level-tok-s-design.md`
@@ -6,40 +6,53 @@ Builds on: `docs/superpowers/specs/2026-11-17-turn-level-tok-s-design.md`
 
 ## Intent and why
 
-A quick way to list sessions, newest first, with a count the operator
-chooses: `--sessions` lists the 20 most recent sessions, `--sessions=50`
-lists the 50 most recent. Today the only way to see recent sessions is a
-bare run, which shows exactly 5 and no way to ask for more, or the plain
-session view, which lists *every* matching session oldest-first.
+A way to say "the N most recent sessions" and have it mean it wherever it
+applies. `--sessions` lists the 20 most recent sessions; `--sessions=50`
+lists 50; and the same cap narrows the session set that `--daily` and
+`--total` aggregate over, so "what have the last 10 sessions done" is one
+command rather than a manual cross-reference.
 
-The bare-run dashboard keeps its 5-session panel exactly as it is. The new
-flag coexists with it rather than replacing it: the dashboard is a glance,
-20 rows makes it a scroll.
+`--total` on its own already means "everything", which is the `--sessions=0`
+case: the unlimited end of the same dial.
+
+The bare-run dashboard keeps its 5-session panel exactly as it is. The flag
+coexists with it rather than replacing it: the dashboard is a glance, 20
+rows makes it a scroll.
 
 ## Goals
 
-- `--sessions` (no value) lists the 20 most recent sessions.
-- `--sessions=N` lists the N most recent. `--sessions=0` lists all
-  matching sessions.
-- Newest first, so the most recent session is the first row.
-- Existing filters narrow the candidate set before the cut: `--model`,
-  `--since`, `--until`, `--min-in`, `--min-out`.
+- `--sessions` (no value) caps the session set at the 20 most recent.
+- `--sessions=N` caps it at N. `--sessions=0` means all matching sessions.
+- "Most recent" is by session creation time, newest first — the same order
+  the dashboard's `sessions · 5 most recent` panel uses.
+- Used alone it **lists** those sessions, newest first.
+- With `--daily` or `--total` (including `--total --model`) it **caps the
+  sessions being aggregated**, so the aggregate describes exactly those
+  sessions and nothing else.
+- Existing filters (`--model`, `--since`, `--until`, `--min-in`,
+  `--min-out`) narrow the candidate set first; the cap then takes the N
+  most recent of what survives.
 - Existing overlays work: `--cost`, `--cache`.
-- `--json` emits the displayed rows, newest first.
-- The hero summarises the rows actually displayed (the N), not everything.
+- `--json` emits the displayed rows, newest first for the list view.
+- In the list view the hero summarises the rows actually displayed. In the
+  aggregate views it behaves as it does today.
 
 ## Non-goals
 
 - Changing the bare-run dashboard's 5-session panel.
 - A per-turn drill-down view.
-- Sorting by anything other than recency; no `--sessions` + `--daily` or
-  `--total` combination.
+- Capping Unsloth event or run views — those are not sessions.
+- Sorting by anything other than recency.
 - Any change to how TOK/S is computed.
 
 ## Anti-goals
 
-- The dashboard panel and the new view drifting apart in ordering, columns,
-  or title wording. They are the same thing with a different N.
+- The cap applying to displayed rows in one view and to the underlying
+  session set in another. It means one thing: which sessions are in scope.
+- An aggregate whose hero reproduces a total over a different session set
+  than the rows on screen.
+- The dashboard panel and the new list view drifting apart in ordering,
+  columns, or title wording. They are the same thing with a different N.
 - A flag that silently changes what a bare run prints.
 
 ## Constraints
@@ -53,43 +66,57 @@ flag coexists with it rather than replacing it: the dashboard is a glance,
 
 ## Approaches considered
 
-1. **Flag as a new view, rendered directly.** `--sessions` with
-   `nargs="?"`, `const=20`, `type=int`; a new branch calls
-   `query_sessions(...)`, reverses, truncates, renders. Smallest diff.
-   Trades: the dashboard panel and the new view render the same thing by
-   two paths, which is how they drift.
-2. **Flag as a new view, sharing the recency logic.** Same flag shape, but
-   the "newest-first, first N" step and the panel title live in one helper
-   the dashboard (N=5) and the new view (N=given) both call. Slightly
-   bigger diff, touches working dashboard code. **Chosen** — the request
-   is the dashboard panel with a bigger N, so it should be one code path.
-   Drift is the bug class this repo just spent a review round removing.
+1. **Flag as a list view only.** `--sessions` renders the N most recent
+   sessions; rejected with `--daily`/`--total`. Smallest diff. Trades: it
+   cannot answer "what did my last 10 sessions cost", which is the reason
+   the cap is worth having at all.
+2. **Cap the session set feeding any session-family view, sharing the
+   recency logic with the dashboard.** The cap becomes one more predicate
+   built by `_session_filters`, which every session-family query already
+   funnels through — `query_sessions`, `daily_totals`, `total_totals`, and
+   `_session_rate_groups` alike. The list view is then just the capped
+   rows rendered newest-first. **Chosen**: one choke point means the rows,
+   the aggregates, and the rate groups that feed the hero cannot disagree
+   about which sessions are in scope, and the dashboard's panel and the new
+   view share the recency step rather than duplicating it.
 3. **A `sessions` subcommand.** Matches `record`/`reconcile`, but in this
    repo commands are actions and views are flags, and a subcommand would
    not compose with `--model`/`--since`. Rejected on convention.
 
 ## Decided by the human partner
 
-- The feature exists as `--sessions`, defaulting to 20, overridable as
+- `--sessions` lists the 20 most recent by default, overridable as
   `--sessions=50`.
-- It coexists with the bare-run dashboard; the dashboard's 5-row panel is
-  unchanged.
+- It coexists with the bare-run dashboard; that panel is unchanged.
+- It works with `--daily` and `--total`; `--total` is the `--sessions=0`
+  case.
 - Approach 2.
 
 ## Controller's calls (correctable, not agreed)
 
-- `--sessions` with no value means 20; `--sessions=0` means all matching.
-- Rejected with `--daily`, `--total`, `--from-unsloth`, `--from-runs`, and
-  the `reconcile` command — none of them list sessions.
-- The hero covers the displayed N rows, unlike the dashboard, whose hero
-  deliberately spans all sessions because its panel is a sample.
-- A negative N is a `parser.error`, not a silent empty table.
-- The shared helper returns rows newest-first truncated to N (N=0 → all);
-  the dashboard passes 5. Title text is shared: `sessions · N most
-  recent`, with N rendered as `all` when 0.
+- The flag's default is 20 in every view, so `--sessions --total` means
+  "totals over the 20 most recent". `--total` with no `--sessions` stays
+  all sessions, exactly as today — nothing about current output changes.
+- `--sessions=0` means all matching sessions; a negative N is a
+  `parser.error`, not a silent empty table.
+- Rejected with `--from-unsloth`, `--from-runs`, and the `reconcile`
+  command — none of them are sessions.
+- The cap is a predicate on the session set (`session_id IN (SELECT
+  session_id FROM usage <filters> ORDER BY time_created DESC LIMIT ?)`),
+  added inside `_session_filters`, so every consumer sees the same scope.
+  `LIMIT -1` is SQLite's no-limit, so N=0 maps to that rather than to a
+  second code path.
+- The shared piece between the dashboard and the list view is the recency
+  step and the title text — `sessions · N most recent`, with N shown as
+  `all` when 0 — not the whole renderer: the dashboard draws a panel, the
+  views draw hero-plus-table.
+- In the list view the hero covers the displayed rows; the aggregate views
+  keep today's behaviour, where the hero reproduces the pooled total over
+  the capped set.
 
 ## Left to the builder
 
-Exact helper name and placement, test class and case names, and whether
-the truncation happens in Python after `query_sessions` or in SQL. The
+Exact helper and test-class names, whether the list view truncates in
+Python or relies solely on the SQL cap, and how the title reads for a
+capped aggregate (`daily · last 10 sessions` is the obvious shape). The
 existing `query_sessions` signature should not change.

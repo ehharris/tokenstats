@@ -109,24 +109,33 @@ and a `sessions · 5 most recent` panel (newest first). Any view/filter flag
 restores the ordinary full table; `--json` always emits every session row.
 
 Every report table except `reconcile` also has a `TOK/S` column. A session
-row's is a **wall-clock average** — its tokens divided by its own time span
-(session creation → last update) — so idle time inside that window drags the
-number down; it is blank when the span is unknown or under a second. Daily
-and total rows are the **token-weighted mean** of the rates of the rows they
-fold up: each row counts in proportion to the tokens it moved, so a session
-that carried 200k tokens speaks 200x one that carried 1k, and the idle time
-between sessions never enters the number. Rows with no rate, or no tokens,
-are left out of both sides of that average, and a group where none has one
-renders blank. The hero line carries the same token-weighted TOK/S over the
-rows it summarizes (`· 157.1 tok/s`), so hero and table always agree; it is
-omitted when none of those rows has a rate. Per-event rows in
-`--from-unsloth` carry no duration, so their TOK/S is blank (their daily and
-total aggregates rate over the events' created_at range instead). Only
-`--from-runs` measures generation speed: there TOK/S is each run's *true*
-rate — progress tokens over the run's own wall-clock seconds — and its
-aggregates weight those true rates by progress tokens, which is why those
-numbers typically sit well above session-mode averages. In `--json` the value
-is the float `tok_s` (null when blank).
+row's is the **mean of its per-turn rates** — the number OpenCode shows per
+prompt: for each turn, Σ(output+reasoning tokens) divided by the turn's total
+stream time in seconds (each step's `streamed − firstToken` in milliseconds),
+then averaged across the session's turns. A turn is skipped when any
+of its steps never streamed, when it generated no tokens, or when its pooled
+stream time is under a second; a session with no surviving turn renders blank.
+There is deliberately no wall-clock fallback. Daily and total rows are the
+**token-weighted mean** of the rates of the rows they fold up, weighted by
+**generated tokens** (`tokens_generated` = output+reasoning over a session's
+step rows, `progress_tokens` for runs): each row counts in proportion to the
+tokens it actually generated, so a session that carried 200k generated tokens
+speaks 200x one that carried 1k, and the idle time between sessions never
+enters the number. Because the weight matches the rate's own numerator, the
+hero over any session-family table reproduces the pooled grand total to 0.1.
+Rows with no rate, or no generated tokens, are left out of both sides of that
+average, and a group where none has one renders blank. The hero line carries
+the same token-weighted TOK/S over the rows it summarizes (`· 70.2 tok/s`), so
+hero and table always agree; it is omitted when none of those rows has a rate.
+Per-event rows in `--from-unsloth` carry no duration, so their TOK/S is blank
+(their daily and total aggregates rate over the events' created_at range
+instead). Only `--from-runs` measures generation speed: there TOK/S is each
+run's *true* rate — progress tokens over the run's own wall-clock seconds —
+and its aggregates weight those true rates by progress tokens, which is why
+those numbers typically sit well above session-mode averages. In `--json` the
+value is the float `tok_s` (null when blank); session-family rows also carry
+`rate_weight`, the sum of the generated tokens of the rows that contributed
+to their rate.
 
 ## Cost estimates (`--cost`)
 
@@ -185,8 +194,10 @@ adding to them; and if OpenCode ever rewrites a row smaller, the stored
 values only ever go up. `record` reports `inserted=N updated=N unchanged=N`
 so you can see this happen: repeated runs show everything `unchanged`.
 The same guarantee applies to imported Unsloth events (keyed by their own
-event ids) and generation runs (keyed by run id, with `progress_tokens` a
-monotonic max).
+event ids), generation runs (keyed by run id, with `progress_tokens` a
+monotonic max), and the per-message `opencode_steps` snapshot (keyed by
+`message_id`; `step_ms`/`tokens_generated` are monotonic maxes and rows are
+never deleted, so ingested steps survive OpenCode pruning its own messages).
 
 One mapping caveat: Unsloth's `prompt_tokens` counts every prompt token it
 processed, including KV-cache hits; OpenCode splits those into

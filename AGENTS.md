@@ -10,7 +10,7 @@ in `docs/superpowers/plans/`.
 
 **State at handoff (2026-11-17):** work sits on `master` (no remote
 configured — local-only repo, no push; branch workflow used for increments,
-fast-forward merged after clean review rounds). 218 tests green. Connection
+fast-forward merged after clean review rounds). 252 tests green. Connection
 hygiene (2026-11-15): every sqlite
 connection main() opens is now closed — the store via try/finally and each
 read-only source by `_ingest` owning its open/close; `NoResourceWarningTests`
@@ -52,9 +52,11 @@ runs have no in/out split; `--daily` buckets by started_at; `--total`/bare
 `--model` give per-model aggregates with the usual SHARE/BAR treatment;
 supports `--model`, `--since`, `--until`; rejects `--min-in`/`--min-out`);
 derived `tok_s` on every report-view row plus a `TOK/S` column (reconcile
-excepted — session rows show a WALL-CLOCK average — tokens over their own
-created→updated span, idle drags it down, blank when the span is unknown
-or < 1 s; per-event rows have no
+excepted — session rows show the unweighted mean of their per-turn rates,
+Σ(output+reasoning)/Σ(streamed−firstToken) per turn then averaged across turns
+— the number OpenCode shows per prompt — blank when no turn qualifies (no step
+rows, a never-streamed step, a sub-second span, or zero generated tokens),
+deliberately NO wall-clock fallback; per-event rows have no
 duration so their TOK/S is blank while daily/total event aggregates rate
 over their created_at span; `--json` rows carry `tok_s`); opt-in `--cost`
 overlay plus `--cost-tier haiku|sonnet|opus` (default sonnet) adding a
@@ -77,9 +79,11 @@ Cache-column increment (2026-11-15): opt-in `--cache` adds one combined
 views only; informational — TOTAL stays IN+OUT, `--json` gains no field
 (both classes already carried), rejected for reconcile/--from-unsloth/
 --from-runs (no cache split there); primitives `annotate_cache`/`with_cache`.
-Store `usage.db` holds full recoverable history: 117 OpenCode
-sessions, 2,539 Unsloth request events, and 5 generation runs back to
-2026-11-06.
+Store `usage.db` holds full recoverable history: ~128 OpenCode sessions,
+~5,160 `opencode_steps` rows (one per ingested assistant message — see the
+turn-level increment below), 2,539 Unsloth request events, and 5 generation
+runs back to 2026-11-06 (counts from the 2026-11-17 verification pass; the
+source is live and grows between runs).
 
 Default-dashboard increment (2026-11-15): bare run renders hero + top-5-by-share
 model panel + 5 most-recent sessions (newest first); trigger is a truly bare
@@ -112,10 +116,14 @@ from the rates displayed above it). The old denominator was
 `MIN(created)→MAX(updated)` across the group, which counts every idle second
 between and inside sessions: `--model` for a model whose only long session
 sat open overnight read 2.4 tok/s while its four session rows read
-1.8/595/118/77. Weight = the row's tokens (`tokens_input+tokens_output`, or
-`progress_tokens` for runs), so the biggest session dominates: that same
+1.8/595/118/77. Weight = the row's GENERATED tokens (`tokens_generated` =
+output+reasoning summed over the session's step rows, or `progress_tokens`
+for runs) — revised 2026-11-17 in the turn-level increment from the old
+`tokens_input+tokens_output` so the weight matches the rate's own numerator;
+as a result the hero over any session-family table reproduces the pooled grand
+total to 0.1. The biggest session dominates: that same
 model reads 40.6 weighted vs 197.9 as a flat mean — the human partner chose
-weighted knowing this. Rows with no rate (session with no `time_updated`,
+weighted knowing this. Rows with no rate (session with no valid turn,
 unfinished/failed run) or no tokens drop out of BOTH sides of the average; a
 group with nothing left renders blank. Applies to
 `total_totals`/`daily_totals` and `total_runs`/`daily_runs`, and the hero
@@ -132,6 +140,34 @@ event aggregates keep the created_at-span rate: per-event rows carry no
 duration to weight (documented in their docstrings). `_aggregate_rate` is now
 a per-row helper only — aggregate callers use `_weighted_mean_rate`. Spec:
 docs/superpowers/specs/2026-11-17-token-weighted-tok-s-design.md.
+
+Turn-level TOK/S increment (2026-11-17): new store table `opencode_steps`
+(message_id PK, session_id, turn, step_ms, tokens_generated, time_created),
+filled by `import_opencode_steps` inside `record()` — one row per OpenCode
+assistant message. `turn` is a dense 0-based ordinal (first-appearance order of
+the input boundary returned by the ported `_turn_index`), `step_ms` is the step
+duration (streamed − firstToken, NULL when the step never streamed) and
+`tokens_generated` = output+reasoning. Session `tok_s` is now the UNWEIGHTED
+MEAN of the session's per-turn rates — Σ(tokens_generated)*1000/Σ(step_ms) per
+turn (a turn is excluded when any step never streamed, when it moved no
+tokens, or when its pooled span is < 1 s), then averaged across the surviving
+turns — the number OpenCode shows per prompt; the reference session
+`ses_e14c64b0bffe3hKJ8qniK45xCS` reads 70.6 TOK/S (was 13.1 on the old
+wall-clock basis). No wall-clock fallback: mixing the two bases is the bug
+this replaces. Session and aggregate `rate_weight` is Σ generated tokens (see
+the increment above); `--from-runs`/`--from-unsloth` are UNCHANGED — the event
+aggregates still rate over their created_at span and runs over their own
+wall-clock seconds. Coverage on live data (2026-11-17 verification pass): of
+128 sessions in the store, 121 render a rate and 7 render blank — blank means
+"no rateable turn / no usable step timing" (older sessions predating ingestion
+have no step rows; the rest have step rows whose every turn is never-streamed,
+sub-second, or zero-token), NOT zero speed. Verified reference discrepancy:
+Σ`tokens_generated` over this session's step rows is 77,696 and Σ over
+OpenCode's own 134 assistant message rows is exactly 77,696, while
+`session_v2`'s `tokens_output+tokens_reasoning` is 77,951
+(255-token delta) — OpenCode's own totals and its own message rows disagree,
+so `rate_weight` is faithful to the message rows it is defined over (see Known
+gotchas). Spec + plan in docs/superpowers/{specs,plans}/2026-11-17-turn-level-tok-s*.
 
 ## Commands (run from this directory)
 
@@ -176,8 +212,13 @@ python3 -W error::ResourceWarning -m unittest test_tokenstat   # strict variant:
 
 1. **No double counting.** One row per source key (`session_id` /
    `event_id`); every numeric column stores the latest observed total via
-   monotonic `max`, never an increment; rows are never deleted. Re-running
-   any import is a provable no-op. Reports always SUM over distinct keys.
+   monotonic `max`, never an increment; rows are never deleted. Same for the
+   step snapshot: `opencode_steps` has one row per `message_id`, with
+   `step_ms`/`tokens_generated` kept at the monotonic max and rows never
+   deleted, so ingested steps survive OpenCode pruning `session_message`
+   (a NULL `step_ms` means "never streamed" and never maxes against a real
+   duration). Re-running any import is a provable no-op. Reports always SUM
+   over distinct keys.
 2. **The two sources describe the same traffic** — never sum them together.
    `reconcile` exists to compare them; positive gap = OpenCode lost it,
    negative gap = Studio log missing it (rotation/retry).
@@ -218,6 +259,13 @@ python3 -W error::ResourceWarning -m unittest test_tokenstat   # strict variant:
 - All ingestion paths have per-row error isolation: `record()` mirrors the
   Unsloth imports — one malformed source row bumps a `skipped` counter
   (printed only when nonzero) and the run continues.
+- **Source-level discrepancy, not our bug (verified 2026-11-17):** for the
+  reference session, Σ`tokens_generated` over our step rows is 77,696 and Σ
+  over OpenCode's own assistant message rows is also exactly 77,696, while
+  `session_v2`'s `tokens_output+tokens_reasoning` is 77,951 — a 255-token
+  delta in OpenCode's own data (its per-session totals disagree with the sum
+  of its own message rows). `rate_weight` is faithful to the message rows it
+  is defined over; do not "correct" it to the 77,951 total.
 - Deferred perf pass (verified safe to postpone): the near-duplicate
   aggregate queries (`total_events`/`total_totals`, `daily_events`/
   `daily_runs`/`daily_totals`) are not deduplicated, and the per-row

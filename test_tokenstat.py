@@ -505,14 +505,16 @@ class SessionTurnRateTests(unittest.TestCase):
         self.assertAlmostEqual(row["tok_s"], 75.0, places=2)
 
     def test_steps_in_one_turn_pool_before_dividing(self):
-        # Two steps in one turn: (100+300) / (1.0+1.0) = 200.0, NOT the mean
-        # of 100.0 and 300.0.
+        # Two steps in ONE turn with unequal spans: (100+300) / (1.0+4.0) =
+        # 80.0, NOT mean(100.0, 75.0) = 87.5. Equal 1 s spans would make the
+        # two rules coincide, so use 1 s and 4 s to catch a GROUP BY step
+        # regression.
         messages = [
             self.turn("a1", 0, 1000, 100),
-            self.turn("a2", 0, 1000, 300, created=self.BASE + 10),
+            self.turn("a2", 0, 4000, 300, created=self.BASE + 10),
         ]
         row = query_sessions(self.dest_for(messages))[0]
-        self.assertAlmostEqual(row["tok_s"], 200.0, places=2)
+        self.assertAlmostEqual(row["tok_s"], 80.0, places=2)
 
     def test_never_streamed_step_drops_its_turn(self):
         # Turn 0 is valid (100.0). Turn 1 holds a valid step AND a
@@ -601,10 +603,11 @@ class EventTokSTests(unittest.TestCase):
 
 class AggregateWeightedRateTests(unittest.TestCase):
     """Aggregate TOK/S is the TOKEN-WEIGHTED mean of the rates of the rows it
-    folds up: each row counts in proportion to the tokens it moved. Not the
-    group's calendar span (idle time between and inside sessions does not
-    belong in the denominator) and not a flat average of row rates (a 17-second
-    session is not as informative as one that moved 200k tokens)."""
+    folds up — weighted by GENERATED tokens, the very numerator the per-session
+    rate is built from. Not the group's calendar span (idle time between and
+    inside sessions does not belong in the denominator) and not a flat average
+    of row rates (a 17-second session is not as informative as one that moved
+    200k tokens)."""
 
     BASE = 1_764_000_000_000
 
@@ -616,61 +619,93 @@ class AggregateWeightedRateTests(unittest.TestCase):
         record(src, dest, now_ms=1)
         return dest
 
+    def step_dest(self, sessions, steps):
+        dest = make_dest()
+        self.addCleanup(dest.close)
+        src = make_step_src(sessions, steps)
+        self.addCleanup(src.close)
+        record(src, dest, now_ms=1)
+        return dest
+
+    def step(self, mid, sid, generated, span_ms, base=None, first_off=0,
+             created=None):
+        """One assistant step: `generated` tokens over `span_ms` (a single
+        turn at `generated * 1000 / span_ms` tok/s)."""
+        base = self.BASE if base is None else base
+        return step_msg(mid, sid=sid,
+                        created=base if created is None else created,
+                        first=base + first_off,
+                        streamed=base + first_off + span_ms,
+                        out=generated, reasoning=0)
+
     def test_total_totals_rate_is_token_weighted_mean(self):
-        dest = self.session_dest(
-            src_row(sid="s1", tin=1000, tout=200, created=self.BASE,
-                    updated=self.BASE + 5_000),        # 1200 tok / 5 s = 240.0
-            src_row(sid="s2", model=LEMONADE_JSON, tin=500, tout=50,
-                    created=self.BASE + 60_000,
-                    updated=self.BASE + 65_000))       # 550 tok / 5 s = 110.0
-        # (240*1200 + 110*550) / 1750 = 199.1; a flat mean would say 175.0
-        # and the calendar span (65 s) would say 26.9
-        self.assertAlmostEqual(total_totals(dest)[0]["tok_s"], 199.1, places=2)
+        dest = self.step_dest(
+            [src_row(sid="s1", tin=1000, tout=200, created=self.BASE,
+                     updated=self.BASE + 5_000),        # 240.0, 240 generated
+             src_row(sid="s2", model=LEMONADE_JSON, tin=500, tout=50,
+                     created=self.BASE + 60_000,
+                     updated=self.BASE + 65_000)],      # 110.0, 550 generated
+            [self.step("a1", "s1", 240, 1000),
+             self.step("a2", "s2", 550, 5000)])
+        # (240*240 + 110*550) / 790 = 149.5; a flat mean says 175.0 and
+        # in+out weighting (1200/550) says 199.1. Generated tokens are the
+        # weights because they are the numerator being averaged.
+        self.assertAlmostEqual(total_totals(dest)[0]["tok_s"], 149.5, places=2)
 
     def test_total_totals_per_model_rate_is_that_models_weighted_mean(self):
-        dest = self.session_dest(
-            src_row(sid="s1", tin=1000, tout=200, created=self.BASE,
-                    updated=self.BASE + 5_000),        # 240.0
-            src_row(sid="s2", tin=500, tout=50, created=self.BASE + 60_000,
-                    updated=self.BASE + 65_000),       # 110.0
-            src_row(sid="s3", model=LEMONADE_JSON, tin=90, tout=10,
-                    created=self.BASE, updated=self.BASE + 10_000),   # 10.0
-            src_row(sid="s4", model=LEMONADE_JSON, tin=190, tout=10,
-                    created=self.BASE + 30_000,
-                    updated=self.BASE + 50_000))       # 10.0
+        dest = self.step_dest(
+            [src_row(sid="s1", tin=1000, tout=200, created=self.BASE,
+                     updated=self.BASE + 5_000),        # 240.0, 240 generated
+             src_row(sid="s2", tin=500, tout=50, created=self.BASE + 60_000,
+                     updated=self.BASE + 65_000),       # 110.0, 550 generated
+             src_row(sid="s3", model=LEMONADE_JSON, tin=90, tout=10,
+                     created=self.BASE,
+                     updated=self.BASE + 10_000),       # 10.0, 100 generated
+             src_row(sid="s4", model=LEMONADE_JSON, tin=190, tout=10,
+                     created=self.BASE + 30_000,
+                     updated=self.BASE + 50_000)],      # 10.0, 200 generated
+            [self.step("a1", "s1", 240, 1000),
+             self.step("a2", "s2", 550, 5000),
+             self.step("b1", "s3", 100, 10000),
+             self.step("b2", "s4", 200, 20000)])
         rows = {r["model"]: r["tok_s"]
                 for r in total_totals(dest, by_model=True)}
         self.assertAlmostEqual(rows["unsloth-studio/" + UNSLOTH_MODEL_ID],
-                               199.1, places=2)
+                               149.5, places=2)
         self.assertAlmostEqual(rows["lemonade/gpt-oss-120b"], 10.0, places=2)
 
     def test_daily_totals_rate_is_weighted_mean_of_that_days_sessions(self):
         day = ms(2026, 11, 1)
-        dest = self.session_dest(
-            src_row(sid="s1", tin=1000, tout=200, created=day + 1_000,
-                    updated=day + 6_000),              # 1200 tok / 5 s = 240.0
-            src_row(sid="s2", tin=4800, tout=200, created=day + 20_000,
-                    updated=day + 70_000))             # 5000 tok / 50 s = 100.0
-        # (240*1200 + 100*5000) / 6200 = 127.1; flat mean would say 170.0
-        self.assertAlmostEqual(daily_totals(dest)[0]["tok_s"], 127.1, places=2)
+        dest = self.step_dest(
+            [src_row(sid="s1", tin=1000, tout=200, created=day + 1_000,
+                     updated=day + 6_000),              # 240.0, 240 generated
+             src_row(sid="s2", tin=4800, tout=200, created=day + 20_000,
+                     updated=day + 70_000)],            # 100.0, 5000 generated
+            [self.step("a1", "s1", 240, 1000, base=day),
+             self.step("a2", "s2", 5000, 50000, base=day)])
+        # (240*240 + 100*5000) / 5240 = 106.4; flat mean says 170.0.
+        self.assertAlmostEqual(daily_totals(dest)[0]["tok_s"], 106.4, places=2)
 
     def test_sessions_without_a_rate_are_excluded_from_the_mean(self):
-        # A NULL time_updated has no rate: it must not contribute a 0 that
+        # A session with no steps has no rate: it must not contribute a 0 that
         # halves the average of the sessions that do have one.
-        dest = self.session_dest(
-            src_row(sid="s1", tin=1000, tout=200, created=self.BASE,
-                    updated=self.BASE + 5_000),        # 240.0
-            src_row(sid="s2", model=LEMONADE_JSON, tin=9999, tout=9999,
-                    created=self.BASE + 60_000, updated=None))
+        dest = self.step_dest(
+            [src_row(sid="s1", tin=1000, tout=200, created=self.BASE,
+                     updated=self.BASE + 5_000),        # 240.0, 240 generated
+             src_row(sid="s2", model=LEMONADE_JSON, tin=9999, tout=9999,
+                     created=self.BASE + 60_000, updated=None)],
+            [self.step("a1", "s1", 240, 1000)])
         self.assertAlmostEqual(total_totals(dest)[0]["tok_s"], 240.0, places=2)
 
     def test_zero_token_rows_carry_no_weight(self):
-        # A rateless, tokenless row must not make the denominator zero.
-        dest = self.session_dest(
-            src_row(sid="s1", tin=0, tout=0, created=self.BASE,
-                    updated=self.BASE + 5_000),        # 0 tokens: no weight
-            src_row(sid="s2", model=LEMONADE_JSON, tin=0, tout=0,
-                    created=self.BASE + 60_000, updated=None))
+        # A step that generated no tokens yields no rate, so this row cannot
+        # contribute to either side of the mean (no ZeroDivision).
+        dest = self.step_dest(
+            [src_row(sid="s1", tin=0, tout=0, created=self.BASE,
+                     updated=self.BASE + 5_000),
+             src_row(sid="s2", model=LEMONADE_JSON, tin=0, tout=0,
+                     created=self.BASE + 60_000, updated=None)],
+            [self.step("a1", "s1", 0, 5000)])
         self.assertIsNone(total_totals(dest)[0]["tok_s"])
 
     def test_group_without_any_rate_has_no_rate(self):
@@ -683,29 +718,43 @@ class AggregateWeightedRateTests(unittest.TestCase):
 
     def test_total_totals_rate_matches_the_sessions_view(self):
         # The grand-total TOK/S must be reproducible from the session rows'
-        # own rates. Give each session one step whose turn rate IS its old
-        # wall-clock rate (generated tokens = tin+tout, span = created→updated)
-        # so the invariant holds whether the aggregate reads wall clock or
-        # turn data — Task 4 swaps the former for the latter.
+        # own rates. Each session has TWO turns so its turn-mean differs from
+        # tokens/(updated - created): a wall-clock-basis aggregate fails this
+        # pin. Each session's generated tokens equal its in+out total, so the
+        # displayed rows' TOTAL cell is the weight the aggregate must use.
         dest = make_dest()
         self.addCleanup(dest.close)
         sessions = [
             src_row(sid="s1", tin=1000, tout=200, created=self.BASE,
-                    updated=self.BASE + 5_000),                  # 240.0, 1200
+                    updated=self.BASE + 5_000),   # 240.0 wall; 200.0 turns
             src_row(sid="s2", tin=500, tout=50, created=self.BASE + 1_000,
-                    updated=self.BASE + 6_000),                  # 110.0, 550
+                    updated=self.BASE + 6_000),   # 110.0 wall; 150.0 turns
             src_row(sid="s3", model=LEMONADE_JSON, tin=90, tout=10,
                     created=self.BASE + 90_000,
-                    updated=self.BASE + 100_000),                # 10.0, 100
+                    updated=self.BASE + 100_000), # 10.0 both ways
         ]
-        steps = [step_msg(mid=f"a{i}", sid=r[0], first=r[11],
-                          streamed=r[12], out=r[2] + r[3], reasoning=0)
-                 for i, r in enumerate(sessions)]
+        steps = [
+            self.step("s1a1", "s1", 600, 2000),                    # 300.0
+            step_msg("s1i", sid="s1", kind="idle", created=self.BASE + 10),
+            step_msg("s1u", sid="s1", kind="user", created=self.BASE + 20),
+            self.step("s1a2", "s1", 600, 6000, first_off=10000,
+                      created=self.BASE + 30),                     # 100.0
+            self.step("s2a1", "s2", 275, 1000,
+                      created=self.BASE + 1_000),                  # 275.0
+            step_msg("s2i", sid="s2", kind="idle", created=self.BASE + 1_010),
+            step_msg("s2u", sid="s2", kind="user", created=self.BASE + 1_020),
+            self.step("s2a2", "s2", 275, 11000, first_off=10000,
+                      created=self.BASE + 1_030),                  # 25.0
+            self.step("s3a1", "s3", 100, 10000,
+                      base=self.BASE + 90_000),                    # 10.0
+        ]
         src = make_step_src(sessions, steps)
         self.addCleanup(src.close)
         record(src, dest, now_ms=1)
         rows = query_sessions(dest)
         self.assertEqual(len(rows), 3)
+        # (200*1200 + 150*550 + 10*100) / 1850 = 174.9; a wall-clock basis
+        # would give 188.9.
         expected = round(sum(r["tok_s"] * r["total"] for r in rows)
                          / sum(r["total"] for r in rows), 1)
         self.assertAlmostEqual(total_totals(dest)[0]["tok_s"], expected,
@@ -749,21 +798,125 @@ class AggregateWeightedRateTests(unittest.TestCase):
         self.assertAlmostEqual(total_runs(dest)[0]["tok_s"], 46.7, places=2)
 
 
+class AggregateTurnWeightTests(unittest.TestCase):
+    """Daily/total/hero TOK/S is the token-weighted mean of the session rates
+    it folds, weighted by GENERATED tokens (the numerator being averaged), not
+    by in+out."""
+
+    BASE = ms(2026, 11, 16)
+
+    def dest_with(self, sessions, steps):
+        dest = make_dest()
+        self.addCleanup(dest.close)
+        src = make_step_src(sessions, steps)
+        self.addCleanup(src.close)
+        record(src, dest, now_ms=1)
+        return dest
+
+    def turn(self, mid, sid, generated, span_ms):
+        """One assistant step: `generated` tokens streamed over `span_ms`,
+        i.e. a single turn at `generated * 1000 / span_ms` tok/s."""
+        return step_msg(mid, sid=sid, first=self.BASE,
+                        streamed=self.BASE + span_ms, out=generated,
+                        reasoning=0)
+
+    def two_rate_dest(self):
+        # A: 100 generated tokens in 1.0 s = 100.0 tok/s (in+out = 100,100).
+        # B: 1000 generated tokens in 20 s = 50.0 tok/s (in+out = 2,000).
+        # Old in+out weight lets A dominate (99.0); generated weight gives A
+        # only 100 of the 1,100 weight -> (100*100 + 50*1000)/1100 = 54.5.
+        return self.dest_with(
+            [src_row(sid="a", tin=100_000, tout=100, created=self.BASE,
+                     updated=self.BASE + 5_000),
+             src_row(sid="b", tin=1_000, tout=1_000, created=self.BASE,
+                     updated=self.BASE + 5_000)],
+            [self.turn("a1", "a", 100, 1000),
+             self.turn("b1", "b", 1000, 20000)])
+
+    def test_total_uses_generated_tokens_as_weight(self):
+        self.assertEqual(total_totals(self.two_rate_dest())[0]["tok_s"], 54.5)
+
+    def test_rateless_session_drops_out_of_both_sides(self):
+        # A third session with no steps has no rate; its huge in+out must not
+        # drag the mean down to it, nor dilute the two sessions that have one.
+        dest = self.dest_with(
+            [src_row(sid="a", tin=100_000, tout=100, created=self.BASE,
+                     updated=self.BASE + 5_000),
+             src_row(sid="b", tin=1_000, tout=1_000, created=self.BASE,
+                     updated=self.BASE + 5_000),
+             src_row(sid="c", tin=999_999, tout=999_999, created=self.BASE,
+                     updated=self.BASE + 5_000)],
+            [self.turn("a1", "a", 100, 1000),
+             self.turn("b1", "b", 1000, 20000)])
+        self.assertEqual(total_totals(dest)[0]["tok_s"], 54.5)
+
+    def test_daily_matches_total_when_sessions_share_a_day(self):
+        dest = self.two_rate_dest()
+        daily = daily_totals(dest)
+        self.assertEqual(len(daily), 1)
+        self.assertEqual(daily[0]["tok_s"], total_totals(dest)[0]["tok_s"])
+
+    def test_hero_matches_the_table(self):
+        rows = total_totals(self.two_rate_dest())
+        table = _ANSI_RE.sub("", render_table(rows))
+        hero = _ANSI_RE.sub("", "\n".join(report_header("", rows)))
+        # The value the table actually renders for the TOK/S cell must be the
+        # same number the hero quotes (not a re-derivation of the mean here).
+        shown = f"{rows[0]['tok_s']:.1f}"
+        self.assertIn(shown, table)
+        self.assertIn(shown + " tok/s", hero)
+
+    def runs_dest(self):
+        dest = make_dest()
+        self.addCleanup(dest.close)
+        src = make_runs_src([
+            run_row("r1", progress=243, started=self.BASE,
+                    completed=self.BASE + 16_082),
+            run_row("r2", progress=51, started=self.BASE + 30_000,
+                    completed=self.BASE + 30_000 + 4_911),
+        ])
+        self.addCleanup(src.close)
+        import_unsloth_runs(src, dest)
+        return dest
+
+    def test_run_rows_carry_progress_as_rate_weight(self):
+        rows = query_runs(self.runs_dest())
+        self.assertEqual([r["rate_weight"] for r in rows], [243, 51])
+        # The key restates the weight; it must not move any displayed number.
+        self.assertEqual([r["rate_weight"] for r in rows],
+                         [r["total"] for r in rows])
+
+    def test_runs_hero_unchanged(self):
+        rows = query_runs(self.runs_dest())
+        hero = _ANSI_RE.sub("", "\n".join(report_header("", rows)))
+        self.assertIn("14.3 tok/s", hero)
+
+
 class HeroTokSTests(unittest.TestCase):
     """The hero carries the same token-weighted TOK/S as the table under it,
     and says nothing when none of its rows has a rate."""
 
+    # rate_weight differs from total on purpose: the hero must use the rows'
+    # own generated-token weight, not their in+out total.
     ROWS = [{"total": 1200, "tokens_input": 1000, "tokens_output": 200,
-             "tok_s": 240.0, "date": "2026-11-16"},
+             "rate_weight": 240, "tok_s": 240.0, "date": "2026-11-16"},
             {"total": 550, "tokens_input": 500, "tokens_output": 50,
-             "tok_s": 110.0, "date": "2026-11-17"}]
+             "rate_weight": 1100, "tok_s": 110.0, "date": "2026-11-17"}]
 
     def hero(self, **kw):
         return _ANSI_RE.sub("", "\n".join(report_header("x", self.ROWS, **kw)))
 
     def test_hero_shows_token_weighted_tok_s(self):
-        # (240*1200 + 110*550) / 1750 = 199.1
-        self.assertIn("199.1 tok/s", self.hero())
+        # (240*240 + 110*1100) / 1340 = 133.3; in+out weight would say 199.1.
+        self.assertIn("133.3 tok/s", self.hero())
+
+    def test_hero_falls_back_to_total_without_rate_weight(self):
+        # Event/reconcile rows carry no rate_weight: their hero must still use
+        # in+out total exactly as before.
+        rows = [{k: v for k, v in r.items() if k != "rate_weight"}
+                for r in self.ROWS]
+        text = _ANSI_RE.sub("", "\n".join(report_header("x", rows)))
+        self.assertIn("199.1 tok/s", text)
 
     def test_hero_omits_tok_s_when_no_row_has_a_rate(self):
         rows = [{"total": 300, "tokens_input": 200, "tokens_output": 100,
@@ -788,7 +941,7 @@ class HeroTokSTests(unittest.TestCase):
     def test_hero_tok_s_painted_accent(self):
         hero = report_header("x", self.ROWS)[1]
         r, g, b = NEON["accent"]
-        self.assertIn(f"\x1b[38;2;{r};{g};{b}m199.1\x1b[0m", hero)
+        self.assertIn(f"\x1b[38;2;{r};{g};{b}m133.3\x1b[0m", hero)
 
     def test_hero_unit_words_are_not_painted(self):
         # "tokens"/"in"/"out" render in the terminal's own color; the unit
@@ -801,7 +954,7 @@ class HeroTokSTests(unittest.TestCase):
     def test_hero_tok_s_stays_plain_when_color_is_off(self):
         lines = report_header("x", self.ROWS, color=False)
         self.assertNotIn("\x1b", "\n".join(lines))
-        self.assertIn("199.1 tok/s", lines[1])
+        self.assertIn("133.3 tok/s", lines[1])
 
 
 class ParseDateTests(unittest.TestCase):

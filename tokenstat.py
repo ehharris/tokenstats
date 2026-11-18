@@ -531,20 +531,18 @@ def _weighted_mean_rate(pairs):
 
 
 def _session_rate_groups(dest, key_sql, where, params):
-    """{group key: [(per-session rate, tokens moved)]} for sessions matching
-    `where`, using the formula query_sessions shows so an aggregate row stays
-    reproducible from the rates the sessions view displays. A rate is None
-    when that session's span is unknown or under a second. `key_sql` is the
-    SQL expression to group on."""
-    sql = ("SELECT " + key_sql + ", time_created, time_updated,"
-           " tokens_input + tokens_output FROM usage")
+    """{group key: [(per-session turn-mean rate, generated tokens)]} for
+    sessions matching `where`, using query_sessions' own turn-derived rate and
+    generated-token weight so an aggregate stays reproducible from the rates
+    the sessions view displays. A rate is None when the session has no valid
+    turn. `key_sql` is the SQL expression to group on."""
+    sql = ("SELECT " + key_sql + ", " + _TURN_RATE_SQL + ", " + _GENERATED_SQL
+           + " FROM usage")
     if where:
         sql += " WHERE " + " AND ".join(where)
     groups = {}
-    for key, created, updated, total in dest.execute(sql, params):
-        groups.setdefault(key, []).append(
-            (_aggregate_rate(total, created, updated)
-             if updated is not None else None, total))
+    for key, rate, generated in dest.execute(sql, params):
+        groups.setdefault(key, []).append((rate, generated or 0))
     return groups
 
 
@@ -591,6 +589,7 @@ def query_runs(dest, model=None, since_ms=None, until_ms=None):
                      "progress_tokens": progress,
                      "tokens_input": progress, "tokens_output": 0,
                      "total": progress, "tok_s": tok_s,
+                     "rate_weight": progress,
                      "cost": 0.0, "title": ""})
     return rows
 
@@ -1098,7 +1097,8 @@ def report_header(title, rows, theme=NEON, cost_est=None, unit="rows",
     # this hero summarizes, so the hero and the table under it never disagree.
     # Views whose rows carry no rate (--from-unsloth per event, reconcile) get
     # no TOK/S segment at all.
-    rate = _weighted_mean_rate([(r.get("tok_s"), r.get("total") or 0)
+    rate = _weighted_mean_rate([(r.get("tok_s"),
+                                 r.get("rate_weight", r.get("total") or 0))
                                 for r in rows])
     # IN/OUT tinted like the table columns; the grand total glows at the
     # gradient midpoint (bold); the row-count is a derived stat like SHARE,

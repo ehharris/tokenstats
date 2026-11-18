@@ -14,8 +14,8 @@ import unittest
 import unittest.mock
 
 from tokenstat import (_ANSI_RE, _table_panel, _turn_index, _visible,
-                       GRUVBOX_DARK, NEON, SESSION_COLUMNS, SHARE_COLUMNS,
-                       THEMES, THEME_ROLES, ThemeError,
+                       GRUVBOX_DARK, NEON, NORD, SESSION_COLUMNS,
+                       SHARE_COLUMNS, THEMES, THEME_ROLES, ThemeError,
                        add_shares, compact, daily_events, daily_runs,
                        daily_totals, ensure_schema, import_unsloth,
                        import_unsloth_runs, load_theme_file, main, paint_bars,
@@ -3596,6 +3596,260 @@ class ThemePaintTests(unittest.TestCase):
         out = "\n".join(_table_panel("t", share_rows(), SHARE_COLUMNS,
                                      True, False, theme=THEMES["nord"][1]))
         self.assertNotIn("\x1b", out)
+
+
+class CliThemeTests(unittest.TestCase):
+    """--theme / --theme-default: the two actions, precedence, painted bytes.
+    Modeled on CliNeonTests: same fixture, same color-forcing helper."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = os.path.join(self.tmp.name, "usage.db")
+        qwen_lemonade = '{"id":"qwen-mini","providerID":"lemonade"}'
+        self.src = os.path.join(self.tmp.name, "src.db")
+        self.addCleanup(make_file_db(self.src, [
+            src_row(sid="s1", tin=9000, tout=1000),
+            src_row(sid="s2", model=qwen_lemonade, tin=4500, tout=500),
+        ]).close)
+        self.no_udb = os.path.join(self.tmp.name, "no-studio.db")
+        self.base = ["--db", self.db, "--src", self.src,
+                     "--unsloth-db", self.no_udb]
+        # Every test gets an isolated themes folder. main() must read the
+        # THEMES_DIR / THEME_CONFIG module globals at call time (the default
+        # arguments of resolve_theme/read_default_theme are bound at def time),
+        # so patching them here is what steers the CLI. The folder stays absent
+        # until a test creates it.
+        self.themes = os.path.join(self.tmp.name, "themes")
+        self.config = os.path.join(self.themes, "config.json")
+        for name, value in (("THEMES_DIR", self.themes),
+                            ("THEME_CONFIG", self.config)):
+            patcher = unittest.mock.patch.object(tokenstat, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def run_main(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(argv)
+        return code, out.getvalue(), err.getvalue()
+
+    def colored_main(self, argv):
+        with unittest.mock.patch.object(tokenstat, "_color_enabled",
+                                        return_value=True):
+            return self.run_main(argv)
+
+    def exit_two(self, argv):
+        """Run main() expecting argparse's exit 2; returns the stderr text."""
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm, \
+                contextlib.redirect_stderr(err):
+            main(argv)
+        self.assertEqual(cm.exception.code, 2)
+        return err.getvalue()
+
+    def write_theme_file(self, slug, text):
+        os.makedirs(self.themes, exist_ok=True)
+        path = os.path.join(self.themes, slug + ".json")
+        with open(path, "w") as fh:
+            fh.write(text)
+        return path
+
+    # -- the list action --
+
+    def test_bare_theme_lists_themes_and_marks_default(self):
+        code, out, _ = self.run_main(["--theme"])
+        self.assertEqual(code, 0)
+        lines = out.splitlines()
+        self.assertEqual(len(lines), len(THEMES))     # one line per theme
+        self.assertIn("nord \u2014 Nord", out)
+        self.assertIn("gruvbox-dark \u2014 Gruvbox Dark", out)
+        self.assertEqual(sorted(ln.split(" \u2014 ")[0] for ln in lines),
+                         sorted(THEMES))              # sorted, slug first
+        # nothing saved: Neon Midnight is the default in force
+        neon = next(ln for ln in lines if ln.startswith("neon-midnight"))
+        self.assertTrue(neon.endswith("(default)"), neon)
+        # with a saved default the marker moves to that line
+        write_default_theme(self.config, "nord")
+        code, out, _ = self.run_main(["--theme"])
+        self.assertEqual(code, 0)
+        lines = out.splitlines()
+        nord = next(ln for ln in lines if ln.startswith("nord "))
+        self.assertTrue(nord.endswith("(default)"), nord)
+        neon = next(ln for ln in lines if ln.startswith("neon-midnight"))
+        self.assertNotIn("(default)", neon)
+
+    def test_bare_theme_warns_about_a_broken_theme_file(self):
+        # The list is where a user looks for the theme they just wrote, so a
+        # file that failed validation must say why it is missing.
+        self.write_theme_file("broken", "{oops")
+        self.write_theme_file("mine", ThemeFileTests.GOOD)
+        code, out, err = self.run_main(["--theme"])
+        self.assertEqual(code, 0)
+        self.assertIn("mine \u2014 My Theme", out)
+        self.assertNotIn("broken", out)
+        self.assertIn("warning:", err)
+        self.assertIn("broken.json", err)
+
+    def test_a_stale_default_marks_no_line(self):
+        # a saved slug whose file is gone marks nothing in the list (the marker
+        # only ever lands on a listed theme); the run itself is resolve_theme's
+        # ThemeError to raise, which Task 5 already pins.
+        write_default_theme(self.config, "gone")
+        _, out, _ = self.run_main(["--theme"])
+        self.assertEqual(len([ln for ln in out.splitlines()
+                              if ln.endswith("(default)")]), 0)
+
+    # -- the save action --
+
+    def test_theme_default_saves_and_later_runs_use_it(self):
+        code, out, _ = self.run_main(["--theme-default=nord"])
+        self.assertEqual(code, 0)
+        self.assertIn("default theme: nord (Nord)", out)
+        with open(self.config) as fh:
+            self.assertEqual(json.load(fh), {"default": "nord"})
+        # a later run with no --theme wears the saved theme
+        code, out, _ = self.colored_main(self.base + ["--total", "--model"])
+        self.assertEqual(code, 0)
+        self.assertIn("38;2;{};{};{}m".format(*NORD["tin"]), out)
+        self.assertNotIn("38;2;{};{};{}m".format(*NEON["tin"]), out)
+
+    def test_bare_theme_default_saves_this_runs_theme(self):
+        code, out, _ = self.run_main(["--theme", "nord", "--theme-default"])
+        self.assertEqual(code, 0)
+        self.assertIn("default theme: nord (Nord)", out)
+        self.assertEqual(read_default_theme(self.config), "nord")
+
+    def test_theme_default_without_a_theme_errors(self):
+        err = self.exit_two(["--theme-default"])
+        self.assertIn("--theme=SLUG", err)
+        self.assertFalse(os.path.exists(self.config))
+
+    def test_theme_default_rejects_an_unknown_slug(self):
+        # write_default_theme does not validate: a typo must never land in
+        # themes/config.json.
+        err = self.exit_two(["--theme-default=nope"])
+        self.assertIn("nope", err)
+        self.assertIn("nord", err)                    # the slugs are listed
+        self.assertFalse(os.path.exists(self.config))
+
+    # -- errors --
+
+    def test_unknown_theme_exits_2_and_lists(self):
+        err = self.exit_two(self.base + ["--theme", "nope"])
+        self.assertIn("nope", err)
+        self.assertIn("nord", err)                    # available slugs listed
+
+    def test_theme_swallowing_a_command_is_a_theme_error(self):
+        # Review Focus: `--theme reconcile` is the known --cost quirk — the
+        # error is about the bad slug, not argparse blaming the command word.
+        err = self.exit_two(self.base + ["--theme", "reconcile"])
+        self.assertIn("reconcile", err)
+        self.assertIn("available", err)
+        self.assertNotIn("invalid choice", err)
+
+    # -- painting --
+
+    def test_theme_flag_paints_that_palette(self):
+        code, out, _ = self.colored_main(self.base + ["--total", "--model",
+                                                      "--theme", "gruvbox-dark"])
+        self.assertEqual(code, 0)
+        self.assertIn("38;2;{};{};{}m".format(*GRUVBOX_DARK["tin"]), out)
+        self.assertNotIn("38;2;{};{};{}m".format(*NEON["tin"]), out)
+        self.assertIn("38;2;{};{};{}m".format(*GRUVBOX_DARK["ttotal"]), out)
+
+    def test_theme_flag_moves_the_bar_gradient(self):
+        # the share-bar endpoints come from the resolved theme, not the
+        # import-time TOKEN_IN_RGB/TOKEN_OUT_RGB globals
+        _, out, _ = self.colored_main(self.base + ["--total", "--model",
+                                                   "--theme=gruvbox-dark"])
+        line = next(ln for ln in out.splitlines() if "\u2588" in ln)
+        # the bar is the line's last column: start at the SGR code in front of
+        # its first glyph, stop at the reset that closes the gradient run
+        start = line.rindex("\x1b[", 0, line.index("\u2588"))
+        bar = line[start:].split("\x1b[0m")[0]
+        rgbs = [tuple(int(g) for g in m) for m in
+                re.findall(r"\x1b\[38;2;(\d+);(\d+);(\d+)m", bar)]
+        self.assertGreater(len(rgbs), 1)
+        self.assertEqual(rgbs[0], GRUVBOX_DARK["tin"])    # left end: theme tin
+        self.assertEqual(rgbs[-1], GRUVBOX_DARK["tout"])  # right end: theme tout
+
+    def test_hero_frame_wears_the_theme(self):
+        # report_header hands its theme to panel(); pin the frame (and the
+        # title strip / header text label role) wearing the theme's hues.
+        _, out, _ = self.colored_main(self.base + ["--theme=nord"])
+        self.assertIn("38;2;{};{};{}m".format(*NORD["border"]), out)
+        self.assertIn("38;2;{};{};{}m".format(*NORD["label"]), out)
+        self.assertNotIn("38;2;{};{};{}m".format(*NEON["border"]), out)
+        self.assertNotIn("38;2;{};{};{}m".format(*NEON["label"]), out)
+
+    def test_folder_theme_resolves_through_the_cli(self):
+        # main passes THEMES_DIR (read at call time) into the scan, so a file
+        # dropped in themes/ is selectable by slug with no code change.
+        self.write_theme_file("mine", ThemeFileTests.GOOD)
+        code, out, _ = self.colored_main(self.base + ["--total", "--model",
+                                                      "--theme=mine"])
+        self.assertEqual(code, 0)
+        self.assertIn("38;2;0;0;255m", out)          # GOOD's tin
+        self.assertNotIn("38;2;{};{};{}m".format(*NEON["tin"]), out)
+
+    def test_broken_theme_config_warns_on_a_normal_run(self):
+        # a config that exists but cannot be used must not silently drop the
+        # saved theme: main passes warn= through to read_default_theme.
+        os.makedirs(self.themes, exist_ok=True)
+        with open(self.config, "w") as fh:
+            fh.write("{oops")
+        code, out, err = self.run_main(self.base)
+        self.assertEqual(code, 0)
+        self.assertIn("warning:", err)
+        self.assertIn("config.json", err)
+
+    # -- overlay, gating, plumbing --
+
+    def test_theme_alone_still_renders_the_dashboard(self):
+        # --theme is a display overlay like --cost/--cache: the bare-dashboard
+        # trigger stays a truly bare invocation.
+        code, out, _ = self.run_main(self.base + ["--theme=nord"])
+        self.assertEqual(code, 0)
+        plain = _ANSI_RE.sub("", out)
+        self.assertIn("usage by model \u00b7 top 5 by share", plain)
+        self.assertIn("sessions \u00b7 5 most recent", plain)
+        self.assertIn("tokens \u00b7", plain)          # the hero is there too
+
+    def test_theme_actions_work_without_a_store(self):
+        # Review Focus: both actions short-circuit before implicit ingestion,
+        # so they work even when --db cannot be opened at all.
+        dead = os.path.join(self.tmp.name, "no-such-dir-xyz", "usage.db")
+        code, out, _ = self.run_main(["--db", dead, "--theme-default=nord"])
+        self.assertEqual(code, 0)
+        self.assertIn("default theme: nord", out)
+        code, out, _ = self.run_main(["--db", dead, "--theme"])
+        self.assertEqual(code, 0)
+        self.assertIn("nord \u2014 Nord", out)
+
+    def test_theme_never_colors_piped_or_json_output(self):
+        # Review Focus: color stays gated by _color_enabled under every theme.
+        for extra in (["--theme=nord"],
+                      ["--theme=gruvbox-dark", "--total", "--model"],
+                      ["--theme=nord", "--daily"]):
+            code, out, _ = self.run_main(self.base + extra)
+            self.assertEqual(code, 0, extra)
+            self.assertNotIn("\x1b", out, extra)
+        _, plain_json, _ = self.run_main(
+            self.base + ["--total", "--model", "--json"])
+        _, themed_json, _ = self.run_main(
+            self.base + ["--total", "--model", "--json", "--theme=nord"])
+        self.assertEqual(plain_json, themed_json)
+
+    def test_theme_default_is_gitignored(self):
+        # themes/config.json is personal state: this task owns the rule.
+        repo = os.path.dirname(os.path.abspath(tokenstat.__file__))
+        proc = subprocess.run(["git", "check-ignore", "-q",
+                               "themes/config.json"],
+                              cwd=repo, capture_output=True)
+        self.assertEqual(proc.returncode, 0,
+                         "themes/*.json must be gitignored")
 
 
 class SchemaTests(unittest.TestCase):

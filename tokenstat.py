@@ -28,6 +28,8 @@ MODEL_ANY = object()  # --model with no value (valid only with --total)
 SESSIONS_BARE = object()  # --sessions with no value; argparse skips type on
 # a non-str const, so the sentinel distinguishes the valueless flag from
 # --sessions=0 (a plain string const would be run through type=int).
+THEME_LIST = object()   # --theme with no value: list the themes and exit
+THEME_SAVE = object()   # --theme-default with no value: save this run's theme
 DEFAULT_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "usage.db")
 
 TOKEN_COLUMNS = (
@@ -1718,11 +1720,70 @@ def main(argv):
                              " OUT and TOTAL in session views; informational,"
                              " TOTAL unchanged (not with reconcile,"
                              " --from-unsloth or --from-runs)")
+    parser.add_argument("--theme", nargs="?", const=THEME_LIST, default=None,
+                        metavar="SLUG",
+                        help="paint this run with theme SLUG (bare --theme"
+                             " lists the themes and exits); display-only"
+                             " overlay like --cost, so the dashboard still"
+                             " renders. Prefer --theme=SLUG: the space form"
+                             " can swallow a following command")
+    parser.add_argument("--theme-default", nargs="?", const=THEME_SAVE,
+                        default=None, dest="theme_default", metavar="SLUG",
+                        help="save SLUG as the default theme in"
+                             " themes/config.json (bare --theme-default saves"
+                             " this run's --theme=SLUG). Prefer"
+                             " --theme-default=SLUG: the space form can"
+                             " swallow a following command")
     args = parser.parse_args(argv)
     if args._cost_tier is not None:
         parser.error("--cost-tier was removed; use --cost=<slug>"
                      " (e.g. --cost=opus-5); see --help")
     cost_tier = resolve_cost_tier(args.cost) if args.cost else None
+
+    # Theme: resolved here, before the store opens, and passed explicitly to
+    # every paint call below. Both actions short-circuit here too — listing or
+    # saving touches themes/ only, never SQLite. THEMES_DIR and THEME_CONFIG
+    # are read now (not as resolve_theme's def-time default arguments) so a
+    # caller that repoints the module globals steers this run.
+    def theme_warn(msg):
+        print(msg, file=sys.stderr)
+
+    if args.theme_default is not None:
+        # bare --theme-default saves the --theme=SLUG of the same invocation.
+        slug = (args.theme_default if isinstance(args.theme_default, str)
+                else args.theme if isinstance(args.theme, str) else None)
+        if slug is None:
+            parser.error("--theme-default with no value saves the theme given"
+                         " by --theme=SLUG in the same invocation; none was"
+                         " given (prefer --theme-default=SLUG)")
+        # write_default_theme does not validate: resolve first, so a typo in
+        # the slug never lands in themes/config.json.
+        try:
+            resolve_theme(slug, THEMES_DIR)
+        except ThemeError as exc:
+            parser.error(str(exc))
+        name = scan_themes(THEMES_DIR)[slug][0]   # safe: it just resolved
+        write_default_theme(THEME_CONFIG, slug)
+        print(f"default theme: {slug} ({name})")
+        return 0
+    if args.theme is THEME_LIST:
+        # The list is where a user looks for the theme they just wrote, so a
+        # file that failed validation says why here (resolve_theme takes no
+        # warn; scan_themes does).
+        found = scan_themes(THEMES_DIR, warn=theme_warn)
+        default = read_default_theme(THEME_CONFIG, warn=theme_warn) \
+            or "neon-midnight"
+        for slug in sorted(found):
+            print(f"{slug} \u2014 {found[slug][0]}"
+                  + (" (default)" if slug == default else ""))
+        return 0
+    # Precedence: --theme=SLUG > themes/config.json > Neon Midnight (the None
+    # case resolve_theme already handles).
+    wanted = args.theme or read_default_theme(THEME_CONFIG, warn=theme_warn)
+    try:
+        theme = resolve_theme(wanted, THEMES_DIR)
+    except ThemeError as exc:
+        parser.error(str(exc))
 
     dest = None
     try:
@@ -1824,13 +1885,13 @@ def main(argv):
                 model_rows = annotate_cache(model_rows)
                 sess_rows = annotate_cache(sess_rows)
                 m_cols, s_cols = with_cache(m_cols), with_cache(s_cols)
-            lines = report_header("", all_rows, cost_est=hero_cost,
+            lines = report_header("", all_rows, theme, cost_est=hero_cost,
                                   real_cost=hero_real, unit="sessions",
                                   color=color)
             lines += _table_panel("usage by model \u00b7 top 5 by share",
-                                  model_rows, m_cols, True, color)
+                                  model_rows, m_cols, True, color, theme)
             lines += _table_panel("sessions \u00b7 5 most recent",
-                                  sess_rows, s_cols, False, color)
+                                  sess_rows, s_cols, False, color, theme)
             print("\n".join(lines))
             return 0
 
@@ -1983,14 +2044,14 @@ def main(argv):
                 # paint_bars, plus its per-glyph blue->orange gradient when
                 # this is a terminal (a direct master-behavior restoration —
                 # master called paint_bars(rows, color=_color_enabled(...))).
-                rows = paint_bars(rows, color=color)
-            table = render_table(paint_cells(rows) if color else rows,
+                rows = paint_bars(rows, color=color, theme=theme)
+            table = render_table(paint_cells(rows, theme) if color else rows,
                                  columns)
             if color and table != "no sessions match\n":
                 lines = table.splitlines()
                 # Header block dimmed to the label role, rule to the border
                 # hue (column names recede behind the painted numbers).
-                paint_header_block(lines, columns)
+                paint_header_block(lines, columns, theme=theme)
                 # Reconcile rows carry no summed token classes, so a hero
                 # header would imply zeros the view never computed — the
                 # compare view gets the table panel only.
@@ -1999,8 +2060,8 @@ def main(argv):
                 # echo (reconcile skips its own for the same kind of reason).
                 head = ([] if args.command == "reconcile"
                         or (want_total and len(rows) == 1)
-                        else report_header(title, rows, unit=hero_unit))
-                print("\n".join(head + panel(title, lines)))
+                        else report_header(title, rows, theme, unit=hero_unit))
+                print("\n".join(head + panel(title, lines, theme)))
             else:
                 print(table, end="")
         return 0

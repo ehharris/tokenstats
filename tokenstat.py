@@ -21,6 +21,7 @@ import re
 import sqlite3
 import sys
 import time
+from collections import Counter
 
 
 def state_dir(home=None):
@@ -271,63 +272,100 @@ def _turn_index(types: list[str], end: int, legacy: bool) -> int:
     return found
 
 
+def _upsert(dest, table, pk, rows, numeric, overwrite=(), insert_only=()):
+    """Fold `rows` into `table` with one monotonic-max upsert per row.
+
+    `rows` is a list of dicts carrying every column to write, `pk` among them;
+    the column order is the first row's key order. Each column belongs to one
+    class, and the classes are what keeps the ingest invariants:
+
+      numeric      — stored as max(old, new), never an increment: a source that
+                     repeats or shrinks can neither double count nor erase
+                     history (invariant 1).
+      overwrite    — takes the new value unconditionally, even NULL, so a run
+                     that finished stops looking unfinished.
+      insert_only  — written on insert and never touched again (our own
+                     provenance columns, e.g. first_seen).
+      everything else — a label: `new or old`, so a source that nulls a
+                     provider/model/title keeps the best we already have
+                     (invariant 3).
+
+    A row counts `updated` when its NUMERIC merge moved and `unchanged`
+    otherwise: a label-only change is not a number moving, which is what these
+    counters have always meant. One malformed row fails inside its own
+    statement and bumps `skipped` without aborting (or rolling back) the rest.
+    The caller owns the commit, so a family's rows land in one transaction.
+    """
+    counts = Counter(inserted=0, updated=0, unchanged=0)
+    if not rows:
+        return counts
+    cols = list(rows[0])
+    labels = [c for c in cols if c != pk and c not in numeric
+              and c not in overwrite and c not in insert_only]
+    # Only the numeric and label columns need the stored row: an overwrite
+    # column comes from the source alone, an insert_only one is never read.
+    probe = [c for c in cols if c != pk and c not in overwrite
+             and c not in insert_only]
+    updates = [c for c in cols if c != pk and c not in insert_only]
+    select = f"SELECT {', '.join(probe)} FROM {table} WHERE {pk} = ?"
+    insert = (f"INSERT INTO {table} ({', '.join(cols)})"
+              f" VALUES ({', '.join('?' * len(cols))})")
+    update = (f"UPDATE {table} SET "
+              f"{', '.join(f'{c} = ?' for c in updates)} WHERE {pk} = ?")
+    for row in rows:
+        try:
+            existing = dest.execute(select, (row[pk],)).fetchone()
+            if existing is None:
+                dest.execute(insert, [row[c] for c in cols])
+                counts["inserted"] += 1
+                continue
+            old = dict(zip(probe, existing))
+            merged = {c: max(old[c], row[c]) for c in numeric}
+            changed = merged != {c: old[c] for c in numeric}
+            values = {**{c: row[c] for c in overwrite}, **merged,
+                      **{c: row[c] or old[c] for c in labels}}
+            dest.execute(update, [values[c] for c in updates] + [row[pk]])
+            counts["updated" if changed else "unchanged"] += 1
+        except sqlite3.Error:
+            # One malformed source row must not abort (or roll back) the rest.
+            counts["skipped"] += 1
+    return counts
+
+
 def record(src: sqlite3.Connection, dest: sqlite3.Connection, now_ms: int) -> dict:
     """Upsert every session_v2 row into our usage table.
 
     One row per OpenCode session id; token/cost columns store the latest
     observed total (max of stored and source), so re-recording can never
     double count and a pruned/rewritten source can never shrink history.
+    time_updated and last_seen follow the source (last_seen is the one field
+    that moves on an unchanged session), first_seen is written once, and the
+    labels — provider, model_id, title, directory, agent and the source's own
+    time_created — keep the best we already have (invariant 3).
     """
-    counts = {"inserted": 0, "updated": 0, "unchanged": 0}
     rows = src.execute(
         "SELECT id, model, tokens_input, tokens_output, tokens_reasoning,"
         " tokens_cache_read, tokens_cache_write, cost, title, directory,"
         " agent, time_created, time_updated FROM session_v2"
     ).fetchall()
+    payload = []
     for (sid, model_raw, tin, tout, treas, tcr, tcw, cost, title, directory,
          agent, created, updated) in rows:
-        source_vals = [v or 0 for v in (tin, tout, treas, tcr, tcw, cost)]
         provider, model_id = parse_model(model_raw)
-        try:
-            existing = dest.execute(
-                "SELECT tokens_input, tokens_output, tokens_reasoning,"
-                " tokens_cache_read, tokens_cache_write, cost, provider,"
-                " model_id, title, directory, agent"
-                " FROM usage WHERE session_id = ?", (sid,)).fetchone()
-            if existing is None:
-                dest.execute(
-                    "INSERT INTO usage (session_id, provider, model_id,"
-                    " tokens_input, tokens_output, tokens_reasoning,"
-                    " tokens_cache_read, tokens_cache_write, cost, title,"
-                    " directory, agent, time_created, time_updated,"
-                    " first_seen, last_seen) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    [sid, provider, model_id, *source_vals, title, directory,
-                     agent, created, updated, now_ms, now_ms])
-                counts["inserted"] += 1
-            else:
-                merged = [max(e, s) for e, s in zip(existing[:6], source_vals)]
-                changed = merged != list(existing[:6])
-                # Labels make the numbers interpretable: like the token
-                # columns, they never shrink — a null/empty value from the
-                # source keeps the best label we already have.
-                kept = [new or old for new, old in
-                        zip((provider, model_id, title, directory, agent),
-                            existing[6:])]
-                dest.execute(
-                    "UPDATE usage SET provider = ?, model_id = ?,"
-                    " tokens_input = ?, tokens_output = ?, tokens_reasoning = ?,"
-                    " tokens_cache_read = ?, tokens_cache_write = ?, cost = ?,"
-                    " title = ?, directory = ?, agent = ?, time_updated = ?,"
-                    " last_seen = ? WHERE session_id = ?",
-                    [kept[0], kept[1], *merged, kept[2], kept[3], kept[4],
-                     updated, now_ms, sid])
-                counts["updated" if changed else "unchanged"] += 1
-        except sqlite3.Error:
-            # One malformed source row must not abort (or roll back) the rest.
-            counts["skipped"] = counts.get("skipped", 0) + 1
-    steps = import_opencode_steps(src, dest)
-    for key, value in steps.items():
-        counts[key] = counts.get(key, 0) + value
+        payload.append({
+            "session_id": sid, "provider": provider, "model_id": model_id,
+            "tokens_input": tin or 0, "tokens_output": tout or 0,
+            "tokens_reasoning": treas or 0, "tokens_cache_read": tcr or 0,
+            "tokens_cache_write": tcw or 0, "cost": cost or 0,
+            "title": title, "directory": directory, "agent": agent,
+            "time_created": created, "time_updated": updated,
+            "first_seen": now_ms, "last_seen": now_ms,
+        })
+    counts = _upsert(dest, "usage", "session_id", payload,
+                     numeric=TOKEN_COLUMNS,
+                     overwrite=("time_updated", "last_seen"),
+                     insert_only=("first_seen",))
+    counts.update(import_opencode_steps(src, dest))
     dest.commit()
     return counts
 
@@ -340,6 +378,10 @@ def import_opencode_steps(src: sqlite3.Connection,
     max, so re-recording can never double count and a pruned source can never
     shrink history. A source without session_message imports as zero steps,
     mirroring the chat_generation_runs no-op in import_unsloth_runs.
+
+    This family keeps its own loop instead of folding into `_upsert`: the dense
+    turn ordinals and the rule that a NULL step_ms never maxes against a real
+    duration are semantics, not duplication.
 
     `step_ms` is a duration, not a running total: NULL means "no information"
     (the step never streamed), so it is deliberately NOT folded into max() as
@@ -369,7 +411,7 @@ def import_opencode_steps(src: sqlite3.Connection,
     in the arithmetic; per the spec's error-isolation constraint it bumps
     `skipped` instead of aborting the snapshot.
     """
-    counts = {"inserted": 0, "updated": 0, "unchanged": 0}
+    counts = Counter(inserted=0, updated=0, unchanged=0)
     has_table = src.execute(
         "SELECT name FROM sqlite_master WHERE type='table'"
         " AND name='session_message'").fetchone()
@@ -482,7 +524,7 @@ def import_opencode_steps(src: sqlite3.Connection,
             except (sqlite3.Error, TypeError, ValueError):
                 # One malformed source row must not abort (or roll back) the
                 # rest, and must not consume a turn ordinal.
-                counts["skipped"] = counts.get("skipped", 0) + 1
+                counts["skipped"] += 1
     dest.commit()
     return counts
 
@@ -490,36 +532,20 @@ def import_opencode_steps(src: sqlite3.Connection,
 def import_unsloth(src: sqlite3.Connection, dest: sqlite3.Connection) -> dict:
     """Upsert every api_usage_events row into our unsloth_events table.
 
-    One row per Unsloth event id; values are monotonic max, so re-importing
-    can never double count (events themselves are immutable)."""
-    counts = {"inserted": 0, "updated": 0, "unchanged": 0}
+    One row per Unsloth event id; the token columns are monotonic max, so
+    re-importing can never double count (events themselves are immutable).
+    `model` and `created_at` ride the label class: a source that nulls one
+    keeps the value we already hold."""
     rows = src.execute(
         "SELECT id, model, prompt_tokens, completion_tokens, total_tokens,"
         " created_at FROM api_usage_events").fetchall()
-    for eid, model, p, c, t, ts in rows:
-        vals = [v or 0 for v in (p, c, t)]
-        try:
-            existing = dest.execute(
-                "SELECT prompt_tokens, completion_tokens, total_tokens"
-                " FROM unsloth_events WHERE event_id = ?", (eid,)).fetchone()
-            if existing is None:
-                dest.execute(
-                    "INSERT INTO unsloth_events (event_id, model,"
-                    " prompt_tokens, completion_tokens, total_tokens,"
-                    " created_at) VALUES (?,?,?,?,?,?)",
-                    [eid, model or "", *vals, ts])
-                counts["inserted"] += 1
-            else:
-                merged = [max(e, v) for e, v in zip(existing, vals)]
-                changed = merged != list(existing)
-                dest.execute(
-                    "UPDATE unsloth_events SET model = ?, prompt_tokens = ?,"
-                    " completion_tokens = ?, total_tokens = ?"
-                    " WHERE event_id = ?", [model or "", *merged, eid])
-                counts["updated" if changed else "unchanged"] += 1
-        except sqlite3.Error:
-            # One malformed source row must not abort (or roll back) the rest.
-            counts["skipped"] = counts.get("skipped", 0) + 1
+    payload = [{"event_id": eid, "model": model or "",
+                "prompt_tokens": p or 0, "completion_tokens": c or 0,
+                "total_tokens": t or 0, "created_at": ts}
+               for eid, model, p, c, t, ts in rows]
+    counts = _upsert(dest, "unsloth_events", "event_id", payload,
+                     numeric=("prompt_tokens", "completion_tokens",
+                              "total_tokens"))
     dest.commit()
     return counts
 
@@ -529,51 +555,37 @@ def import_unsloth_runs(src: sqlite3.Connection,
     """Upsert every chat_generation_runs row into our unsloth_runs table.
 
     One row per Studio run id; progress_tokens is a monotonic max, so
-    re-importing can never double count. The model lives inside request_json
-    (no dedicated column); extract it in Python rather than SQLite JSON1 so
-    the query works on any build. A studio.db without the table (older
-    installs) reports zero runs instead of failing."""
-    counts = {"inserted": 0, "updated": 0, "unchanged": 0}
+    re-importing can never double count. started_at, completed_at and status
+    take the source value unconditionally — even NULL — or a run that finished
+    would look unfinished forever. `model` rides the label class: a source that
+    stops naming the model keeps the name we already have. The model lives
+    inside request_json (no dedicated column); extract it in Python rather than
+    SQLite JSON1 so the query works on any build. A studio.db without the table
+    (older installs) reports zero runs instead of failing."""
     has_table = src.execute(
         "SELECT name FROM sqlite_master WHERE type='table'"
         " AND name='chat_generation_runs'").fetchone()
     if not has_table:
-        return counts
+        return Counter(inserted=0, updated=0, unchanged=0)
     rows = src.execute(
         "SELECT id, request_json, progress_tokens, started_at, completed_at,"
         " status FROM chat_generation_runs").fetchall()
+    payload = []
     for rid, request_json, progress, started, completed, status in rows:
         try:
-            try:
-                data = json.loads(request_json)
-            except (TypeError, ValueError):
-                data = None
-            # Non-dict JSON is an extraction failure, not a row error
-            # (mirrors parse_model): blank model, but the row still inserts.
-            model = data.get("model", "") if isinstance(data, dict) else ""
-            vals = [progress or 0]
-            existing = dest.execute(
-                "SELECT progress_tokens FROM unsloth_runs"
-                " WHERE run_id = ?", (rid,)).fetchone()
-            if existing is None:
-                dest.execute(
-                    "INSERT INTO unsloth_runs (run_id, model,"
-                    " progress_tokens, started_at, completed_at, status)"
-                    " VALUES (?,?,?,?,?,?)",
-                    [rid, str(model), *vals, started, completed, status or ""])
-                counts["inserted"] += 1
-            else:
-                merged = [max(e, v) for e, v in zip(existing, vals)]
-                changed = merged != list(existing)
-                dest.execute(
-                    "UPDATE unsloth_runs SET model = ?, progress_tokens = ?,"
-                    " started_at = ?, completed_at = ?, status = ?"
-                    " WHERE run_id = ?",
-                    [str(model), *merged, started, completed, status or "", rid])
-                counts["updated" if changed else "unchanged"] += 1
-        except sqlite3.Error:
-            # One malformed source row must not abort (or roll back) the rest.
-            counts["skipped"] = counts.get("skipped", 0) + 1
+            data = json.loads(request_json)
+        except (TypeError, ValueError):
+            data = None
+        # Non-dict JSON is an extraction failure, not a row error
+        # (mirrors parse_model): blank model, but the row still inserts.
+        model = data.get("model", "") if isinstance(data, dict) else ""
+        payload.append({"run_id": rid, "model": str(model),
+                        "progress_tokens": progress or 0,
+                        "started_at": started, "completed_at": completed,
+                        "status": status or ""})
+    counts = _upsert(dest, "unsloth_runs", "run_id", payload,
+                     numeric=("progress_tokens",),
+                     overwrite=("started_at", "completed_at", "status"))
     dest.commit()
     return counts
 

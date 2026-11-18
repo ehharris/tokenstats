@@ -95,6 +95,75 @@ def make_dest():
     return conn
 
 
+class UpsertEngineTests(unittest.TestCase):
+    """The one monotonic-max upsert every ingest path folds into.
+
+    Fixture table stands in for a store table: `model` is a label, `n` a
+    numeric column, `end` an overwrite column (named like a keyword because a
+    store column may be one), `seen` an insert-only column."""
+
+    def setUp(self):
+        self.dest = sqlite3.connect(":memory:")
+        self.addCleanup(self.dest.close)
+        self.dest.execute(
+            'CREATE TABLE t (k TEXT PRIMARY KEY, model TEXT, n INTEGER,'
+            ' "end" INTEGER, seen INTEGER)')
+
+    def stored(self, k="a"):
+        return self.dest.execute(
+            'SELECT model, n, "end", seen FROM t WHERE k = ?', (k,)).fetchone()
+
+    def test_numeric_columns_fold_to_max_and_labels_keep_best(self):
+        rows = [{"k": "a", "model": "m", "n": 5}]
+        first = tokenstat._upsert(self.dest, "t", "k", rows, numeric=["n"])
+        self.assertEqual(first["inserted"], 1)
+        # A clean run carries no `skipped` key at all: the returned Counter has
+        # to stay dict-equal to the plain dicts the ingest tests compare whole.
+        self.assertEqual(first, {"inserted": 1, "updated": 0, "unchanged": 0})
+        again = tokenstat._upsert(self.dest, "t", "k",
+                                  [{"k": "a", "model": "", "n": 3}],
+                                  numeric=["n"])
+        self.assertEqual(again["unchanged"], 1)      # 3 does not shrink 5
+        # stored row keeps the label the source nulled and the number it grew
+        self.assertEqual(self.stored(), ("m", 5, None, None))
+        again = tokenstat._upsert(self.dest, "t", "k",
+                                  [{"k": "a", "model": "m2", "n": 9}],
+                                  numeric=["n"])
+        self.assertEqual(again["updated"], 1)        # and n is now 9, model m2
+        self.assertEqual(self.stored(), ("m2", 9, None, None))
+
+    def test_overwrite_columns_take_the_new_value_even_when_falsy(self):
+        tokenstat._upsert(self.dest, "t", "k",
+                          [{"k": "a", "n": 1, "end": 7}], numeric=["n"],
+                          overwrite=["end"])
+        tokenstat._upsert(self.dest, "t", "k",
+                          [{"k": "a", "n": 1, "end": None}], numeric=["n"],
+                          overwrite=["end"])
+        # A NULL reading lands as NULL: an overwrite column is never keep-best,
+        # or a finished run would look unfinished forever.
+        self.assertEqual(self.stored(), (None, 1, None, None))
+
+    def test_insert_only_columns_are_written_once(self):
+        tokenstat._upsert(self.dest, "t", "k", [{"k": "a", "n": 1, "seen": 1}],
+                          numeric=["n"], insert_only=["seen"])
+        tokenstat._upsert(self.dest, "t", "k", [{"k": "a", "n": 2, "seen": 2}],
+                          numeric=["n"], insert_only=["seen"])
+        # n folded up to 2, seen still the value the first insert wrote.
+        self.assertEqual(self.stored(), (None, 2, None, 1))
+
+    def test_a_malformed_row_bumps_skipped_and_the_rest_survive(self):
+        # A dict is a type sqlite3 refuses to bind: the bad row is isolated and
+        # the good row beside it still lands.
+        counts = tokenstat._upsert(
+            self.dest, "t", "k",
+            [{"k": "bad", "model": "m", "n": {"not": "a number"}},
+             {"k": "good", "model": "m", "n": 4}], numeric=["n"])
+        self.assertEqual(counts["skipped"], 1)
+        self.assertEqual(counts["inserted"], 1)
+        self.assertIsNone(self.stored("bad"))
+        self.assertEqual(self.stored("good"), ("m", 4, None, None))
+
+
 class RecordTests(unittest.TestCase):
     def setUp(self):
         self.dest = make_dest()

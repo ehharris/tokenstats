@@ -98,7 +98,7 @@ call. Approximate anchors:
 | gpt-5.1-codex-mini | GPT-5.1-Codex-Mini | 0.25 | 2.00 | 0.1× in | = in |
 | gpt-5.1-codex | GPT-5.1-Codex | 1.25 | 10.00 | 0.125 | = in |
 | deepseek-v3.2 | DeepSeek V3.2 | 0.28 | 0.40 | 0.028 | = in |
-| qwen-turbo | Qwen-Turbo | 0.05 | 0.40 | = in | = in |
+| qwen-turbo | Qwen-Turbo | 0.05 | 0.20 | = in | = in |
 | qwen-plus | Qwen-Plus | 0.40 | 1.20 | = in | = in |
 | qwen-max | Qwen-Max | 1.60 | 6.40 | = in | = in |
 

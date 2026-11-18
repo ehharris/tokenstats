@@ -3332,10 +3332,14 @@ class ThemeConfigTests(unittest.TestCase):
         self.assertIn("config.json", warnings[0])
 
     def test_read_config_without_default_key_is_none(self):
-        self.write_config('{"other": "x"}')
-        warnings = []
-        self.assertIsNone(read_default_theme(self.config, warn=warnings.append))
-        self.assertEqual(warnings, [])
+        # a typo'd/lost "default" key, or a non-string/empty value, must warn
+        # like any unusable config — not silently drop the saved theme
+        for body in ('{"other": "x"}', '{"default": ""}', '{"default": 5}'):
+            self.write_config(body)
+            warnings = []
+            self.assertIsNone(read_default_theme(self.config, warn=warnings.append))
+            self.assertEqual(len(warnings), 1, body)
+            self.assertIn("config.json", warnings[0])
 
     # -- write_default_theme --
 

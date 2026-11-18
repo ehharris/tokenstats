@@ -304,18 +304,21 @@ caller — and only when `--db` was not given, so every test and every run that
 names its own store never touches `$HOME`. It performs the one-time migration: a
 store, or top-level `themes/*.json`, left beside an older copy of the script
 travels into `~/.tokenstat/` and says so on stderr (`migrated store: <old> ->
-<new>`). The order cannot lose history: theme files travel first and the store
-LAST, a failed move rolls the moved files back and keeps using the legacy path,
-and a move lost to a rival run lands on the store that run migrated — decided by
-what is on disk, not by what was attempted. The OpenCode default is now
+<new>`). The order cannot lose history: within the store group the `-wal`/`-shm`
+siblings travel first and `usage.db` LAST, a failed move rolls the moved files
+back and keeps using the legacy path, and a move lost to a rival run lands on
+the store that run migrated — decided by what is on disk, not by what was
+attempted. Theme files move after the store, and only when the state dir has no
+themes of its own. The OpenCode default is now
 XDG-aware: `$XDG_DATA_HOME/opencode/opencode.db` when that is an absolute path,
 else `~/.local/share/opencode/opencode.db`, matching how OpenCode resolves it;
 Unsloth stays `~/.unsloth/studio/studio.db`. `--help` now advertises only the 13
 user-facing options (plus the `record`/`import-unsloth`/`reconcile` positional):
 `--min-in`, `--min-out`, `--db`, `--src`, `--unsloth-db` and `--from-unsloth`
-are `argparse.SUPPRESS`ed — fully usable, never listed. Redundancy pass,
-behavior and on-screen bytes unchanged: one LIKE-escape helper and one
-date-window builder behind all three filter paths (`_like_pattern`,
+are `argparse.SUPPRESS`ed — fully usable, never listed, as is the removed
+`--cost-tier` shim, kept only to answer stale shell history with a migration
+message. Redundancy pass, behavior and on-screen bytes unchanged: one
+LIKE-escape helper and one date-window builder behind all three filter paths (`_like_pattern`,
 `_date_clauses`); one aggregate engine behind the daily and total views
 (`_grouped_aggregates`, `_total_aggregates`); one monotonic-max upsert for every
 ingest path (`_upsert`, whose column classes are numeric / `overwrite` /

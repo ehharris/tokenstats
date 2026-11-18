@@ -276,9 +276,10 @@ Studio's `api_usage_events` + `chat_generation_runs`), so reports are always
 current. If either
 database is missing or locked, `tokenstat` prints a warning and reports
 from your existing store instead of failing. `--src`, `--unsloth-db`, and
-`--db` still override those three paths, and `--min-in`, `--min-out`, and
-`--from-unsloth` still work: all six are fully functional but deliberately
-left out of `--help`, which advertises only what a normal run needs.
+`--db` still override those paths, and `--min-in`, `--min-out`, and
+`--from-unsloth` still work: all six are fully functional but deliberately left
+out of `--help`, which lists only what a normal run needs (a seventh, the
+retired `--cost-tier`, only points at `--cost=<slug>`).
 
 ## No double counting
 

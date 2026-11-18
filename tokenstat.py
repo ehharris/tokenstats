@@ -1200,6 +1200,58 @@ def scan_themes(dir=THEMES_DIR, warn=None):
     return found
 
 
+# The saved default theme lives in themes/config.json as {"default": "<slug>"}.
+# It is read on every run and written by --theme-default; a missing or unusable
+# file is not an error, it simply means "no default saved".
+THEME_CONFIG = os.path.join(THEMES_DIR, "config.json")
+
+
+def read_default_theme(path=THEME_CONFIG, warn=None):
+    """The saved default theme slug from `path`, or None. A missing file is a
+    silent None; a file that exists but cannot be read, decoded, or parsed, or
+    that is not a JSON object, is reported through warn(f"warning: ...") and
+    also yields None. A JSON object without a usable string "default" is treated
+    as 'no default' (None, silent) rather than an error."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            obj = json.load(fh)
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        if warn is not None:
+            warn(f"warning: {path}: {exc}")
+        return None
+    if not isinstance(obj, dict):
+        if warn is not None:
+            warn(f"warning: {path}: config must be a JSON object")
+        return None
+    slug = obj.get("default")
+    return slug if isinstance(slug, str) and slug else None
+
+
+def write_default_theme(path, slug):
+    """Persist {"default": slug} to `path`, creating the parent folder if needed."""
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps({"default": slug}) + "\n")
+
+
+def resolve_theme(slug, dir=THEMES_DIR):
+    """The role -> (r, g, b) colors for `slug`: None means the Neon Midnight
+    default; a slug is looked up in scan_themes(dir) so folder themes resolve by
+    slug too; an unknown slug raises ThemeError naming it and listing the
+    available slugs."""
+    if slug is None:
+        return NEON
+    found = scan_themes(dir)
+    if slug in found:
+        return found[slug][1]
+    raise ThemeError(f"unknown theme '{slug}'; available: "
+                     f"{', '.join(sorted(found))}")
+
+
 # Bars are a left-to-right color gradient: input tokens blue fading into
 # output-token pink, with the transition centered where the input share of
 # the row's total ends. Interpolated in HSL sweeping UP from blue through

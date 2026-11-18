@@ -3251,6 +3251,28 @@ class ThemeFileTests(unittest.TestCase):
             load_theme_file(self.write_theme("broken", "{oops"))
         self.assertIn("broken.json", str(ctx.exception))
 
+    def test_blank_name_raises(self):
+        # "" and whitespace-only are both "no name": a theme that would render
+        # an empty title in --theme's list is rejected, not accepted.
+        for blank in ("", "   ", "\t\n"):
+            obj = json.loads(self.GOOD)
+            obj["name"] = blank
+            with self.assertRaises(ThemeError) as ctx:
+                load_theme_file(self.write_theme("blank-name", json.dumps(obj)))
+            self.assertIn("name", str(ctx.exception), repr(blank))
+            self.assertIn("blank-name.json", str(ctx.exception), repr(blank))
+
+    def test_lowercase_hex_literals_parse(self):
+        # the case-insensitive pin above only ever feeds uppercase letters, and
+        # a hand-written theme file is usually lowercase
+        obj = json.loads(self.GOOD)
+        obj["colors"] = {role: "#a1b2c3" for role in THEME_ROLES}
+        name, colors = load_theme_file(self.write_theme("lower", json.dumps(obj)))
+        self.assertEqual(name, "My Theme")
+        self.assertEqual(set(colors), set(THEME_ROLES))
+        self.assertEqual(colors["tin"], (0xA1, 0xB2, 0xC3))
+        self.assertEqual(colors["tshare"], (0xA1, 0xB2, 0xC3))
+
     def test_non_utf8_bytes_raise_and_scan_skips(self):
         # e.g. UTF-16-authored or a binary file misnamed .json: UnicodeDecodeError
         # must surface as ThemeError naming the file, and a scan must skip it
@@ -3352,6 +3374,17 @@ class ThemeConfigTests(unittest.TestCase):
             self.assertIsNone(read_default_theme(self.config, warn=warnings.append))
             self.assertEqual(len(warnings), 1, body)
             self.assertIn("config.json", warnings[0])
+
+    def test_read_config_that_is_not_an_object_warns_and_is_none(self):
+        # valid JSON that is not an object (a hand-edited list, an empty file
+        # that parsed to null) has nowhere to keep a slug: warn, no default.
+        for body in ("[1, 2]", "null"):
+            self.write_config(body)
+            warnings = []
+            self.assertIsNone(read_default_theme(self.config, warn=warnings.append))
+            self.assertEqual(len(warnings), 1, body)
+            self.assertIn("config.json", warnings[0])
+            self.assertIn("JSON object", warnings[0], body)
 
     # -- write_default_theme --
 
@@ -3701,6 +3734,26 @@ class CliThemeTests(unittest.TestCase):
         self.assertEqual(len([ln for ln in out.splitlines()
                               if ln.endswith("(default)")]), 0)
 
+    def test_a_stale_default_is_explained_on_stderr(self):
+        # zero markers with no explanation is a silent bug in the one place the
+        # user came to diagnose a missing theme: name the config and the slug.
+        write_default_theme(self.config, "gone")
+        code, out, err = self.run_main(["--theme"])
+        self.assertEqual(code, 0)
+        self.assertIn("config.json", err)
+        self.assertIn("gone", err)
+        self.assertIn("warning:", err)
+        # ...and stdout's list is byte-stable: one line per theme, nothing added
+        self.assertEqual(len(out.splitlines()), len(THEMES))
+        # a default that does resolves needs no explanation
+        write_default_theme(self.config, "nord")
+        code, out, err = self.run_main(["--theme"])
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "")
+        self.assertEqual(len(out.splitlines()), len(THEMES))
+        self.assertEqual(len([ln for ln in out.splitlines()
+                              if ln.endswith("(default)")]), 1)
+
     # -- the save action --
 
     def test_theme_default_saves_and_later_runs_use_it(self):
@@ -3733,8 +3786,11 @@ class CliThemeTests(unittest.TestCase):
             self.assertEqual(read_default_theme(self.config), "nord")
 
     def test_theme_default_without_a_theme_errors(self):
+        # and the message names the flag and the fix, not just the refusal
         err = self.exit_two(["--theme-default"])
         self.assertIn("--theme=SLUG", err)
+        self.assertIn("same invocation", err)
+        self.assertIn("--theme-default=SLUG", err)
         self.assertFalse(os.path.exists(self.config))
 
     def test_theme_default_rejects_an_unknown_slug(self):
@@ -3744,6 +3800,49 @@ class CliThemeTests(unittest.TestCase):
         self.assertIn("nope", err)
         self.assertIn("nord", err)                    # the slugs are listed
         self.assertFalse(os.path.exists(self.config))
+
+    def test_an_unwritable_config_target_is_a_clean_error(self):
+        # A read-only themes/ (here: the parent folder is a plain file, which
+        # needs no chmod and so cannot leak permissions into the cleanup) is a
+        # CLI failure like every other one: tokenstat: error: ..., exit 2, and
+        # never a Python traceback.
+        blocker = os.path.join(self.tmp.name, "not-a-folder")
+        with open(blocker, "w") as fh:
+            fh.write("a file where a folder should be")
+        stuck = os.path.join(blocker, "config.json")
+        with unittest.mock.patch.object(tokenstat, "THEME_CONFIG", stuck):
+            err = self.exit_two(["--theme-default=nord"])
+        self.assertIn("could not write", err)
+        self.assertIn("config.json", err)
+        self.assertNotIn("Traceback", err)
+        self.assertFalse(os.path.exists(stuck))
+
+    # -- the empty-value forms --
+
+    def test_empty_theme_value_is_no_theme_given(self):
+        # `--theme=` is not the empty slug: it behaves as if the flag were
+        # absent, so the saved default still applies.
+        write_default_theme(self.config, "nord")
+        code, out, _ = self.colored_main(self.base + ["--theme="])
+        self.assertEqual(code, 0)
+        self.assertIn("38;2;{};{};{}m".format(*NORD["tin"]), out)
+        # with nothing saved it is just a plain run: no "unknown theme ''"
+        code, out, err = self.run_main(self.base + ["--theme="])
+        self.assertEqual(code, 0)
+        self.assertIn("tokens \u00b7", _ANSI_RE.sub("", out))
+        self.assertNotIn("unknown theme", err)
+
+    def test_empty_theme_default_value_takes_the_bare_flag_path(self):
+        # `--theme-default=` is the bare flag, not a request to save '': it
+        # errors the same way, and with a --theme=SLUG it saves like the bare form.
+        err = self.exit_two(["--theme-default="])
+        self.assertIn("--theme=SLUG", err)
+        self.assertNotIn("unknown theme", err)
+        self.assertFalse(os.path.exists(self.config))
+        code, out, _ = self.run_main(["--theme=nord", "--theme-default="])
+        self.assertEqual(code, 0)
+        self.assertEqual(out, "default theme: nord (Nord)\n")
+        self.assertEqual(read_default_theme(self.config), "nord")
 
     # -- errors --
 
@@ -3773,6 +3872,23 @@ class CliThemeTests(unittest.TestCase):
         self.assertIn("gone", err)                             # and why
         self.assertNotIn("\x1b", out)                          # piped stays plain
         # the fallback is the built-in default theme, painted on a terminal
+        code, out, _ = self.colored_main(self.base + ["--total", "--model"])
+        self.assertEqual(code, 0)
+        self.assertIn("38;2;{};{};{}m".format(*NEON["tin"]), out)
+
+    def test_a_stale_default_naming_a_broken_file_gives_the_real_reason(self):
+        # A default that points at a theme file the user CAN see, but which
+        # failed validation, must not read as a plain "unknown theme": the scan
+        # gets resolve_theme's warn hook here, so its own reason prints first.
+        self.write_theme_file("x", '{"name": "X"}')     # valid JSON, no colors
+        write_default_theme(self.config, "x")
+        code, out, err = self.run_main(self.base)
+        self.assertEqual(code, 0)
+        self.assertIn("x.json", err)                    # names the file
+        self.assertIn("colors", err)                    # and the real reason
+        self.assertIn("config.json", err)               # and who points at it
+        self.assertIn("tokens \u00b7", _ANSI_RE.sub("", out))   # report rendered
+        # and it is Neon Midnight that rendered, not a half-loaded theme
         code, out, _ = self.colored_main(self.base + ["--total", "--model"])
         self.assertEqual(code, 0)
         self.assertIn("38;2;{};{};{}m".format(*NEON["tin"]), out)
@@ -3886,8 +4002,11 @@ class CliThemeTests(unittest.TestCase):
 
     def test_theme_default_is_gitignored(self):
         # themes/config.json is personal state: this task owns the rule.
+        # --no-index matters: without it, check-ignore exits 1 for a TRACKED
+        # path, so committing the file would turn this into a confusing
+        # "not ignored" failure instead of the intended tripwire.
         repo = os.path.dirname(os.path.abspath(tokenstat.__file__))
-        proc = subprocess.run(["git", "check-ignore", "-q",
+        proc = subprocess.run(["git", "check-ignore", "--no-index", "-q",
                                "themes/config.json"],
                               cwd=repo, capture_output=True)
         self.assertEqual(proc.returncode, 0,

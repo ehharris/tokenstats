@@ -27,9 +27,11 @@ and the filename stem is the slug you type.
 - Colors are `#rrggbb` strings, any case — no `#rgb`, no color names, no
   `rgb()`, no alpha. Files are read as UTF-8.
 - A file that fails to parse or validate is **skipped** with a one-line warning
-  on stderr: one broken file never breaks a run. Its slug then does not exist,
-  so `--theme=<that slug>` reports `unknown theme` — the warning that `--theme`
-  (bare) prints is where you find out why.
+  on stderr: one broken file never breaks a run. The scan is not part of every
+  run — it happens when a theme is resolved or listed — so that warning is what
+  bare `--theme` prints, and what a run that reads a saved default prints; it is
+  where you find out why a file is missing from the list. Its slug then does not
+  exist, so `--theme=<that slug>` reports `unknown theme`.
 - A file whose stem matches a built-in slug **shadows** it: `themes/dracula.json`
   replaces the built-in Dracula.
 - `track` is a legacy role — it still lives in the built-in Neon Midnight dict,

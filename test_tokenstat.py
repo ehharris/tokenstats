@@ -2185,9 +2185,9 @@ class CliTotalTests(unittest.TestCase):
              "--total", "--model", "--cost"])
         self.assertEqual(code, 0)
         unsloth_line = next(ln for ln in out.splitlines() if "unsloth" in ln)
-        # SHARE percent value, then the space-padded bar (two column
-        # separators + paint_bars' leading pad), then block glyphs
-        self.assertRegex(unsloth_line, r"\d+\.\d%   [█░▒▓]")
+        # SHARE percent value, then a gap (the "SHARE %" header widened the
+        # percent column), then block glyphs — bars still painted
+        self.assertRegex(unsloth_line, r"\d+\.\d%\s+[█░▒▓]")
 
     def test_reconcile_rejects_cost(self):
         with self.assertRaises(SystemExit) as cm:
@@ -2595,7 +2595,7 @@ class CliCacheTests(unittest.TestCase):
         code, out, _ = self.base("--total", "--model", "--cache")
         self.assertEqual(code, 0)
         unsloth_line = next(ln for ln in out.splitlines() if "unsloth" in ln)
-        self.assertRegex(unsloth_line, r"\d+\.\d%   [█░▒▓]")
+        self.assertRegex(unsloth_line, r"\d+\.\d%\s+[█░▒▓]")
 
     def test_cost_and_cache_together_show_both_columns(self):
         code, out, _ = self.base("--total", "--cost", "--cache")
@@ -2774,8 +2774,9 @@ class CliShareTests(unittest.TestCase):
              "--total", "--model"])
         self.assertEqual(code, 0)
         lines = out.splitlines()
-        self.assertIn("SHARE", lines[0])
-        # BAR header label dropped: the bars speak for themselves.
+        # share pair (human decision): the percent column reads "SHARE %",
+        # the bar column "SHARE" — the pair is legible at a glance.
+        self.assertIn("SHARE %  SHARE", lines[0])
         self.assertNotIn("BAR", lines[0])
         unsloth_line = next(ln for ln in lines if "unsloth-studio" in ln)
         lemonade_line = next(ln for ln in lines if "lemonade" in ln)
@@ -3517,11 +3518,13 @@ class DefaultDashboardTests(unittest.TestCase):
         self.assertTrue(first.startswith("\u256d tokenstat "))
         self.assertNotIn("\u00b7", first)
 
-    def test_dashboard_shares_have_no_bar_header_label(self):
+    def test_dashboard_share_pair_is_labeled(self):
         _, plain, _ = self.bare()
         plain = _ANSI_RE.sub("", plain)
-        self.assertIn("SHARE", plain)      # share keeps its label...
-        self.assertNotIn("BAR", plain)     # ...the bars do not
+        # both share columns carry headers now (human decision): the pair
+        # reads "SHARE %  SHARE"; no "BAR" label anywhere.
+        self.assertIn("SHARE %  SHARE", plain)
+        self.assertNotIn("BAR", plain)
 
     def test_bare_hero_counts_sessions_not_rows(self):
         _, plain, _ = self.bare()

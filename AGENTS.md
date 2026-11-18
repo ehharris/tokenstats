@@ -219,8 +219,12 @@ deepseek→deepseek-v3.2, qwen→qwen-plus; two-model lineups: the standard mode
 is the mid), resolved once in `main` via `resolve_cost_tier`. The COST header
 is built per-run by `cost_column(tier)` and names the pinned model, wrapped
 over two lines (`COST  ·` / `Claude Sonnet 5 Prices`; `render_table` now
-splits header names on `"\n"` and top-aligns the lines, so any column may
-wrap) — a stale price table is visible and the column stays narrow. Cost
+splits header names on `"\n"`) — a stale price table is visible and the
+column stays narrow. Table head increment (human decision, same day):
+header text BOTTOM-left aligns and every table gets a `─` rule between the
+header block and the data (`header_height`/`paint_header_block`; rule wears
+the border hue in color) — flag-less table output gained that one rule line.
+Cost
 cells render `$X.XX` (2 decimals, human decision; sub-cent rows render
 `$0.00`). New `--real-cost` adds a `REAL COST` column from the stored `cost`
 field (the real USD OpenCode reported; rows already carry it — pure display,

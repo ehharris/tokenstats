@@ -4333,10 +4333,17 @@ class MigrationTests(unittest.TestCase):
         for suffix in ("", "-wal", "-shm"):
             with open(os.path.join(self.legacy, "usage.db" + suffix), "w") as fh:
                 fh.write(suffix)
-        tokenstat.default_store(self.state, self.legacy)
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            used = tokenstat.default_store(self.state, self.legacy)
+        self.assertEqual(used, os.path.join(self.state, "usage.db"))
+        self.assertIn("migrated store:", err.getvalue())
         for suffix in ("", "-wal", "-shm"):
             self.assertFalse(os.path.exists(
                 os.path.join(self.legacy, "usage.db" + suffix)))
+            # Arrived with its bytes, not merely with its name: an empty file
+            # where a WAL was is how a corrupt store starts.
+            self.assertEqual(read_text(
+                os.path.join(self.state, "usage.db" + suffix)), suffix)
 
     def test_migration_is_a_no_op_once_the_store_exists(self):
         os.makedirs(self.state)

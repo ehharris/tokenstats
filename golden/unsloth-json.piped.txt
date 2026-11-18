@@ -1,0 +1,22 @@
+[
+  {
+    "date": "2025-11-24",
+    "model": "unsloth/Qwen3.8-Flash-Next-GGUF",
+    "tokens_input": 3000,
+    "tokens_output": 400,
+    "total": 3400,
+    "cost": 0.0,
+    "title": "",
+    "tok_s": null
+  },
+  {
+    "date": "2026-11-06",
+    "model": "unsloth/Qwen3.8-Flash-Next-GGUF",
+    "tokens_input": 800,
+    "tokens_output": 90,
+    "total": 890,
+    "cost": 0.0,
+    "title": "",
+    "tok_s": null
+  }
+]

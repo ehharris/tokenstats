@@ -10,7 +10,7 @@ in `docs/superpowers/plans/`.
 
 **State at handoff (2026-11-18):** work sits on `master` (no remote
 configured — local-only repo, no push; branch workflow used for increments,
-fast-forward merged after clean review rounds). 385 tests green. Connection
+fast-forward merged after clean review rounds). 393 tests green. Connection
 hygiene (2026-11-15): every sqlite
 connection main() opens is now closed — the store via try/finally and each
 read-only source by `_ingest` owning its open/close; `NoResourceWarningTests`
@@ -279,10 +279,13 @@ subfolders, and a test loads every example so a shipped one cannot rot. The ten
 built-in palettes live in `tokenstat.py`.
 Neon Midnight remains the default and flag-off output stays byte-identical
 (existing pins untouched); piped/`NO_COLOR`/`--json` output stays byte-plain
-under every theme. Spec + plan in docs/superpowers/{specs,plans}/
-2026-11-17-custom-themes*. CLI tests share one harness base (`CliHarness`:
-`run_main` captures both streams, `colored_main` also forces the color gate)
-instead of each class re-declaring it.
+under every theme — and that promise is now an artifact: `golden/` holds exact
+stdout for 18 invocations x {piped, tty}, compared by
+`ByteIdentityGoldenTests`, regenerated only on purpose (see `golden/README.md`).
+Spec + plan in docs/superpowers/{specs,plans}/2026-11-17-custom-themes*. CLI
+tests share one harness base (`CliHarness`: `run_main` captures both streams,
+`colored_main` also forces the color gate) instead of each class re-declaring
+it.
 
 ## Commands (run from this directory)
 
@@ -307,6 +310,7 @@ python3 tokenstat.py reconcile                         # lost-history view per m
 python3 tokenstat.py record | import-unsloth           # explicit snapshots (import-unsloth = events + runs; exit 1 if source unreadable)
 python3 -m unittest test_tokenstat -v                  # tests (~0.15s, no deps)
 python3 -W error::ResourceWarning -m unittest test_tokenstat   # strict variant: must stay warning-clean
+TOKENSTAT_UPDATE_GOLDEN=1 python3 -m unittest test_tokenstat   # re-pin golden/ only AFTER reading the diff
 ```
 
 ## Data sources (verified live)

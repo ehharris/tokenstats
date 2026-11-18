@@ -1,0 +1,28 @@
+[
+  {
+    "model": "unsloth-studio/unsloth/Qwen3.8-Flash-Next-GGUF",
+    "sessions": 2,
+    "tokens_input": 9250,
+    "tokens_output": 1260,
+    "total": 10510,
+    "cost": 0.02,
+    "tokens_cache_read": 14000,
+    "tokens_cache_write": 200,
+    "tok_s": null,
+    "rate_weight": 0,
+    "share": 60.89223638470452
+  },
+  {
+    "model": "lemonade/gpt-oss-120b",
+    "sessions": 2,
+    "tokens_input": 6000,
+    "tokens_output": 750,
+    "total": 6750,
+    "cost": 0.05,
+    "tokens_cache_read": 7000,
+    "tokens_cache_write": 100,
+    "tok_s": null,
+    "rate_weight": 0,
+    "share": 39.10776361529548
+  }
+]

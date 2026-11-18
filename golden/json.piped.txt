@@ -1,0 +1,54 @@
+[
+  {
+    "date": "2026-11-04",
+    "model": "unsloth-studio/unsloth/Qwen3.8-Flash-Next-GGUF",
+    "tokens_input": 9000,
+    "tokens_output": 1200,
+    "total": 10200,
+    "cost": 0.01,
+    "title": "alpha",
+    "tokens_cache_read": 7000,
+    "tokens_cache_write": 100,
+    "tok_s": null,
+    "rate_weight": 0
+  },
+  {
+    "date": "2026-11-05",
+    "model": "lemonade/gpt-oss-120b",
+    "tokens_input": 4500,
+    "tokens_output": 500,
+    "total": 5000,
+    "cost": 0.02,
+    "title": "beta",
+    "tokens_cache_read": 0,
+    "tokens_cache_write": 0,
+    "tok_s": null,
+    "rate_weight": 0
+  },
+  {
+    "date": "2026-11-06",
+    "model": "lemonade/gpt-oss-120b",
+    "tokens_input": 1500,
+    "tokens_output": 250,
+    "total": 1750,
+    "cost": 0.03,
+    "title": "gamma",
+    "tokens_cache_read": 7000,
+    "tokens_cache_write": 100,
+    "tok_s": null,
+    "rate_weight": 0
+  },
+  {
+    "date": "2026-11-07",
+    "model": "unsloth-studio/unsloth/Qwen3.8-Flash-Next-GGUF",
+    "tokens_input": 250,
+    "tokens_output": 60,
+    "total": 310,
+    "cost": 0.01,
+    "title": "delta",
+    "tokens_cache_read": 7000,
+    "tokens_cache_write": 100,
+    "tok_s": null,
+    "rate_weight": 0
+  }
+]

@@ -10,7 +10,7 @@ in `docs/superpowers/plans/`.
 
 **State at handoff (2026-11-17):** work sits on `master` (no remote
 configured — local-only repo, no push; branch workflow used for increments,
-fast-forward merged after clean review rounds). 292 tests green. Connection
+fast-forward merged after clean review rounds). 311 tests green. Connection
 hygiene (2026-11-15): every sqlite
 connection main() opens is now closed — the store via try/finally and each
 read-only source by `_ingest` owning its open/close; `NoResourceWarningTests`
@@ -204,6 +204,29 @@ bare invocation and its 5-session panel keeps its own title. Spec in
 docs/superpowers/specs/2026-11-17-sessions-view-design.md, plan in
 docs/superpowers/plans/2026-11-17-sessions-cap.md.
 
+Cost-rework increment (2026-11-17): `--cost` and `--cost-tier` merged into ONE
+option `--cost[=<slug>]` (argparse `nargs="?"`, `const="sonnet-5"` — the
+`--sessions` pattern; `--cost-tier` removed; prefer the `=` form because
+`--cost reconcile` swallows the command → exit 2). `PRICES` re-keyed to
+specific model slugs with display `name`s (haiku-4.5, sonnet-5, opus-5,
+gpt-5.1-codex-mini, gpt-5.1-codex, deepseek-v3.2, qwen-turbo, qwen-plus,
+qwen-max; list prices verified 2026-11-17 — Claude re-pinned from Sonnet 4.6
+to Sonnet 5 $2/$10, Opus 5 $5/$25; non-Anthropic vendors bill no cache-write
+premium → `cache_write = in`), plus `FAMILY_ALIASES` mapping a family name to
+the provider's MID-TIER model (claude→sonnet-5, codex/openai→gpt-5.1-codex,
+deepseek→deepseek-v3.2, qwen→qwen-plus; two-model lineups: the standard model
+is the mid), resolved once in `main` via `resolve_cost_tier`. The COST header
+is built per-run by `cost_column(tier)` and names the pinned model
+(`COST · Claude Sonnet 5 pricing`) — a stale price table is visible. Cost
+cells render `$X.XX` (2 decimals, human decision; sub-cent rows render
+`$0.00`). New `--real-cost` adds a `REAL COST` column from the stored `cost`
+field (the real USD OpenCode reported; rows already carry it — pure display,
+`--json` shape unchanged), coexists with `--cost` (estimate column first,
+real after), and adds a `· $X.XX` hero tail (no tilde — it is real) summed
+over ALL sessions on the dashboard; rejected with `--from-unsloth`/
+`--from-runs` (their stored cost is always 0.0) and `reconcile`. Spec + plan
+in docs/superpowers/{specs,plans}/2026-11-17-cost-rework*.
+
 ## Commands (run from this directory)
 
 ```bash
@@ -218,7 +241,8 @@ python3 tokenstat.py --sessions                        # list the 20 most recent
 python3 tokenstat.py --sessions=10 --daily             # daily aggregates over the 10 most recent sessions
 python3 tokenstat.py --from-unsloth [--daily|--json]   # Unsloth's own per-request log
 python3 tokenstat.py --from-runs [--daily|--total]     # Studio runs, TRUE generation tok/s
-python3 tokenstat.py --cost [--cost-tier haiku|opus]   # reference $ overlay (off by default)
+python3 tokenstat.py --cost[=<slug>]                   # reference $ overlay (default sonnet-5; slugs + family aliases)
+python3 tokenstat.py --total --real-cost               # stored real USD column (session views only)
 python3 tokenstat.py --total --model --cache           # combined cache column (session views only)
 python3 tokenstat.py reconcile                         # lost-history view per model
 python3 tokenstat.py record | import-unsloth           # explicit snapshots (import-unsloth = events + runs; exit 1 if source unreadable)
@@ -312,8 +336,9 @@ python3 -W error::ResourceWarning -m unittest test_tokenstat   # strict variant:
 - `--from-unsloth` renders with session-shaped columns (blank SESSION); a
   dedicated event column set is unclaimed polish (`--from-runs` has its own
   RUNS_COLUMNS). Displayed tables have no COST column by default; opt-in
-  `--cost` adds a REFERENCE estimate column — distinct from the stored real
-  cost, which stays `--json`-only.
+  `--cost` adds a REFERENCE estimate column (header names the pinned model);
+  the stored real cost is displayed only by opt-in `--real-cost` (and always
+  was in `--json`).
 - Sessions whose source model JSON was null/malformed group under `MODEL="/"`
   in per-model reports (empty provider + empty model_id joined by `/`).
   Honest display — any fix belongs in ingestion labeling (invariant 3), not

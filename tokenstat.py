@@ -7,8 +7,10 @@ events and generation runs — and reports them filtered by model, date, and
 token thresholds. Reporting views carry a TOK/S column (reconcile
 excepted): each session row is the mean of its per-turn decode rates (matching
 OpenCode's per-prompt number), aggregate rows are token-weighted by generated
-tokens, and --from-runs shows each run's true generation rate. Opt-in --cost
-overlays a reference Claude-tier dollar estimate. See README.md.
+tokens, and --from-runs shows each run's true generation rate. Opt-in
+--cost[=<slug>] overlays a reference dollar estimate priced at one chosen
+model (family names resolve to the provider's mid-tier); opt-in --real-cost
+shows the stored real USD OpenCode reported. See README.md.
 """
 import argparse
 import colorsys

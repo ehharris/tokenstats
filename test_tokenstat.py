@@ -14,13 +14,13 @@ import unittest
 import unittest.mock
 
 from tokenstat import (_ANSI_RE, _turn_index, _visible, NEON, SESSION_COLUMNS,
-                       THEMES, THEME_ROLES, add_shares, compact, daily_events,
-                       daily_runs, daily_totals, ensure_schema, import_unsloth,
-                       import_unsloth_runs, main, paint_bars, paint_cells,
-                       panel, parse_date, parse_model, query_events,
-                       query_runs, query_sessions, reconcile, record,
-                       render_table, report_header, total_events,
-                       total_runs, total_totals)
+                       THEMES, THEME_ROLES, ThemeError, add_shares, compact,
+                       daily_events, daily_runs, daily_totals, ensure_schema,
+                       import_unsloth, import_unsloth_runs, load_theme_file,
+                       main, paint_bars, paint_cells, panel, parse_date,
+                       parse_model, query_events, query_runs, query_sessions,
+                       reconcile, record, render_table, report_header,
+                       scan_themes, total_events, total_runs, total_totals)
 
 LEMONADE_JSON = '{"id":"gpt-oss-120b","providerID":"lemonade"}'
 UNSLOTH_MODEL_ID = "unsloth/Qwen3.8-Flash-Next-GGUF"
@@ -3132,6 +3132,110 @@ class ThemeRegistryTests(unittest.TestCase):
                 for b in picks[i + 1:]:
                     self.assertGreater(sum(abs(x - y) for x, y in zip(a, b)), 60,
                                        f"{slug}: {picks[i]} vs {b}")
+
+
+class ThemeFileTests(unittest.TestCase):
+    """Custom theme files: parse, strict-validate, scan the themes folder."""
+
+    # class attribute on ThemeRegistryTests, not a module global — reference it
+    BUILTIN_SLUGS = ThemeRegistryTests.BUILTIN_SLUGS
+
+    GOOD = ('{"name": "My Theme", "colors": {"border": "#101010", "accent": "#202020",'
+            ' "label": "#303030", "num": "#F0F0F0", "tin": "#0000FF", "tout": "#FF0000",'
+            ' "tcach": "#00FF00", "ttotal": "#FF00FF", "tshare": "#00FFFF"}}')
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.themes = os.path.join(self.tmp.name, "themes")
+        os.mkdir(self.themes)
+
+    def write_theme(self, slug, text):
+        path = os.path.join(self.themes, slug + ".json")
+        with open(path, "w") as fh:
+            fh.write(text)
+        return path
+
+    def test_parses_hex_case_insensitively(self):
+        name, colors = load_theme_file(self.write_theme("mine", self.GOOD))
+        self.assertEqual((name, colors["border"], colors["tin"]),
+                         ("My Theme", (16, 16, 16), (0, 0, 255)))
+
+    def test_extra_keys_are_ignored(self):
+        obj = json.loads(self.GOOD)
+        obj["author"] = "someone"
+        obj["colors"]["track"] = "#404040"  # legacy role name, not one of the nine
+        name, colors = load_theme_file(self.write_theme("extra", json.dumps(obj)))
+        self.assertEqual(name, "My Theme")
+        self.assertEqual(set(colors), set(THEME_ROLES))
+        self.assertNotIn("track", colors)
+
+    def test_missing_role_raises(self):
+        obj = json.loads(self.GOOD)
+        del obj["colors"]["tin"]
+        with self.assertRaises(ThemeError) as ctx:
+            load_theme_file(self.write_theme("hole", json.dumps(obj)))
+        self.assertIn("tin", str(ctx.exception))
+        self.assertIn("hole.json", str(ctx.exception))
+
+    def test_bad_hex_raises(self):
+        for bad in ("blue", "#12345G"):
+            obj = json.loads(self.GOOD)
+            obj["colors"]["tin"] = bad
+            with self.assertRaises(ThemeError) as ctx:
+                load_theme_file(self.write_theme("badhex", json.dumps(obj)))
+            self.assertIn("tin", str(ctx.exception), bad)
+            self.assertIn("badhex.json", str(ctx.exception), bad)
+
+    def test_rgb_out_of_range_raises(self):
+        for bad in ("#100", [0, 0, 255, 255]):
+            obj = json.loads(self.GOOD)
+            obj["colors"]["tin"] = bad
+            with self.assertRaises(ThemeError) as ctx:
+                load_theme_file(self.write_theme("range", json.dumps(obj)))
+            self.assertIn("tin", str(ctx.exception), bad)
+            self.assertIn("range.json", str(ctx.exception), bad)
+
+    def test_non_dict_shapes_raise(self):
+        with self.assertRaises(ThemeError):        # top level a list
+            load_theme_file(self.write_theme("list-top", "[1, 2]"))
+        with self.assertRaises(ThemeError):        # "colors" a list
+            load_theme_file(self.write_theme("list-colors",
+                                             '{"name": "T", "colors": [1]}'))
+        with self.assertRaises(ThemeError):        # "name" a number
+            load_theme_file(self.write_theme("num-name",
+                                             '{"name": 7, "colors": {}}'))
+
+    def test_bad_json_raises(self):
+        with self.assertRaises(ThemeError) as ctx:
+            load_theme_file(self.write_theme("broken", "{oops"))
+        self.assertIn("broken.json", str(ctx.exception))
+
+    def test_scan_merges_and_shadows(self):
+        self.write_theme("nord", self.GOOD)
+        found = scan_themes(dir=self.themes)
+        self.assertEqual(found["nord"], ("My Theme", dict(
+            load_theme_file(self.write_theme("nord", self.GOOD))[1])))
+        self.assertEqual(set(self.BUILTIN_SLUGS)
+                         | {"nord"}, set(found))
+        self.assertEqual(len(found), 10)  # 10 built-in slugs, nord shadowed in place
+
+    def test_scan_without_folder_is_builtin_only(self):
+        missing = os.path.join(self.tmp.name, "does-not-exist")
+        self.assertEqual(scan_themes(dir=missing), dict(THEMES))
+
+    def test_scan_skips_broken_file_with_warning(self):
+        self.write_theme("mine", self.GOOD)
+        self.write_theme("broken", "{oops")
+        warnings = []
+        found = scan_themes(dir=self.themes, warn=warnings.append)
+        self.assertIn("mine", found)
+        self.assertNotIn("broken", found)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("broken.json", warnings[0])
+        self.assertIn("warning:", warnings[0])
+        self.assertEqual(set(self.BUILTIN_SLUGS), set(found) - {"mine"})
 
 
 class CliColorTests(unittest.TestCase):

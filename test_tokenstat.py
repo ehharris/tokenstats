@@ -4046,10 +4046,28 @@ class DefaultPathsTests(unittest.TestCase):
                          "/tmp/fake-home/.unsloth/studio/studio.db")
 
     def test_module_defaults_point_at_the_state_dir(self):
-        self.assertEqual(tokenstat.DEFAULT_DB, tokenstat.default_db())
-        self.assertEqual(tokenstat.THEMES_DIR, tokenstat.themes_dir())
-        self.assertEqual(tokenstat.THEME_CONFIG, tokenstat.theme_config())
-        self.assertEqual(tokenstat.DEFAULT_SRC, tokenstat.default_src())
+        # Pin the import-time bindings themselves: exec a second, isolated
+        # copy of tokenstat.py under a fake HOME and check each global
+        # against a literal. Comparing a live global with the function it is
+        # assigned from holds by construction and cannot fail. The live
+        # module is never reloaded, so the class identities (ThemeError et
+        # al.) the rest of the suite imported at module level stay intact.
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "tokenstat_fresh", tokenstat.__file__)
+        fresh = importlib.util.module_from_spec(spec)
+        with unittest.mock.patch.dict(os.environ, {"HOME": "/tmp/fake-home",
+                                                   "XDG_DATA_HOME": ""}):
+            spec.loader.exec_module(fresh)
+        self.assertEqual(fresh.STATE_DIR, "/tmp/fake-home/.tokenstat")
+        self.assertEqual(fresh.DEFAULT_DB, "/tmp/fake-home/.tokenstat/usage.db")
+        self.assertEqual(fresh.THEMES_DIR, "/tmp/fake-home/.tokenstat/themes")
+        self.assertEqual(fresh.THEME_CONFIG,
+                         "/tmp/fake-home/.tokenstat/themes/config.json")
+        self.assertEqual(fresh.DEFAULT_SRC,
+                         "/tmp/fake-home/.local/share/opencode/opencode.db")
+        self.assertEqual(fresh.DEFAULT_UNSLOTH_DB,
+                         "/tmp/fake-home/.unsloth/studio/studio.db")
 
 
 class SchemaTests(unittest.TestCase):

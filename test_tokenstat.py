@@ -1121,6 +1121,11 @@ class HeroTokSTests(unittest.TestCase):
         self.assertLess(text.index("out"), text.index("tok/s"))
         self.assertLess(text.index("tok/s"), text.index("~$"))
 
+    def test_hero_real_cost_tail_sits_after_estimate(self):
+        text = self.hero(cost_est=1.0, real_cost=5.0)
+        self.assertIn("$5.00", text)
+        self.assertLess(text.index("~$1.00"), text.index("$5.00"))
+
     def test_hero_tok_s_painted_accent(self):
         hero = report_header("x", self.ROWS)[1]
         r, g, b = NEON["accent"]
@@ -2243,6 +2248,62 @@ class CliTotalTests(unittest.TestCase):
                   "--unsloth-db", self.no_udb, "--total",
                   "--cost-tier", "opus"])
         self.assertEqual(cm.exception.code, 2)
+
+
+class RealCostTests(unittest.TestCase):
+    """--real-cost: the stored real USD as a display column."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = os.path.join(self.tmp.name, "usage.db")
+        qwen_lemonade = '{"id":"qwen-mini","providerID":"lemonade"}'
+        self.src = os.path.join(self.tmp.name, "src.db")
+        self.addCleanup(make_file_db(self.src, [
+            src_row(sid="s1"),                        # unsloth-studio model
+            src_row(sid="s2", model=qwen_lemonade),   # lemonade qwen-mini
+        ]).close)
+        self.no_udb = os.path.join(self.tmp.name, "no-studio.db")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_main(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(argv)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_real_cost_column_shows_stored_cost(self):
+        code, out, _ = self.run_main(
+            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+             "--total", "--real-cost"])
+        self.assertEqual(code, 0)
+        self.assertIn("REAL COST", out)
+        self.assertIn("$0.02", out)          # grand total 2 x $0.01
+
+    def test_real_cost_coexists_with_estimate(self):
+        code, out, _ = self.run_main(
+            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+             "--total", "--cost", "--real-cost"])
+        self.assertEqual(code, 0)
+        header = out.splitlines()[0]
+        self.assertLess(header.index("COST \u00b7"), header.index("REAL COST"))
+
+    def test_real_cost_json_shape_unchanged(self):  # review-focus pin
+        base = ["--db", self.db, "--src", self.src, "--unsloth-db",
+                self.no_udb, "--total"]
+        _, plain, _ = self.run_main(base + ["--json"])
+        _, real, _ = self.run_main(base + ["--real-cost", "--json"])
+        self.assertEqual(set(json.loads(plain)[0]), set(json.loads(real)[0]))
+
+    def test_real_cost_rejects_unsupported_views(self):
+        for extra in (["reconcile"], ["--from-unsloth"], ["--from-runs"]):
+            with self.subTest(extra=extra), self.assertRaises(SystemExit) as cm, \
+                    contextlib.redirect_stderr(io.StringIO()):
+                main(["--db", self.db, "--src", self.src,
+                      "--unsloth-db", self.no_udb] + extra + ["--real-cost"])
+            self.assertEqual(cm.exception.code, 2)
 
 
 class CostTests(unittest.TestCase):
@@ -3441,6 +3502,14 @@ class DefaultDashboardTests(unittest.TestCase):
         self.assertEqual(code, 0)
         plain = _ANSI_RE.sub("", out)
         self.assertEqual(plain.count("COST \u00b7 Claude Sonnet 5 pricing"), 2)
+
+    def test_dashboard_hero_real_total_over_all_sessions(self):
+        # review-focus pin: 7 sessions x stored $0.01 = $0.07, not the
+        # truncated top-5 panel's sum.
+        code, out, _ = self.bare(["--real-cost"])
+        self.assertEqual(code, 0)
+        self.assertIn("$0.07", _ANSI_RE.sub("", out))
+        self.assertNotIn("~$", out)          # no estimate tail without --cost
 
     def test_fewer_than_five_shows_all(self):
         small = os.path.join(self.tmp.name, "small.db")

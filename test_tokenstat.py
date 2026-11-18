@@ -14,8 +14,8 @@ import unittest
 import unittest.mock
 
 from tokenstat import (_ANSI_RE, _turn_index, _visible, NEON, SESSION_COLUMNS,
-                       add_shares, compact, daily_events, daily_runs,
-                       daily_totals, ensure_schema, import_unsloth,
+                       THEMES, THEME_ROLES, add_shares, compact, daily_events,
+                       daily_runs, daily_totals, ensure_schema, import_unsloth,
                        import_unsloth_runs, main, paint_bars, paint_cells,
                        panel, parse_date, parse_model, query_events,
                        query_runs, query_sessions, reconcile, record,
@@ -3098,6 +3098,43 @@ class NeonThemeTests(unittest.TestCase):
         self.assertEqual(compact(12_340), "12.3k")
         self.assertEqual(compact(999), "999")
         self.assertEqual(compact(0), "0")
+
+
+class ThemeRegistryTests(unittest.TestCase):
+    BUILTIN_SLUGS = {"neon-midnight", "tokyo-night", "dracula", "nord",
+                     "gruvbox-dark", "solarized-dark", "monokai", "one-dark",
+                     "solarized-light", "paper"}
+
+    def test_builtin_slugs_and_display_names(self):
+        self.assertEqual(set(THEMES), self.BUILTIN_SLUGS)
+        for slug, (name, colors) in THEMES.items():
+            self.assertTrue(name and name[0].isupper(), slug)
+
+    def test_every_theme_has_exactly_the_nine_roles(self):
+        for slug, (_, colors) in THEMES.items():
+            if slug == "neon-midnight":
+                # The frozen NEON dict also carries the legacy `track` role.
+                self.assertTrue(set(THEME_ROLES) <= set(colors), slug)
+            else:
+                self.assertEqual(set(colors), set(THEME_ROLES), slug)
+            for role in THEME_ROLES:
+                rgb = colors[role]
+                self.assertEqual(len(rgb), 3, f"{slug}/{role}")
+                self.assertTrue(all(isinstance(v, int) and 0 <= v <= 255
+                                    for v in rgb), f"{slug}/{role}")
+
+    def test_neon_midnight_is_the_existing_palette_unchanged(self):
+        self.assertEqual(THEMES["neon-midnight"], ("Neon Midnight", NEON))
+
+    def test_data_colors_are_pairwise_distinct(self):
+        # IN / OUT / CACHE / TOTAL / SHARE / accent must be tellable apart: no two
+        # equal, and no two within a 60-unit Manhattan distance on the same line.
+        for slug, (_, c) in THEMES.items():
+            picks = [c[r] for r in ("tin", "tout", "tcach", "ttotal", "tshare", "accent")]
+            for i, a in enumerate(picks):
+                for b in picks[i + 1:]:
+                    self.assertGreater(sum(abs(x - y) for x, y in zip(a, b)), 60,
+                                       f"{slug}: {picks[i]} vs {b}")
 
 
 class CliColorTests(unittest.TestCase):

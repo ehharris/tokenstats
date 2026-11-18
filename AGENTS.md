@@ -10,7 +10,7 @@ in `docs/superpowers/plans/`.
 
 **State at handoff (2026-11-18):** work sits on `master` (no remote
 configured — local-only repo, no push; branch workflow used for increments,
-fast-forward merged after clean review rounds). 383 tests green. Connection
+fast-forward merged after clean review rounds). 385 tests green. Connection
 hygiene (2026-11-15): every sqlite
 connection main() opens is now closed — the store via try/finally and each
 read-only source by `_ingest` owning its open/close; `NoResourceWarningTests`
@@ -273,8 +273,10 @@ theme), and a file that fails to parse or validate is skipped with a one-line
 stderr warning — so an explicitly named broken slug reads as an unknown theme,
 and `--theme`'s list prints the reason. Layout: `themes/*.json` and
 `themes/config.json` are gitignored (personal state); `themes/README.md` is the
-tracked format reference, so a fresh clone has the folder holding only that doc
-and the ten palettes live in `tokenstat.py`.
+tracked format reference and `themes/examples/` ships tracked reference themes
+(`gta-vi`) that stay inert until copied into `themes/` — the scan does not walk
+subfolders, and a test loads every example so a shipped one cannot rot. The ten
+built-in palettes live in `tokenstat.py`.
 Neon Midnight remains the default and flag-off output stays byte-identical
 (existing pins untouched); piped/`NO_COLOR`/`--json` output stays byte-plain
 under every theme. Spec + plan in docs/superpowers/{specs,plans}/

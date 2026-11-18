@@ -74,5 +74,21 @@ rather than costing you the report.
 `themes/config.json` is that saved default (`{"default": "<slug>"}`), written by
 `--theme-default` — it is **not** a theme, and the scan skips a file with exactly
 that name. It and your `*.json` themes are gitignored: this folder holds personal
-state, so a fresh clone contains only this README, and the ten built-ins live in
-`tokenstat.py` itself.
+state, and the ten built-ins live in `tokenstat.py` itself.
+
+## examples/
+
+`examples/` is the one tracked part of this folder: reference themes you can copy
+here and edit. The scan reads only this folder's own `*.json` files — subfolders
+are not walked — so an example is inert until you copy it in:
+
+```bash
+cp themes/examples/gta-vi.json themes/    # then: --theme=gta-vi
+python3 tokenstat.py --theme              # gta-vi — GTA VI
+```
+
+`gta-vi.json` is a worked example in the Vice City register: dusk-violet chrome,
+hot-pink OUT, neon-teal IN, sunset-orange cache, neon-yellow share. Its six data
+colors sit far enough apart to stay distinguishable inside one table, which is
+the part easy to get wrong when inventing a palette. A committed test loads every
+file in `examples/`, so a shipped example cannot quietly rot.

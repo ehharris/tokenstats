@@ -218,6 +218,24 @@ class RecordTests(unittest.TestCase):
         record(src, self.dest, now_ms=2)
         self.assertEqual(self.stored()[2], 100)
 
+    def test_record_time_created_is_insert_only(self):
+        # The pre-engine UPDATE omitted time_created: a source that rewrites an
+        # immutable creation stamp must not move the stored one, while the
+        # numeric columns still fold to max and the counters behave as before.
+        src = make_src([src_row()])
+        self.addCleanup(src.close)
+        record(src, self.dest, now_ms=1)
+        src.execute("UPDATE session_v2 SET time_created = 1763999999001,"
+                    " tokens_input = 3000 WHERE id = 's1'")
+        result = record(src, self.dest, now_ms=2)
+        self.assertEqual(result, {"inserted": 0, "updated": 1, "unchanged": 0})
+        row = self.dest.execute(
+            "SELECT time_created, tokens_input, first_seen, last_seen"
+            " FROM usage WHERE session_id = 's1'").fetchone()
+        self.assertEqual(row[0], 1_764_000_000_000)  # first-seen stamp stands
+        self.assertEqual(row[1], 3000)               # numerics still fold to max
+        self.assertEqual((row[2], row[3]), (1, 2))   # first_seen fixed, last_seen moves
+
     def test_record_null_and_malformed_model(self):
         src = make_src([src_row(sid="n1", model=None),
                         src_row(sid="n2", model="not json")])
@@ -1617,6 +1635,23 @@ class ImportUnslothTests(unittest.TestCase):
             "SELECT prompt_tokens FROM unsloth_events"
             " WHERE event_id='e1'").fetchone()
         self.assertEqual(stored[0], 100)
+
+    def test_import_created_at_is_insert_only(self):
+        # The pre-engine UPDATE omitted created_at: a source that rewrites an
+        # immutable event timestamp must not move the stored one, while the
+        # token columns still fold to max and the counters behave as before.
+        src = make_unsloth_src([unsloth_event("e1", prompt=100)])
+        self.addCleanup(src.close)
+        import_unsloth(src, self.dest)
+        src.execute("UPDATE api_usage_events SET created_at = 1763999999001,"
+                    " prompt_tokens = 500, total_tokens = 550 WHERE id = 'e1'")
+        result = import_unsloth(src, self.dest)
+        self.assertEqual(result, {"inserted": 0, "updated": 1, "unchanged": 0})
+        row = self.dest.execute(
+            "SELECT created_at, prompt_tokens, total_tokens FROM unsloth_events"
+            " WHERE event_id = 'e1'").fetchone()
+        self.assertEqual(row[0], 1_764_000_000_000)     # first-seen stamp stands
+        self.assertEqual((row[1], row[2]), (500, 550))  # numerics still fold
 
     def test_query_events_filters(self):
         src = make_unsloth_src([

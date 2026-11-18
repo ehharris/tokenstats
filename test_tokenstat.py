@@ -13,15 +13,17 @@ import tokenstat
 import unittest
 import unittest.mock
 
-from tokenstat import (_ANSI_RE, _table_panel, _turn_index, _visible, NEON,
-                       SESSION_COLUMNS, SHARE_COLUMNS, THEMES, THEME_ROLES,
-                       ThemeError, add_shares, compact, daily_events,
-                       daily_runs, daily_totals, ensure_schema, import_unsloth,
+from tokenstat import (_ANSI_RE, _table_panel, _turn_index, _visible,
+                       GRUVBOX_DARK, NEON, SESSION_COLUMNS, SHARE_COLUMNS,
+                       THEMES, THEME_ROLES, ThemeError,
+                       add_shares, compact, daily_events, daily_runs,
+                       daily_totals, ensure_schema, import_unsloth,
                        import_unsloth_runs, load_theme_file, main, paint_bars,
                        paint_cells, paint_header_block, panel, parse_date,
                        parse_model, query_events, query_runs, query_sessions,
-                       reconcile, record, render_table, report_header,
-                       scan_themes, total_events, total_runs, total_totals)
+                       read_default_theme, reconcile, record, render_table,
+                       report_header, resolve_theme, scan_themes, total_events,
+                       total_runs, total_totals, write_default_theme)
 
 LEMONADE_JSON = '{"id":"gpt-oss-120b","providerID":"lemonade"}'
 UNSLOTH_MODEL_ID = "unsloth/Qwen3.8-Flash-Next-GGUF"
@@ -3290,6 +3292,82 @@ class ThemeFileTests(unittest.TestCase):
         self.assertIn("broken.json", warnings[0])
         self.assertIn("warning:", warnings[0])
         self.assertEqual(set(self.BUILTIN_SLUGS), set(found) - {"mine"})
+
+
+class ThemeConfigTests(unittest.TestCase):
+    """themes/config.json: read/write the saved default, and resolve a slug."""
+
+    GOOD = ThemeFileTests.GOOD  # a valid one-theme .json body
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        # parent folder deliberately left absent: read/write tests create it
+        self.themes = os.path.join(self.tmp.name, "themes")
+        self.config = os.path.join(self.themes, "config.json")
+
+    def write_config(self, text):
+        os.makedirs(self.themes, exist_ok=True)
+        with open(self.config, "w") as fh:
+            fh.write(text)
+        return self.config
+
+    # -- read_default_theme --
+
+    def test_read_missing_config_is_none_and_silent(self):
+        warnings = []
+        self.assertIsNone(read_default_theme(self.config, warn=warnings.append))
+        self.assertEqual(warnings, [])
+
+    def test_read_returns_the_slug(self):            # {"default": "nord"} -> "nord"
+        self.write_config('{"default": "nord"}')
+        self.assertEqual(read_default_theme(self.config), "nord")
+
+    def test_read_broken_config_warns_and_is_none(self):
+        self.write_config("{oops")
+        warnings = []
+        self.assertIsNone(read_default_theme(self.config, warn=warnings.append))
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("config.json", warnings[0])
+
+    def test_read_config_without_default_key_is_none(self):
+        self.write_config('{"other": "x"}')
+        warnings = []
+        self.assertIsNone(read_default_theme(self.config, warn=warnings.append))
+        self.assertEqual(warnings, [])
+
+    # -- write_default_theme --
+
+    def test_write_creates_folder_and_file(self):    # parent dir absent beforehand
+        self.assertFalse(os.path.isdir(self.themes))
+        write_default_theme(self.config, "nord")
+        self.assertEqual(read_default_theme(self.config), "nord")
+        with open(self.config) as fh:
+            self.assertEqual(fh.read(), '{"default": "nord"}\n')
+
+    # -- resolve_theme --
+
+    def test_resolve_none_is_neon(self):
+        self.assertEqual(resolve_theme(None), NEON)
+
+    def test_resolve_slug(self):                     # "gruvbox-dark" -> GRUVBOX_DARK
+        self.assertEqual(resolve_theme("gruvbox-dark"), GRUVBOX_DARK)
+
+    def test_resolve_unknown_lists_slugs(self):      # ThemeError names "nope" + "nord"
+        with self.assertRaises(ThemeError) as ctx:
+            resolve_theme("nope")
+        msg = str(ctx.exception)
+        self.assertIn("nope", msg)
+        self.assertIn("nord", msg)
+
+    def test_resolve_sees_a_folder_theme(self):      # tmp dir with one .json
+        os.makedirs(self.themes, exist_ok=True)
+        with open(os.path.join(self.themes, "mine.json"), "w") as fh:
+            fh.write(self.GOOD)
+        colors = resolve_theme("mine", dir=self.themes)
+        self.assertEqual(colors["border"], (16, 16, 16))
+        self.assertEqual(colors["tin"], (0, 0, 255))
 
 
 class CliColorTests(unittest.TestCase):

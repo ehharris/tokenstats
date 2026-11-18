@@ -111,7 +111,8 @@ restores the ordinary full table; `--json` always emits every session row.
 Every report table except `reconcile` also has a `TOK/S` column. A session
 row's is the **mean of its per-turn rates** — the number OpenCode shows per
 prompt: for each turn, Σ(output+reasoning tokens) divided by the turn's total
-stream time in seconds (each step's `streamed − firstToken` in milliseconds),
+stream time in seconds (each step's `streamed − firstToken`, or `streamed − created`
+when `firstToken` is NULL, in milliseconds),
 then averaged across the session's turns. A turn is skipped when any
 of its steps never streamed, when it generated no tokens, or when its pooled
 stream time is under a second; a session with no surviving turn renders blank.

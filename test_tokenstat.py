@@ -2191,34 +2191,87 @@ class CliTotalTests(unittest.TestCase):
                       "--unsloth-db", self.no_udb, "--cost"])
         self.assertEqual(cm.exception.code, 2)
 
+    def test_cost_bare_header_names_pinned_model(self):
+        code, out, _ = self.run_main(
+            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+             "--total", "--cost"])
+        self.assertEqual(code, 0)
+        self.assertIn("COST \u00b7 Claude Sonnet 5 pricing", out)
+
+    def test_cost_slug_changes_header(self):
+        code, out, _ = self.run_main(
+            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+             "--total", "--cost=deepseek-v3.2"])
+        self.assertEqual(code, 0)
+        self.assertIn("COST \u00b7 DeepSeek V3.2 pricing", out)
+
+    def test_cost_family_alias_equals_model_slug(self):
+        base = ["--db", self.db, "--src", self.src, "--unsloth-db",
+                self.no_udb, "--total"]
+        _, alias, _ = self.run_main(base + ["--cost=qwen"])
+        _, model, _ = self.run_main(base + ["--cost=qwen-plus"])
+        self.assertEqual(alias, model)
+        self.assertIn("COST \u00b7 Qwen-Plus pricing", alias)
+
+    def test_cost_invalid_slug_exits_2(self):
+        with self.assertRaises(SystemExit) as cm, \
+                contextlib.redirect_stderr(io.StringIO()):
+            main(["--db", self.db, "--src", self.src,
+                  "--unsloth-db", self.no_udb, "--total", "--cost=bogus"])
+        self.assertEqual(cm.exception.code, 2)
+
+    def test_cost_empty_value_exits_2(self):  # review-focus pin
+        with self.assertRaises(SystemExit) as cm, \
+                contextlib.redirect_stderr(io.StringIO()):
+            main(["--db", self.db, "--src", self.src,
+                  "--unsloth-db", self.no_udb, "--total", "--cost="])
+        self.assertEqual(cm.exception.code, 2)
+
+    def test_cost_space_form_swallows_command_exits_2(self):  # review-focus pin
+        # "--cost reconcile": argparse eats the command as the tier value;
+        # the user must get exit 2, never a silent dashboard.
+        with self.assertRaises(SystemExit) as cm, \
+                contextlib.redirect_stderr(io.StringIO()):
+            main(["--db", self.db, "--src", self.src,
+                  "--unsloth-db", self.no_udb, "--cost", "reconcile"])
+        self.assertEqual(cm.exception.code, 2)
+
+    def test_cost_tier_flag_removed(self):
+        with self.assertRaises(SystemExit) as cm, \
+                contextlib.redirect_stderr(io.StringIO()):
+            main(["--db", self.db, "--src", self.src,
+                  "--unsloth-db", self.no_udb, "--total",
+                  "--cost-tier", "opus"])
+        self.assertEqual(cm.exception.code, 2)
+
 
 class CostTests(unittest.TestCase):
-    """annotate_cost: reference Claude-tier price overlay on row copies."""
+    """annotate_cost: reference model-tier price overlay on row copies."""
 
     def test_annotate_cost_session_uses_all_token_classes_sonnet(self):
         from tokenstat import annotate_cost
         rows = [{"tokens_input": 1_000_000, "tokens_output": 1_000_000,
                  "tokens_cache_read": 1_000_000, "tokens_cache_write": 1_000_000}]
-        (r,) = annotate_cost(rows, "sonnet")
-        # 3 + 15 + 0.30 + 3.75 = 22.05 per Mtok of each class
-        self.assertAlmostEqual(r["cost_est"], 22.05)
+        (r,) = annotate_cost(rows, "sonnet-5")
+        # 2 + 10 + 0.20 + 2.50 = 14.70 per Mtok of each class
+        self.assertAlmostEqual(r["cost_est"], 14.70)
 
     def test_annotate_cost_tier_changes_number(self):
         from tokenstat import annotate_cost
         rows = [{"tokens_input": 1_000_000, "tokens_output": 0,
                  "tokens_cache_read": 0, "tokens_cache_write": 0}]
-        self.assertAlmostEqual(annotate_cost(rows, "haiku")[0]["cost_est"], 1.0)
-        self.assertAlmostEqual(annotate_cost(rows, "opus")[0]["cost_est"], 5.0)
+        self.assertAlmostEqual(annotate_cost(rows, "haiku-4.5")[0]["cost_est"], 1.0)
+        self.assertAlmostEqual(annotate_cost(rows, "opus-5")[0]["cost_est"], 5.0)
 
     def test_annotate_cost_event_uses_prompt_completion(self):
         from tokenstat import annotate_cost
         rows = [{"tokens_input": 1_000_000, "tokens_output": 1_000_000}]
-        self.assertAlmostEqual(annotate_cost(rows, "sonnet")[0]["cost_est"], 18.0)
+        self.assertAlmostEqual(annotate_cost(rows, "sonnet-5")[0]["cost_est"], 12.0)
 
     def test_annotate_cost_run_uses_progress_only(self):
         from tokenstat import annotate_cost
         rows = [{"progress_tokens": 1_000_000, "tokens_input": 1_000_000}]
-        self.assertAlmostEqual(annotate_cost(rows, "sonnet")[0]["cost_est"], 15.0)
+        self.assertAlmostEqual(annotate_cost(rows, "sonnet-5")[0]["cost_est"], 10.0)
 
     def test_run_aggregate_rows_carry_progress_tokens(self):
         # regression pin (task-4 review): --cost prices by key presence, so
@@ -2234,16 +2287,27 @@ class CostTests(unittest.TestCase):
         self.assertIn("progress_tokens", daily_runs(dest)[0])
         (row,) = total_runs(dest, by_model=True)  # both runs share one model
         self.assertIn("progress_tokens", row)
-        # output-only pricing: (100 + 400) * 15 / 1e6
-        (priced,) = annotate_cost(total_runs(dest, by_model=True), "sonnet")
-        self.assertAlmostEqual(priced["cost_est"], 0.0075)
+        # output-only pricing: (100 + 400) * 10 / 1e6
+        (priced,) = annotate_cost(total_runs(dest, by_model=True), "sonnet-5")
+        self.assertAlmostEqual(priced["cost_est"], 0.005)
 
     def test_annotate_cost_does_not_mutate_input_rows(self):
         from tokenstat import annotate_cost
         rows = [{"tokens_input": 10, "tokens_output": 10}]
-        out = annotate_cost(rows, "sonnet")
+        out = annotate_cost(rows, "sonnet-5")
         self.assertNotIn("cost_est", rows[0])  # inputs untouched...
         self.assertIn("cost_est", out[0])      # ...copies carry the estimate
+
+    def test_resolve_cost_tier_alias_maps_to_mid_tier(self):
+        from tokenstat import resolve_cost_tier, FAMILY_ALIASES, PRICES
+        for alias, target in FAMILY_ALIASES.items():
+            self.assertEqual(resolve_cost_tier(alias), target)
+            self.assertIn(target, PRICES)
+            self.assertTrue(PRICES[target]["name"])
+
+    def test_resolve_cost_tier_passes_model_slugs_through(self):
+        from tokenstat import resolve_cost_tier
+        self.assertEqual(resolve_cost_tier("sonnet-5"), "sonnet-5")
 
 
 class CacheOverlayTests(unittest.TestCase):
@@ -3336,17 +3400,23 @@ class DefaultDashboardTests(unittest.TestCase):
         self.assertGreaterEqual(plain.count("COST"), 2)
         self.assertRegex(plain, r"OUT\s+CACHE\s+TOTAL")
         self.assertEqual(sum(1 for ln in plain.splitlines()
-                             if ln.rstrip(" │").endswith("COST")), 2)
+                             if ln.rstrip(" │").endswith("pricing")), 2)
 
     def test_hero_shows_total_estimate_only_with_cost(self):
-        # 6 default src_rows est (tin*3+tout*15+tcr*.3+tcw*3.75)/1e6 = .008375
-        # each, plus s4 (5M in, 900k out) = 28.5 -> grand total ~$28.55 —
+        # 6 default src_rows est (tin*2+tout*10+tcr*.2+tcw*2.5)/1e6 = .00565
+        # each, plus s4 (5M in, 900k out) = 19.00025 -> grand total ~$19.03 —
         # computed over ALL sessions, not the truncated model table.
         code, out, _ = self.bare(["--cost"])
         self.assertEqual(code, 0)
-        self.assertIn("~$28.55", _ANSI_RE.sub("", out))
+        self.assertIn("~$19.03", _ANSI_RE.sub("", out))
         _, plain_out, _ = self.bare()
         self.assertNotIn("~$", plain_out)
+
+    def test_bare_cost_header_names_pinned_model(self):
+        code, out, _ = self.bare(["--cost"])
+        self.assertEqual(code, 0)
+        plain = _ANSI_RE.sub("", out)
+        self.assertEqual(plain.count("COST \u00b7 Claude Sonnet 5 pricing"), 2)
 
     def test_fewer_than_five_shows_all(self):
         small = os.path.join(self.tmp.name, "small.db")

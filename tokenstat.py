@@ -905,7 +905,10 @@ RUNS_COLUMNS = [
 SHARE_COLUMNS = TOTAL_COLUMNS + [
     ("SHARE", "share_str", "text"), ("", "bar", "text"),  # bar unlabeled
 ]
-COST_COLUMN = ("COST", "cost_est", "cost")  # opt-in --cost estimate overlay
+def cost_column(tier):
+    """(header, key, kind) for the opt-in --cost overlay; the header names the
+    model the pricing is pinned to, so a stale price table is visible."""
+    return (f"COST \u00b7 {PRICES[tier]['name']} pricing", "cost_est", "cost")
 CACHE_COLUMN = ("CACHE", "cache", "int")  # opt-in --cache display overlay
 
 
@@ -925,17 +928,34 @@ def with_cache(columns):
     return out
 
 
-# Reference Claude list prices, USD per million tokens, as of 2026-11-14:
-# Sonnet 4.6 / Haiku 4.5 / Opus 4.8 — cache reads at the standard 0.1x and
-# cache writes at 1.25x each model's input price.
+# Reference list prices, USD per million tokens, verified 2026-11-17.
+# Anthropic bills cache reads at 0.1x and cache writes at 1.25x input;
+# the other vendors bill no cache-write premium (cache_write = in).
 PRICES = {
-    "haiku": {"in": 1.0, "out": 5.0, "cache_read": 0.10, "cache_write": 1.25},
-    "sonnet": {"in": 3.0, "out": 15.0, "cache_read": 0.30, "cache_write": 3.75},
-    "opus": {"in": 5.0, "out": 25.0, "cache_read": 0.50, "cache_write": 6.25},
+    "haiku-4.5":          {"name": "Claude Haiku 4.5",     "in": 1.00, "out": 5.00,  "cache_read": 0.10,  "cache_write": 1.25},
+    "sonnet-5":           {"name": "Claude Sonnet 5",      "in": 2.00, "out": 10.00, "cache_read": 0.20,  "cache_write": 2.50},
+    "opus-5":             {"name": "Claude Opus 5",        "in": 5.00, "out": 25.00, "cache_read": 0.50,  "cache_write": 6.25},
+    "gpt-5.1-codex-mini": {"name": "GPT-5.1-Codex-Mini",   "in": 0.25, "out": 2.00,  "cache_read": 0.025, "cache_write": 0.25},
+    "gpt-5.1-codex":      {"name": "GPT-5.1-Codex",        "in": 1.25, "out": 10.00, "cache_read": 0.125, "cache_write": 1.25},
+    "deepseek-v3.2":      {"name": "DeepSeek V3.2",        "in": 0.28, "out": 0.40,  "cache_read": 0.028, "cache_write": 0.28},
+    "qwen-turbo":         {"name": "Qwen-Turbo",           "in": 0.05, "out": 0.20,  "cache_read": 0.05,  "cache_write": 0.05},
+    "qwen-plus":          {"name": "Qwen-Plus",            "in": 0.40, "out": 1.20,  "cache_read": 0.40,  "cache_write": 0.40},
+    "qwen-max":           {"name": "Qwen-Max",             "in": 1.60, "out": 6.40,  "cache_read": 1.60,  "cache_write": 1.60},
 }
 
+# Family name -> the mid-tier model the provider offers (two-model lineups:
+# the standard model is the mid, not the light one).
+FAMILY_ALIASES = {"claude": "sonnet-5", "openai": "gpt-5.1-codex",
+                  "codex": "gpt-5.1-codex", "deepseek": "deepseek-v3.2",
+                  "qwen": "qwen-plus"}
 
-def annotate_cost(rows, tier="sonnet"):
+
+def resolve_cost_tier(slug):
+    """Family alias -> mid-tier model slug; model slugs pass through."""
+    return FAMILY_ALIASES.get(slug, slug)
+
+
+def annotate_cost(rows, tier="sonnet-5"):
     """Copy of `rows` with a reference Claude-tier estimate added as float
     `cost_est` (USD). Display/JSON overlay only: inputs untouched, nothing
     stored. Row shape picks the math: run rows (progress_tokens) price as
@@ -1394,19 +1414,21 @@ def main(argv):
                         help="report imported Unsloth generation runs (IN ="
                              " progress tokens, no in/out split) with true"
                              " tokens/second")
-    parser.add_argument("--cost", action="store_true", dest="cost",
-                        help="add a reference Claude-tier cost estimate column"
-                             " (--cost-tier) to reports; display-only overlay"
-                             " (not with reconcile)")
-    parser.add_argument("--cost-tier", choices=["haiku", "sonnet", "opus"],
-                        default="sonnet", dest="cost_tier",
-                        help="price tier for --cost (default: sonnet)")
+    parser.add_argument("--cost", nargs="?", const="sonnet-5", default=None,
+                        metavar="TIER", dest="cost",
+                        choices=sorted(PRICES) + sorted(FAMILY_ALIASES),
+                        help="add a reference cost estimate column priced at"
+                             " TIER (model slug or family name; default:"
+                             " sonnet-5); display-only overlay (not with"
+                             " reconcile). Prefer --cost=TIER: the space form"
+                             " can swallow a following command")
     parser.add_argument("--cache", action="store_true", dest="cache",
                         help="add a CACHE column (cache read + write) between"
                              " OUT and TOTAL in session views; informational,"
                              " TOTAL unchanged (not with reconcile,"
                              " --from-unsloth or --from-runs)")
     args = parser.parse_args(argv)
+    cost_tier = resolve_cost_tier(args.cost) if args.cost else None
 
     dest = None
     try:
@@ -1491,14 +1513,14 @@ def main(argv):
             m_cols, s_cols = SHARE_COLUMNS, SESSION_COLUMNS
             hero_cost = None
             if args.cost:
-                model_rows = annotate_cost(model_rows, args.cost_tier)
-                sess_rows = annotate_cost(sess_rows, args.cost_tier)
-                m_cols, s_cols = m_cols + [COST_COLUMN], s_cols + [COST_COLUMN]
+                model_rows = annotate_cost(model_rows, cost_tier)
+                sess_rows = annotate_cost(sess_rows, cost_tier)
+                cc = cost_column(cost_tier)
+                m_cols, s_cols = m_cols + [cc], s_cols + [cc]
                 # Hero total spans ALL sessions — the model table truncates
                 # to five rows, so its COST column can't sum to the truth.
                 hero_cost = sum(r["cost_est"]
-                                for r in annotate_cost(all_rows,
-                                                       args.cost_tier))
+                                for r in annotate_cost(all_rows, cost_tier))
             if args.cache:
                 model_rows = annotate_cache(model_rows)
                 sess_rows = annotate_cache(sess_rows)
@@ -1598,7 +1620,7 @@ def main(argv):
             columns = DAILY_COLUMNS if args.daily else SESSION_COLUMNS
         # Opt-in --cost overlay: reference pricing on row copies, never stored
         # data; reconcile keeps its own reject list above. The share-view flag
-        # is captured BEFORE appending COST_COLUMN — the append creates a new
+        # is captured BEFORE appending cost_column — the append creates a new
         # list, and paint_bars below must still recognize the share view.
         share_view = columns is SHARE_COLUMNS
         # Panel title, derived from the same flags that picked `columns`
@@ -1634,8 +1656,8 @@ def main(argv):
         if limit and (share_view or args.daily):
             title = f"{title} \u00b7 last {limit} sessions"
         if args.cost and columns is not RECON_COLUMNS:
-            rows = annotate_cost(rows, args.cost_tier)
-            columns = columns + [COST_COLUMN]
+            rows = annotate_cost(rows, cost_tier)
+            columns = columns + [cost_column(cost_tier)]
         # Opt-in --cache overlay: combined cache classes as one informational
         # column between OUT and TOTAL; TOTAL stays IN + OUT. The guard above
         # keeps it off the cache-blind Unsloth views; reconcile rejects it.

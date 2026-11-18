@@ -61,7 +61,8 @@ deliberately NO wall-clock fallback; per-event rows have no
 duration so their TOK/S is blank while daily/total event aggregates rate
 over their created_at span; `--json` rows carry `tok_s`); opt-in `--cost`
 overlay plus `--cost-tier haiku|sonnet|opus` (default sonnet) adding a
-`COST` column (`$X.XXXX`) and `cost_est` in `--json`, computed from a
+`COST` column (`$X.XXXX`; SUPERSEDED by the cost-rework increment below —
+that flag and these prices no longer exist) and `cost_est` in `--json`, computed from a
 PRICES table of Anthropic LIST PRICES as of 2026-11-14 (Sonnet 4.6 $3/$15,
 Haiku 4.5 $1/$5, Opus 4.8 $5/$25 per Mtok; cache-read 0.1x / cache-write
 1.25x input) — a UNIFORM REFERENCE for all traffic (most tracked models are

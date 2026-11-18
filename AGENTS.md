@@ -10,7 +10,7 @@ in `docs/superpowers/plans/`.
 
 **State at handoff (2026-11-17):** work sits on `master` (no remote
 configured — local-only repo, no push; branch workflow used for increments,
-fast-forward merged after clean review rounds). 311 tests green. Connection
+fast-forward merged after clean review rounds). 382 tests green. Connection
 hygiene (2026-11-15): every sqlite
 connection main() opens is now closed — the store via try/finally and each
 read-only source by `_ingest` owning its open/close; `NoResourceWarningTests`
@@ -24,9 +24,11 @@ tables everywhere, COST dropped from displayed reports (still stored and in
 smooth Unicode blocks (█ full + one ░▒▓ shade fraction, scaled to the
 largest row; deliberately NOT eighth glyphs U+2581..2587 — their vertical
 metrics differ from █ and ragged the bar bottoms), padded one space either
-side and colored truecolor by a per-glyph blue->orange gradient whose
-transition marks each row's in/out split (`TOKEN_IN_RGB`/`TOKEN_OUT_RGB`,
-interpolated via colorsys HLS sweeping UP through purple — a direct RGB
+side and colored truecolor by a per-glyph gradient whose
+transition marks each row's in/out split (endpoints then the
+`TOKEN_IN_RGB`/`TOKEN_OUT_RGB` blue->orange pair, now the active theme's
+`tin`/`tout` — see the custom-themes increment; interpolated via colorsys
+HLS sweeping UP through purple — a direct RGB
 lerp goes through gray; hue/lightness constants derived from the endpoint
 RGBs so endpoints round-trip exactly,
 `paint_bars`, table-only; tty-gated
@@ -254,15 +256,17 @@ the bar gradient takes its HLS endpoints from the theme's `tin`/`tout`
 endpoints. CLI: `--theme=SLUG` paints one run (a display overlay like `--cost`,
 so the bare dashboard still renders), bare `--theme` lists the themes and marks
 the default, `--theme-default=SLUG` saves the default into `themes/config.json`
-(`{"default": "<slug>"}`, written by `write_default_theme`, read every run by
-`read_default_theme`; bare `--theme-default` saves the same run's `--theme=SLUG`,
+(`{"default": "<slug>"}`, written by `write_default_theme`, read by
+`read_default_theme` on any run that resolves a theme without an explicit
+`--theme=SLUG`; bare `--theme-default` saves the same run's `--theme=SLUG`,
 and a save wins over a list when both flags are given). Both actions
 short-circuit before implicit ingestion and never touch SQLite. Precedence:
 `--theme` > `themes/config.json` > Neon Midnight, and the two failure modes split
 on purpose: an explicit `--theme=<unknown>` is exit 2 naming the slug and
 listing the slugs, while a saved default that no longer resolves warns naming
 `themes/config.json` and renders in Neon Midnight (a cosmetic default never costs
-a report). `themes/` is scanned every run by `scan_themes`: one `.json` per
+a report). `themes/` is scanned by `scan_themes` whenever a theme is resolved or
+listed (not on a plain run that has no saved default to read): one `.json` per
 theme, filename stem = slug, a folder file shadows a built-in of the same slug,
 a file named exactly `config.json` is skipped (it is the saved default, not a
 theme), and a file that fails to parse or validate is skipped with a one-line

@@ -1186,8 +1186,11 @@ def load_theme_file(path):
 
 def scan_themes(dir=THEMES_DIR, warn=None):
     """Built-in THEMES merged with every *.json in `dir` (folder wins on slug
-    collision). A file that raises ThemeError is skipped, reported through
-    warn(f"warning: ...") when given; a missing dir is a no-op."""
+    collision), except the saved-default file `config.json` (see THEME_CONFIG):
+    it shares this folder but is not a theme, so a scan never reads it, warns
+    about it, or lists "config" as a slug. A file that raises ThemeError is
+    skipped, reported through warn(f"warning: ...") when given; a missing dir
+    is a no-op."""
     found = dict(THEMES)
     if os.path.isdir(dir):
         for fname in sorted(os.listdir(dir)):
@@ -1208,8 +1211,9 @@ def scan_themes(dir=THEMES_DIR, warn=None):
 
 
 # The saved default theme lives in themes/config.json as {"default": "<slug>"}.
-# It is read on every run and written by --theme-default; a missing or unusable
-# file is not an error, it simply means "no default saved".
+# It is read whenever a run resolves a theme without an explicit --theme=SLUG
+# (and by the bare --theme list) and written by --theme-default; a missing or
+# unusable file is not an error, it simply means "no default saved".
 THEME_CONFIG = os.path.join(THEMES_DIR, "config.json")
 
 
@@ -1249,14 +1253,16 @@ def write_default_theme(path, slug):
         fh.write(json.dumps({"default": slug}) + "\n")
 
 
-def resolve_theme(slug, dir=THEMES_DIR):
+def resolve_theme(slug, dir=THEMES_DIR, warn=None):
     """The role -> (r, g, b) colors for `slug`: None means the Neon Midnight
     default; a slug is looked up in scan_themes(dir) so folder themes resolve by
     slug too; an unknown slug raises ThemeError naming it and listing the
-    available slugs."""
+    available slugs. `warn`, when given, goes to that scan, so a theme file that
+    is present but invalid reports its real reason instead of only reading as an
+    unknown slug."""
     if slug is None:
         return NEON
-    found = scan_themes(dir)
+    found = scan_themes(dir, warn=warn)
     if slug in found:
         return found[slug][1]
     raise ThemeError(f"unknown theme '{slug}'; available: "
@@ -1269,8 +1275,10 @@ def resolve_theme(slug, dir=THEMES_DIR):
 # violet (never through gray); hue, lightness AND saturation are lerped
 # between the endpoints so both ends reproduce them exactly. Those endpoints
 # now come from the resolved theme paint_bars is handed (its `tin`/`tout`
-# roles), not from import-time globals; the two constants below are only the
-# default theme's (NEON) endpoints, kept for callers that want them.
+# roles), not from import-time globals; the two constants below are the default
+# theme's (NEON) endpoints and no production caller reads them any more — they
+# are kept as the public pin on that palette (NeonThemeTests pins them to
+# NEON["tin"]/NEON["tout"]).
 TOKEN_IN_RGB = NEON["tin"]
 TOKEN_OUT_RGB = NEON["tout"]
 
@@ -1735,6 +1743,15 @@ def main(argv):
                              " --theme-default=SLUG: the space form can"
                              " swallow a following command")
     args = parser.parse_args(argv)
+    # `--theme=` and `--theme-default=` (an explicit empty value) mean "no
+    # value", not a slug named '': normalize each to what its bare form means,
+    # so an empty --theme leaves the saved default in charge and an empty
+    # --theme-default hits the same "name a --theme=SLUG" error as the bare
+    # flag instead of failing on the empty slug.
+    if args.theme == "":
+        args.theme = None
+    if args.theme_default == "":
+        args.theme_default = THEME_SAVE
     if args._cost_tier is not None:
         parser.error("--cost-tier was removed; use --cost=<slug>"
                      " (e.g. --cost=opus-5); see --help")
@@ -1755,7 +1772,8 @@ def main(argv):
         if slug is None:
             parser.error("--theme-default with no value saves the theme given"
                          " by --theme=SLUG in the same invocation; none was"
-                         " given (prefer --theme-default=SLUG)")
+                         " given — add --theme=SLUG, or save directly as"
+                         " --theme-default=SLUG")
         # write_default_theme does not validate: resolve first, so a typo in
         # the slug never lands in themes/config.json.
         try:
@@ -1763,26 +1781,42 @@ def main(argv):
         except ThemeError as exc:
             parser.error(str(exc))
         name = scan_themes(THEMES_DIR)[slug][0]   # safe: it just resolved
-        write_default_theme(THEME_CONFIG, slug)
+        try:
+            write_default_theme(THEME_CONFIG, slug)
+        except OSError as exc:
+            # a read-only (or otherwise unwritable) themes/ is a CLI failure
+            # like every other one here: tokenstat: error: ..., never a
+            # traceback.
+            parser.error(f"could not write {THEME_CONFIG}: {exc}")
         print(f"default theme: {slug} ({name})")
         return 0
     if args.theme is THEME_LIST:
         # The list is where a user looks for the theme they just wrote, so a
-        # file that failed validation says why here (resolve_theme takes no
-        # warn; scan_themes does).
+        # file that failed validation says why here: scan_themes warns.
         found = scan_themes(THEMES_DIR, warn=theme_warn)
         default = read_default_theme(THEME_CONFIG, warn=theme_warn) \
             or "neon-midnight"
         for slug in sorted(found):
             print(f"{slug} \u2014 {found[slug][0]}"
                   + (" (default)" if slug == default else ""))
+        if default not in found:
+            # A saved default that is not in this list marks nothing on stdout,
+            # which reads as a silent bug from the one place the user came to
+            # diagnose it: say where the dead slug came from. stdout stays the
+            # plain list.
+            theme_warn(f"warning: {THEME_CONFIG}: saved default theme"
+                       f" '{default}' is not available; runs render in Neon"
+                       f" Midnight until --theme-default=SLUG saves another")
         return 0
     # Precedence: --theme=SLUG > themes/config.json > Neon Midnight. The two
     # sources fail differently on purpose: a slug typed for this run is the
     # user's own request, so an unknown one is a hard exit 2; a *saved* default
     # that cannot be resolved is a config that cannot be used — warn naming the
     # file and render with Neon Midnight, because a cosmetic default must not
-    # cost the user a report whose data is fine.
+    # cost the user a report whose data is fine. Only this saved-default path
+    # passes warn= down: a file that is present but invalid then reports its
+    # real reason from the scan, above the config line, instead of reading as a
+    # plain "unknown theme" for a file the user can see on disk.
     if args.theme:
         try:
             theme = resolve_theme(args.theme, THEMES_DIR)
@@ -1792,7 +1826,7 @@ def main(argv):
         try:
             theme = resolve_theme(read_default_theme(THEME_CONFIG,
                                                      warn=theme_warn),
-                                  THEMES_DIR)
+                                  THEMES_DIR, warn=theme_warn)
         except ThemeError as exc:
             theme_warn(f"warning: {THEME_CONFIG}: {exc}; using Neon Midnight")
             theme = NEON

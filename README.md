@@ -76,6 +76,11 @@ python3 tokenstat.py --total --real-cost        # stored real USD, not an estima
 # Opt-in cache column between OUT and TOTAL (see "Cache tokens" below):
 python3 tokenstat.py --total --model --cache
 
+# Paint this run with a theme — one of the ten built-ins or your own
+# themes/SLUG.json (see themes/README.md); bare --theme lists them:
+python3 tokenstat.py --theme=nord
+python3 tokenstat.py --theme                    # list slugs + mark the default
+
 # Lost-history view: what Unsloth recorded that OpenCode no longer can:
 python3 tokenstat.py reconcile
 ```

@@ -13,11 +13,12 @@ import tokenstat
 import unittest
 import unittest.mock
 
-from tokenstat import (_ANSI_RE, _turn_index, _visible, NEON, SESSION_COLUMNS,
-                       THEMES, THEME_ROLES, ThemeError, add_shares, compact,
-                       daily_events, daily_runs, daily_totals, ensure_schema,
-                       import_unsloth, import_unsloth_runs, load_theme_file,
-                       main, paint_bars, paint_cells, panel, parse_date,
+from tokenstat import (_ANSI_RE, _table_panel, _turn_index, _visible, NEON,
+                       SESSION_COLUMNS, SHARE_COLUMNS, THEMES, THEME_ROLES,
+                       ThemeError, add_shares, compact, daily_events,
+                       daily_runs, daily_totals, ensure_schema, import_unsloth,
+                       import_unsloth_runs, load_theme_file, main, paint_bars,
+                       paint_cells, paint_header_block, panel, parse_date,
                        parse_model, query_events, query_runs, query_sessions,
                        reconcile, record, render_table, report_header,
                        scan_themes, total_events, total_runs, total_totals)
@@ -3439,6 +3440,68 @@ class CliNeonTests(unittest.TestCase):
              "--total", "--model"])                       # no patch: piped
         self.assertNotIn("\x1b", out)
         self.assertIn("█", out)                           # glyphs remain plain-path
+
+
+def share_rows():
+    """One complete share-view row (every SHARE_COLUMNS key with a value)."""
+    return [{"model": "a", "sessions": 2, "tokens_input": 5,
+             "tokens_output": 5, "total": 10, "tok_s": 12.5,
+             "share_str": "100.0%", "bar": "█" * 4}]
+
+
+class ThemePaintTests(unittest.TestCase):
+    """Every paint function takes its theme explicitly: no paint path may
+    read the NEON global, so a handed-in theme paints every hue on screen."""
+
+    def test_panel_uses_the_given_theme(self):
+        theme = dict(NEON, border=(1, 2, 3), label=(4, 5, 6))
+        out = "\n".join(panel("t", ["x"], theme=theme))
+        self.assertIn("38;2;1;2;3m", out)      # border hue
+        self.assertIn("38;2;4;5;6m", out)      # title label hue
+        self.assertNotIn("38;2;{};{};{}m".format(*NEON["border"]), out)
+
+    def test_header_block_uses_the_given_theme(self):
+        theme = dict(NEON, label=(7, 7, 7), border=(8, 8, 8))
+        lines = render_table([{"model": "m", "total": 1}],
+                             SESSION_COLUMNS).splitlines()
+        paint_header_block(lines, SESSION_COLUMNS, theme=theme)
+        self.assertIn("38;2;7;7;7m", lines[0])   # header text = label role
+        self.assertIn("38;2;8;8;8m", lines[1])   # rule = border role
+
+    def test_report_header_uses_the_given_theme(self):
+        theme = dict(NEON, ttotal=(9, 9, 9), tshare=(11, 11, 11))
+        rows = [{"total": 7_300_000, "tokens_input": 1, "tokens_output": 1}]
+        hero = "\n".join(report_header("t", rows, theme=theme, unit="models"))
+        self.assertIn("38;2;9;9;9m", hero)       # grand total = ttotal
+        self.assertIn("38;2;11;11;11m", hero)    # row count = tshare
+
+    def test_table_panel_threads_the_theme_through_every_painter(self):
+        # A registry dict — the exact shape Task 6 resolves and hands down.
+        theme = THEMES["dracula"][1]
+        out = "\n".join(_table_panel("t", share_rows(), SHARE_COLUMNS,
+                                     True, True, theme=theme))
+        self.assertIn("38;2;{};{};{}m".format(*theme["tin"]), out)     # bar + IN
+        self.assertIn("38;2;{};{};{}m".format(*theme["tout"]), out)    # bar + OUT
+        self.assertIn("38;2;{};{};{}m".format(*theme["ttotal"]), out)  # TOTAL
+        self.assertIn("38;2;{};{};{}m".format(*theme["label"]), out)   # header text
+        self.assertIn("38;2;{};{};{}m".format(*theme["border"]), out)  # rule + frame
+        # Dracula differs from Neon Midnight on every role — asserted first so a
+        # future palette edit fails with a clear message, and one leftover NEON
+        # read anywhere in the paint layer shows up in the loop below.
+        for role in THEME_ROLES:
+            self.assertNotEqual(theme[role], NEON[role], role)
+            self.assertNotIn("38;2;{};{};{}m".format(*NEON[role]), out)
+
+    def test_table_panel_without_a_theme_is_the_neon_default(self):
+        # the default keyword keeps today's output byte-identical
+        args = ("t", share_rows(), SHARE_COLUMNS, True, True)
+        self.assertEqual(_table_panel(*args), _table_panel(*args, theme=NEON))
+
+    def test_table_panel_plain_path_stays_plain_with_a_theme(self):
+        # color=False must not smuggle escape bytes in through the theme
+        out = "\n".join(_table_panel("t", share_rows(), SHARE_COLUMNS,
+                                     True, False, theme=THEMES["nord"][1]))
+        self.assertNotIn("\x1b", out)
 
 
 class SchemaTests(unittest.TestCase):

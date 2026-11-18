@@ -1421,16 +1421,17 @@ def report_header(title, rows, theme=NEON, cost_est=None, real_cost=None,
     return panel(title, lines, theme, color=color)
 
 
-def _table_panel(title, rows, columns, share_view, color):
+def _table_panel(title, rows, columns, share_view, color, theme=NEON):
     """Panel of the rendered table; share views get padded (and colored)
-    bars first; the header block and its rule dim to their roles in color."""
+    bars first; the header block and its rule dim to their roles in color.
+    Every painter below gets `theme`, so one theme owns the whole panel."""
     if share_view:
-        rows = paint_bars(rows, color=color)
-    table = render_table(paint_cells(rows) if color else rows, columns)
+        rows = paint_bars(rows, color=color, theme=theme)
+    table = render_table(paint_cells(rows, theme) if color else rows, columns)
     lines = table.splitlines()
     if color and table != "no sessions match\n":
-        paint_header_block(lines, columns)
-    return panel(title, lines, color=color)
+        paint_header_block(lines, columns, theme=theme)
+    return panel(title, lines, theme, color=color)
 
 
 def header_height(columns):
@@ -1438,15 +1439,15 @@ def header_height(columns):
     return max(name.count("\n") for name, _, _ in columns) + 1
 
 
-def paint_header_block(lines, columns):
+def paint_header_block(lines, columns, theme=NEON):
     """In place: header lines wear the label role (column names recede behind
     the painted numbers below them) and the rule under them the border hue.
     Color mode only; `lines` are render_table output for `columns`."""
     h_h = header_height(columns)
-    r, g, b = NEON["label"]
+    r, g, b = theme["label"]
     for i in range(h_h):
         lines[i] = f"\x1b[38;2;{r};{g};{b}m{lines[i]}\x1b[0m"
-    r, g, b = NEON["border"]
+    r, g, b = theme["border"]
     lines[h_h] = f"\x1b[38;2;{r};{g};{b}m{lines[h_h]}\x1b[0m"
 
 

@@ -299,9 +299,10 @@ its `-wal`/`-shm` siblings), `themes/` (user theme files), and
 `default_db`, `themes_dir` and `theme_config` (pure, each takes `home=`), bound
 at import to the globals `STATE_DIR`/`DEFAULT_DB`/`THEMES_DIR`/`THEME_CONFIG`;
 importing `tokenstat` still touches no filesystem. `default_store()` is the only
-function here that creates directories or moves files, and `main()` is its only
-caller — and only when `--db` was not given, so every test and every run that
-names its own store never touches `$HOME`. It performs the one-time migration: a
+function here that creates directories or moves files on its own
+(`write_default_theme` also writes, but only because `--theme-default` asked it
+to), and `main()` is its only caller — and only when `--db` was not given, so
+every test and every run that names its own store never touches `$HOME`. It performs the one-time migration: a
 store, or top-level `themes/*.json`, left beside an older copy of the script
 travels into `~/.tokenstat/` and says so on stderr (`migrated store: <old> ->
 <new>`). The order cannot lose history: within the store group the `-wal`/`-shm`

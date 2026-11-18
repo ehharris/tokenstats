@@ -136,6 +136,8 @@ git commit -m "feat: tokenstat's own state lives in ~/.tokenstat"
 
 **Interfaces:**
 - Consumes: `STATE_DIR`, `LEGACY_DIR`, `LEGACY_THEMES_DIR`, `default_db()`, `themes_dir()` from Task 1.
+
+  *Amended during execution (whole-branch review): Task 2 ended up joining `themes` from `LEGACY_DIR` itself, so `LEGACY_THEMES_DIR` was never consumed and has been deleted. The migration moves theme files after the store, into `<state>/themes`, and never needs a legacy-themes constant.*
 - Produces: `default_store(state=None, legacy=None) -> str` — the store path `main()` opens when `--db` was not given. `main()`'s `args.db` default becomes `None`, meaning "resolve via `default_store()`".
 
 - [ ] **Step 1: Write the failing tests**

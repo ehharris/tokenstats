@@ -912,7 +912,7 @@ SHARE_COLUMNS = TOTAL_COLUMNS + [
 def cost_column(tier):
     """(header, key, kind) for the opt-in --cost overlay; the header names the
     model the pricing is pinned to, so a stale price table is visible."""
-    return (f"COST \u00b7 {PRICES[tier]['name']} pricing", "cost_est", "cost")
+    return (f"COST \u00b7 {PRICES[tier]['name']} Prices", "cost_est", "cost")
 
 
 # --real-cost overlay: the stored real cost (real OpenCode data); every

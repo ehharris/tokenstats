@@ -2201,14 +2201,14 @@ class CliTotalTests(unittest.TestCase):
             ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
              "--total", "--cost"])
         self.assertEqual(code, 0)
-        self.assertIn("COST \u00b7 Claude Sonnet 5 pricing", out)
+        self.assertIn("COST \u00b7 Claude Sonnet 5 Prices", out)
 
     def test_cost_slug_changes_header(self):
         code, out, _ = self.run_main(
             ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
              "--total", "--cost=deepseek-v3.2"])
         self.assertEqual(code, 0)
-        self.assertIn("COST \u00b7 DeepSeek V3.2 pricing", out)
+        self.assertIn("COST \u00b7 DeepSeek V3.2 Prices", out)
 
     def test_cost_family_alias_equals_model_slug(self):
         base = ["--db", self.db, "--src", self.src, "--unsloth-db",
@@ -2216,7 +2216,7 @@ class CliTotalTests(unittest.TestCase):
         _, alias, _ = self.run_main(base + ["--cost=qwen"])
         _, model, _ = self.run_main(base + ["--cost=qwen-plus"])
         self.assertEqual(alias, model)
-        self.assertIn("COST \u00b7 Qwen-Plus pricing", alias)
+        self.assertIn("COST \u00b7 Qwen-Plus Prices", alias)
 
     def test_cost_invalid_slug_exits_2(self):
         with self.assertRaises(SystemExit) as cm, \
@@ -3536,7 +3536,7 @@ class DefaultDashboardTests(unittest.TestCase):
         self.assertGreaterEqual(plain.count("COST"), 2)
         self.assertRegex(plain, r"OUT\s+CACHE\s+TOTAL")
         self.assertEqual(sum(1 for ln in plain.splitlines()
-                             if ln.rstrip(" │").endswith("pricing")), 2)
+                             if ln.rstrip(" │").endswith("Prices")), 2)
 
     def test_hero_shows_total_estimate_only_with_cost(self):
         # 6 default src_rows est (tin*2+tout*10+tcr*.2+tcw*2.5)/1e6 = .00565
@@ -3552,7 +3552,7 @@ class DefaultDashboardTests(unittest.TestCase):
         code, out, _ = self.bare(["--cost"])
         self.assertEqual(code, 0)
         plain = _ANSI_RE.sub("", out)
-        self.assertEqual(plain.count("COST \u00b7 Claude Sonnet 5 pricing"), 2)
+        self.assertEqual(plain.count("COST \u00b7 Claude Sonnet 5 Prices"), 2)
 
     def test_dashboard_hero_real_total_over_all_sessions(self):
         # review-focus pin: 7 sessions x stored $0.01 = $0.07, not the

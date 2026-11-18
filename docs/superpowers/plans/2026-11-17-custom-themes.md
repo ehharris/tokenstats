@@ -90,9 +90,9 @@ Add `THEMES`, `THEME_ROLES` to the `from tokenstat import (...)` block at the to
 
 | slug (display name) | border | label | num | accent | tin | tout | tcach | ttotal | tshare |
 |---|---|---|---|---|---|---|---|---|---|
-| `tokyo-night` (Tokyo Night) | `#414868` | `#7982A9` | `#C0CAF5` | `#F7768E` | `#7AA2F7` | `#FF9E64` | `#9ECE6A` | `#BB9AF7` | `#7DCFFF` |
+| `tokyo-night` (Tokyo Night) | `#414868` | `#7982A9` | `#C0CAF5` | `#F7768E` | `#7AA2F7` | `#FF9E64` | `#9ECE6A` | `#BB9AF7` | `#2ACBCF` |
 | `dracula` (Dracula) | `#6272A4` | `#8A94C0` | `#F8F8F2` | `#FF79C6` | `#8BE9FD` | `#FFB86C` | `#50FA7B` | `#BD93F9` | `#F1FA8C` |
-| `nord` (Nord) | `#4C566A` | `#7B88A1` | `#ECEFF4` | `#B48EAD` | `#88C0D0` | `#D08770` | `#A3BE8C` | `#8FBCBB` | `#EBCB8B` |
+| `nord` (Nord) | `#4C566A` | `#7B88A1` | `#ECEFF4` | `#BF616A` | `#88C0D0` | `#D08770` | `#A3BE8C` | `#B48EAD` | `#EBCB8B` |
 | `gruvbox-dark` (Gruvbox Dark) | `#665C54` | `#A89984` | `#EBDBB2` | `#FE8019` | `#83A598` | `#FB4934` | `#B8BB26` | `#D38696` | `#8EC07C` |
 | `solarized-dark` (Solarized Dark) | `#073642` | `#839496` | `#EEE8D5` | `#D33682` | `#268BD2` | `#CB4B16` | `#859900` | `#6C71C4` | `#2AA198` |
 | `monokai` (Monokai) | `#75715E` | `#9B9277` | `#F8F8F2` | `#F92672` | `#66D9EF` | `#FD971F` | `#A6E22E` | `#AE81FF` | `#F4BF75` |
@@ -309,6 +309,7 @@ def test_resolve_sees_a_folder_theme(self):      # tmp dir with one .json
 
 **Files:**
 - Modify: `tokenstat.py` — `main()` argparse block (~1489, after `--cache`) and the wiring just before `dest = None` (~1495) plus the two render paths (~1595-1601, ~1754-1771)
+- Modify: `.gitignore` — add `themes/*.json` (covers `themes/config.json` and user themes; this task writes that file, so it owns the rule)
 - Test: `test_tokenstat.py` (new class `CliThemeTests`, modeled on `CliNeonTests` at line 3140)
 
 **Interfaces:**
@@ -357,7 +358,7 @@ def test_theme_default_is_gitignored(self):
 ```
 
 - [ ] **Step 2: Run to verify failure** — argparse rejects the unknown flags (SystemExit 2) / assertions fail.
-- [ ] **Step 3: Implement** the two `add_argument` calls with help text that says to prefer the `=` form (copy the tone of `--cost`'s help: "Prefer --theme=SLUG: the space form can swallow a following command"), then the `main` wiring and the two render paths. The list action prints `f"{slug} — {name}"` per theme, sorted, with `" (default)"` on the saved default (and on Neon Midnight when nothing is saved).
+- [ ] **Step 3: Implement** the two `add_argument` calls with help text that says to prefer the `=` form (copy the tone of `--cost`'s help: "Prefer --theme=SLUG: the space form can swallow a following command"), add `themes/*.json` to `.gitignore`, then the `main` wiring and the two render paths. The list action prints `f"{slug} — {name}"` per theme, sorted, with `" (default)"` on the saved default (and on Neon Midnight when nothing is saved).
 - [ ] **Step 4: Run to verify pass** — `CliThemeTests`, then the whole suite, then the strict variant `python3 -W error::ResourceWarning -m unittest test_tokenstat`.
 - [ ] **Step 5: Manual smoke** — `python3 tokenstat.py --theme` (list), `python3 tokenstat.py --theme=paper`, `python3 tokenstat.py --theme=nord --theme-default`, `python3 tokenstat.py`, then `python3 tokenstat.py --theme=neon-midnight --theme-default` to leave the default as it was.
 - [ ] **Step 6: Commit** — `git commit -m "feat: --theme=<slug> and --theme-default with a themes/ scan"`
@@ -368,13 +369,13 @@ def test_theme_default_is_gitignored(self):
 
 **Files:**
 - Create: `themes/README.md`
-- Modify: `.gitignore`, `README.md` (the "Terminal output also wears the sunset theme" paragraph, ~line 99, and the `--help` sample if present), `AGENTS.md` (append a `Custom themes increment (2026-11-17)` paragraph)
+- Modify: `README.md` (the "Terminal output also wears the sunset theme" paragraph, ~line 99, and the `--help` sample if present), `AGENTS.md` (append a `Custom themes increment (2026-11-17)` paragraph)
 
 **Interfaces:**
 - Consumes: the shipped flags and file format from Tasks 2-6.
 - Produces: nothing consumed by code.
 
-- [ ] **Step 1: `.gitignore`** — add `themes/*.json` (covers `themes/config.json` and user themes) and confirm `themes/README.md` stays tracked: `git check-ignore -v themes/README.md` prints nothing.
+- [ ] **Step 1: Check the ignore rules Task 6 installed** — `git check-ignore themes/config.json` exits 0, and `git check-ignore themes/README.md` prints nothing (this task's doc must stay tracked).
 - [ ] **Step 2: `themes/README.md`** — the file format (the JSON shape from the spec, the nine roles and what each paints, hex-only colors, slug = filename stem, folder shadows a built-in, broken files are skipped with a warning), plus one complete example theme and the two commands (`--theme`, `--theme=<slug>`, `--theme-default=<slug>`).
 - [ ] **Step 3: `README.md`** — replace the stale sunset paragraph (it still describes the retired palette and a "blue→orange" gradient) with the theme system: the ten slugs, the two flags, the precedence order, the file folder, and the unchanged guarantees (piped / `NO_COLOR` / `--json` stay plain).
 - [ ] **Step 4: `AGENTS.md`** — one increment paragraph in the style of the existing ones: what was added, the `themes/` + `config.json` layout, that `track` is legacy, that Neon Midnight remains the default and byte-identical, and pointers to this spec and plan.

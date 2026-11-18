@@ -1116,7 +1116,7 @@ PAPER = {
     "tshare": _hex("#0E7490"),
 }
 THEMES = {
-    "neon-midnight": ("Neon Midnight", NEON),
+    "neon-midnight": ("Neon Midnight", {role: NEON[role] for role in THEME_ROLES}),
     "tokyo-night": ("Tokyo Night", TOKYO_NIGHT),
     "dracula": ("Dracula", DRACULA),
     "nord": ("Nord", NORD),

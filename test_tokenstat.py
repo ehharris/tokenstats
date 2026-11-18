@@ -3112,19 +3112,16 @@ class ThemeRegistryTests(unittest.TestCase):
 
     def test_every_theme_has_exactly_the_nine_roles(self):
         for slug, (_, colors) in THEMES.items():
-            if slug == "neon-midnight":
-                # The frozen NEON dict also carries the legacy `track` role.
-                self.assertTrue(set(THEME_ROLES) <= set(colors), slug)
-            else:
-                self.assertEqual(set(colors), set(THEME_ROLES), slug)
-            for role in THEME_ROLES:
-                rgb = colors[role]
+            self.assertEqual(set(colors), set(THEME_ROLES), slug)
+            for role, rgb in colors.items():
                 self.assertEqual(len(rgb), 3, f"{slug}/{role}")
                 self.assertTrue(all(isinstance(v, int) and 0 <= v <= 255
                                     for v in rgb), f"{slug}/{role}")
 
     def test_neon_midnight_is_the_existing_palette_unchanged(self):
-        self.assertEqual(THEMES["neon-midnight"], ("Neon Midnight", NEON))
+        name, colors = THEMES["neon-midnight"]
+        self.assertEqual(name, "Neon Midnight")
+        self.assertEqual(colors, {role: NEON[role] for role in THEME_ROLES})
 
     def test_data_colors_are_pairwise_distinct(self):
         # IN / OUT / CACHE / TOTAL / SHARE / accent must be tellable apart: no two

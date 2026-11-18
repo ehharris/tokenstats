@@ -3495,6 +3495,7 @@ class CliSessionsTests(unittest.TestCase):
         rows = [{"n": 1}, {"n": 2}, {"n": 3}]
         self.assertEqual(most_recent(rows, 2), [{"n": 3}, {"n": 2}])
         self.assertEqual(most_recent(rows, 0), rows[::-1])   # 0 = all
+        self.assertEqual(most_recent(rows, -1), rows[::-1])  # negative = all
         self.assertEqual(most_recent(rows, 9), rows[::-1])
         self.assertEqual(rows, [{"n": 1}, {"n": 2}, {"n": 3}])  # no mutation
 

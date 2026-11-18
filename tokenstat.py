@@ -862,7 +862,7 @@ def most_recent(rows, n):
     n <= 0 keeps all. The one recency step shared by the default
     dashboard's session panel and the --sessions list view."""
     rev = list(reversed(rows))
-    return rev[:n] if n else rev
+    return rev[:n] if n > 0 else rev
 
 
 def _sessions_limit(value, daily, total):

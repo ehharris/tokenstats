@@ -357,8 +357,13 @@ def _upsert(dest, table, pk, rows, numeric, overwrite=(), insert_only=()):
                       **{c: row[c] or old[c] for c in labels}}
             dest.execute(update, [values[c] for c in updates] + [row[pk]])
             counts["updated" if changed else "unchanged"] += 1
-        except sqlite3.Error:
-            # One malformed source row must not abort (or roll back) the rest.
+        except (sqlite3.Error, TypeError, ValueError):
+            # One malformed source row must not abort (or roll back) the rest:
+            # sqlite3 refuses a value it cannot bind, and a text-typed numeric
+            # column makes the max() merge compare str to int. Same width as
+            # import_opencode_steps' per-row guard, for the same reason. The
+            # column-class check above runs before this loop precisely so a
+            # ValueError from a programming mistake is never counted here.
             counts["skipped"] += 1
     return counts
 

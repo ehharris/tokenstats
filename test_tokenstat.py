@@ -5242,9 +5242,17 @@ class HiddenOptionsTests(CliHarness):
             self.assertNotIn(flag, text)
 
     def test_public_options_are_still_advertised(self):
-        text = self.help_text()
+        # A raw substring match passes for the wrong reason: "--model" is
+        # matched inside --total's help, "--cost" inside --json's, "--theme"
+        # inside --theme-default's. Parse the options section instead:
+        # argparse indents a declared option with exactly two spaces and
+        # wraps its help at column 24, so a two-space line starting with a
+        # flag is a line argparse declares — prose cannot fake one.
+        options = self.help_text().split("options:\n", 1)[1]
+        declared = set(re.findall(r"(?m)^  (-{1,2}[A-Za-z][\w-]*)", options))
         for flag in self.VISIBLE:
-            self.assertIn(flag, text)
+            self.assertIn(flag, declared, flag)
+        self.assertEqual(declared, set(self.VISIBLE) | {"-h"})
 
     def test_no_advertised_help_text_names_a_hidden_option(self):
         # a flag -h does not document must not appear inside another option's

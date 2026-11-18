@@ -3826,7 +3826,8 @@ class CliThemeTests(unittest.TestCase):
         code, out, _ = self.colored_main(self.base + ["--theme="])
         self.assertEqual(code, 0)
         self.assertIn("38;2;{};{};{}m".format(*NORD["tin"]), out)
-        # with nothing saved it is just a plain run: no "unknown theme ''"
+        # the same invocation piped: a report still renders, and nothing
+        # complains about an empty slug (nord is still the saved default)
         code, out, err = self.run_main(self.base + ["--theme="])
         self.assertEqual(code, 0)
         self.assertIn("tokens \u00b7", _ANSI_RE.sub("", out))

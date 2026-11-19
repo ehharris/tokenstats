@@ -1,4 +1,4 @@
-MODEL                                           SESSIONS  IN     OUT    TOTAL   TOK/S  SHARE %  SHARE
+MODEL                                           TOTAL   TOK/S  SESSIONS  IN     OUT    SHARE %  SHARE
 ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-unsloth-studio/unsloth/Qwen3.8-Flash-Next-GGUF  1         9,000  1,200  10,200         67.1%     ██████████████████████████████
-lemonade/gpt-oss-120b                           1         4,500  500    5,000          32.9%     ██████████████▓
+unsloth-studio/unsloth/Qwen3.8-Flash-Next-GGUF  10,200         1         9,000  1,200  67.1%     ██████████████████████████████
+lemonade/gpt-oss-120b                           5,000          1         4,500  500    32.9%     ██████████████▓

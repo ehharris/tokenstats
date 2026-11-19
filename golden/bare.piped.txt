@@ -3,16 +3,16 @@
 │ 2026-11-04 → 2026-11-07                         │
 ╰─────────────────────────────────────────────────╯
 ╭ tokenstats · usage by model · top 5 by share ───────────────────────────────────────────────────────────────────────────────────╮
-│ MODEL                                           SESSIONS  IN     OUT    TOTAL   TOK/S  SHARE %  SHARE                           │
+│ MODEL                                           TOTAL   TOK/S  SESSIONS  IN     OUT    SHARE %  SHARE                           │
 │ ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │
-│ unsloth-studio/unsloth/Qwen3.8-Flash-Next-GGUF  2         9,250  1,260  10,510         60.9%     ██████████████████████████████ │
-│ lemonade/gpt-oss-120b                           2         6,000  750    6,750          39.1%     ███████████████████░           │
+│ unsloth-studio/unsloth/Qwen3.8-Flash-Next-GGUF  10,510         2         9,250  1,260  60.9%     ██████████████████████████████ │
+│ lemonade/gpt-oss-120b                           6,750          2         6,000  750    39.1%     ███████████████████░           │
 ╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭ tokenstats · sessions · 5 most recent ───────────────────────────────────────────────────────────╮
-│ DATE        MODEL                                           IN     OUT    TOTAL   TOK/S  SESSION │
+│ DATE        MODEL                                           TOTAL   TOK/S  IN     OUT    SESSION │
 │ ──────────────────────────────────────────────────────────────────────────────────────────────── │
-│ 2026-11-07  unsloth-studio/unsloth/Qwen3.8-Flash-Next-GGUF  250    60     310            delta   │
-│ 2026-11-06  lemonade/gpt-oss-120b                           1,500  250    1,750          gamma   │
-│ 2026-11-05  lemonade/gpt-oss-120b                           4,500  500    5,000          beta    │
-│ 2026-11-04  unsloth-studio/unsloth/Qwen3.8-Flash-Next-GGUF  9,000  1,200  10,200         alpha   │
+│ 2026-11-07  unsloth-studio/unsloth/Qwen3.8-Flash-Next-GGUF  310            250    60     delta   │
+│ 2026-11-06  lemonade/gpt-oss-120b                           1,750          1,500  250    gamma   │
+│ 2026-11-05  lemonade/gpt-oss-120b                           5,000          4,500  500    beta    │
+│ 2026-11-04  unsloth-studio/unsloth/Qwen3.8-Flash-Next-GGUF  10,200         9,000  1,200  alpha   │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯

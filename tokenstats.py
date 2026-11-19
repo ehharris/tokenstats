@@ -824,19 +824,21 @@ def _sessions_limit(value, daily, total):
 
 SESSION_COLUMNS = [
     ("DATE", "date", "text"), ("MODEL", "model", "text"),
-    ("IN", "tokens_input", "int"), ("OUT", "tokens_output", "int"),
     ("TOTAL", "total", "int"), ("TOK/S", "tok_s", "rate"),
+    ("IN", "tokens_input", "int"), ("OUT", "tokens_output", "int"),
     ("SESSION", "title", "title"),
 ]
 DAILY_COLUMNS = [
-    ("DATE", "date", "text"), ("SESSIONS", "sessions", "int"),
-    ("IN", "tokens_input", "int"), ("OUT", "tokens_output", "int"),
+    ("DATE", "date", "text"),
     ("TOTAL", "total", "int"), ("TOK/S", "tok_s", "rate"),
+    ("SESSIONS", "sessions", "int"),
+    ("IN", "tokens_input", "int"), ("OUT", "tokens_output", "int"),
 ]
 TOTAL_COLUMNS = [
-    ("MODEL", "model", "text"), ("SESSIONS", "sessions", "int"),
-    ("IN", "tokens_input", "int"), ("OUT", "tokens_output", "int"),
+    ("MODEL", "model", "text"),
     ("TOTAL", "total", "int"), ("TOK/S", "tok_s", "rate"),
+    ("SESSIONS", "sessions", "int"),
+    ("IN", "tokens_input", "int"), ("OUT", "tokens_output", "int"),
 ]
 SHARE_COLUMNS = TOTAL_COLUMNS + [
     # share pair (human decision): the percent column is "SHARE %", the bar
@@ -867,11 +869,11 @@ def annotate_cache(rows):
 
 
 def with_cache(columns):
-    """Copy of `columns` with CACHE_COLUMN inserted before the TOTAL entry
-    (OUT CACHE TOTAL reads as the token classes, CACHE outside the total)."""
+    """Copy of `columns` with CACHE_COLUMN inserted after the OUT entry
+    (IN OUT CACHE reads as the token classes, CACHE outside the total)."""
     out = list(columns)
-    i = next(i for i, (header, _, _) in enumerate(out) if header == "TOTAL")
-    out.insert(i, CACHE_COLUMN)
+    i = next(i for i, (header, _, _) in enumerate(out) if header == "OUT")
+    out.insert(i + 1, CACHE_COLUMN)
     return out
 
 
@@ -1370,15 +1372,18 @@ def panel(title, lines, theme=NEON, color=True):
 
 
 def report_header(title, rows, theme=NEON, cost_est=None, real_cost=None,
-                  unit="rows", color=True):
+                  unit="rows", color=True, cache_total=None):
     """Hero panel for a report: one grand-total line over a dim date span.
     Safe for rows that carry no tokens_input/tokens_output keys and for rows
     whose date is missing or None (the span is omitted when none is dated).
-    `cost_est` (float USD, precomputed by the caller) appends a `~$X.XX`
-    reference-estimate tail; omitted means no cost shown. `real_cost` (float
-    USD) appends a `· $X.XX` tail after it — no tilde, it is the stored
-    real cost. `unit` names what one row means in this view (the dashboard
-    passes "sessions").
+    Segment order (human decision 2026-11-18): grand total, TOK/S, row
+    count, in, out, then the opt-in tails — `cache_total` (int tokens,
+    precomputed by the caller) appends a `· X cache` stat after out;
+    `cost_est` (float USD) appends a `~$X.XX` reference-estimate tail;
+    `real_cost` (float USD) appends a `· $X.XX` tail after it — no tilde,
+    it is the stored real cost. Each omitted input drops its segment whole.
+    `unit` names what one row means in this view (the dashboard passes
+    "sessions").
     Rows carrying a `tok_s` add a token-weighted TOK/S stat; when none of
     them has a rate the segment is omitted entirely.
     `color=False` renders the same text with no escape bytes."""
@@ -1409,11 +1414,14 @@ def report_header(title, rows, theme=NEON, cost_est=None, real_cost=None,
     # the terminal's own color. panel() measures visible width, so the escape
     # bytes never rag the frame.
     hero = (paint(compact(sum_of('total')), theme["ttotal"], bold=True)
-            + " tokens · " + paint(str(n_rows), theme["tshare"]) + " " + unit1
-            + " · " + paint(compact(sum_of('tokens_input')), theme["tin"]) + " in"
-            + " · " + paint(compact(sum_of('tokens_output')), theme["tout"]) + " out"
+            + " tokens"
             + (" · " + paint(f"{rate:.1f}", theme["accent"]) + " tok/s"
                if rate is not None else "")
+            + " · " + paint(str(n_rows), theme["tshare"]) + " " + unit1
+            + " · " + paint(compact(sum_of('tokens_input')), theme["tin"]) + " in"
+            + " · " + paint(compact(sum_of('tokens_output')), theme["tout"]) + " out"
+            + (" · " + paint(compact(cache_total), theme["tcach"]) + " cache"
+               if cache_total is not None else "")
             + (" · " + paint(f"~${cost_est:,.2f}", theme["num"])
                if cost_est is not None else "")
             + (" · " + paint(f"${real_cost:,.2f}", theme["num"])
@@ -1947,13 +1955,16 @@ def main(argv):
                 hero_real = sum(r["cost"] for r in all_rows)
                 m_cols = m_cols + [REAL_COST_COLUMN]
                 s_cols = s_cols + [REAL_COST_COLUMN]
+            hero_cache = None
             if args.cache:
                 model_rows = annotate_cache(model_rows)
                 sess_rows = annotate_cache(sess_rows)
                 m_cols, s_cols = with_cache(m_cols), with_cache(s_cols)
+                # Hero cache spans ALL sessions, like the hero cost totals.
+                hero_cache = sum(r["cache"] for r in annotate_cache(all_rows))
             lines = report_header("", all_rows, theme, cost_est=hero_cost,
                                   real_cost=hero_real, unit="sessions",
-                                  color=color)
+                                  color=color, cache_total=hero_cache)
             lines += _table_panel("usage by model \u00b7 top 5 by share",
                                   model_rows, m_cols, True, color, theme)
             lines += _table_panel("sessions \u00b7 5 most recent",
@@ -1991,10 +2002,13 @@ def main(argv):
         if args.real_cost:
             columns = columns + [REAL_COST_COLUMN]
         # Opt-in --cache overlay: combined cache classes as one informational
-        # column between OUT and TOTAL; TOTAL stays IN + OUT.
+        # column after OUT; TOTAL stays IN + OUT. The hero gets the same
+        # combined number as its own segment.
+        hero_cache = None
         if args.cache:
             rows = annotate_cache(rows)
             columns = with_cache(columns)
+            hero_cache = sum(r["cache"] for r in rows)
         if args.as_json:
             # share travels in JSON; the painted bar is table-only decoration;
             # `cache` is a render-time join of fields JSON already carries
@@ -2007,7 +2021,8 @@ def main(argv):
             # grand total in-table — the hero would be a pure echo. Piped
             # output never renders the hero at all, so do not build it.
             head = ([] if not color or (want_total and len(rows) == 1)
-                    else report_header(title, rows, theme, unit=hero_unit))
+                    else report_header(title, rows, theme, unit=hero_unit,
+                                       cache_total=hero_cache))
             print(render_report(title, rows, columns, share_view, color, theme,
                                 head=head), end="")
         return 0

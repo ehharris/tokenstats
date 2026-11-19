@@ -1,4 +1,4 @@
-"""Tests for tokenstat.py — run with: python3 -m unittest test_tokenstat -v"""
+"""Tests for tokenstats.py — run with: python3 -m unittest test_tokenstats -v"""
 import argparse
 import contextlib
 import datetime
@@ -12,11 +12,11 @@ import subprocess
 import sys
 import tempfile
 import time
-import tokenstat
+import tokenstats
 import unittest
 import unittest.mock
 
-from tokenstat import (_ANSI_RE, _table_panel, _turn_index, _visible,
+from tokenstats import (_ANSI_RE, _table_panel, _turn_index, _visible,
                        GRUVBOX_DARK, NEON, NORD, SESSION_COLUMNS,
                        SHARE_COLUMNS, THEMES, THEME_ROLES, ThemeError,
                        add_shares, compact, daily_totals, ensure_schema,
@@ -113,28 +113,28 @@ class UpsertEngineTests(unittest.TestCase):
 
     def test_numeric_columns_fold_to_max_and_labels_keep_best(self):
         rows = [{"k": "a", "model": "m", "n": 5}]
-        first = tokenstat._upsert(self.dest, "t", "k", rows, numeric=["n"])
+        first = tokenstats._upsert(self.dest, "t", "k", rows, numeric=["n"])
         self.assertEqual(first["inserted"], 1)
         # A clean run carries no `skipped` key at all: the returned Counter has
         # to stay dict-equal to the plain dicts the ingest tests compare whole.
         self.assertEqual(first, {"inserted": 1, "updated": 0, "unchanged": 0})
-        again = tokenstat._upsert(self.dest, "t", "k",
+        again = tokenstats._upsert(self.dest, "t", "k",
                                   [{"k": "a", "model": "", "n": 3}],
                                   numeric=["n"])
         self.assertEqual(again["unchanged"], 1)      # 3 does not shrink 5
         # stored row keeps the label the source nulled and the number it grew
         self.assertEqual(self.stored(), ("m", 5, None, None))
-        again = tokenstat._upsert(self.dest, "t", "k",
+        again = tokenstats._upsert(self.dest, "t", "k",
                                   [{"k": "a", "model": "m2", "n": 9}],
                                   numeric=["n"])
         self.assertEqual(again["updated"], 1)        # and n is now 9, model m2
         self.assertEqual(self.stored(), ("m2", 9, None, None))
 
     def test_overwrite_columns_take_the_new_value_even_when_falsy(self):
-        tokenstat._upsert(self.dest, "t", "k",
+        tokenstats._upsert(self.dest, "t", "k",
                           [{"k": "a", "n": 1, "end": 7}], numeric=["n"],
                           overwrite=["end"])
-        tokenstat._upsert(self.dest, "t", "k",
+        tokenstats._upsert(self.dest, "t", "k",
                           [{"k": "a", "n": 1, "end": None}], numeric=["n"],
                           overwrite=["end"])
         # A NULL reading lands as NULL: an overwrite column is never keep-best,
@@ -142,9 +142,9 @@ class UpsertEngineTests(unittest.TestCase):
         self.assertEqual(self.stored(), (None, 1, None, None))
 
     def test_insert_only_columns_are_written_once(self):
-        tokenstat._upsert(self.dest, "t", "k", [{"k": "a", "n": 1, "seen": 1}],
+        tokenstats._upsert(self.dest, "t", "k", [{"k": "a", "n": 1, "seen": 1}],
                           numeric=["n"], insert_only=["seen"])
-        tokenstat._upsert(self.dest, "t", "k", [{"k": "a", "n": 2, "seen": 2}],
+        tokenstats._upsert(self.dest, "t", "k", [{"k": "a", "n": 2, "seen": 2}],
                           numeric=["n"], insert_only=["seen"])
         # n folded up to 2, seen still the value the first insert wrote.
         self.assertEqual(self.stored(), (None, 2, None, 1))
@@ -152,7 +152,7 @@ class UpsertEngineTests(unittest.TestCase):
     def test_a_malformed_row_bumps_skipped_and_the_rest_survive(self):
         # A dict is a type sqlite3 refuses to bind: the bad row is isolated and
         # the good row beside it still lands.
-        counts = tokenstat._upsert(
+        counts = tokenstats._upsert(
             self.dest, "t", "k",
             [{"k": "bad", "model": "m", "n": {"not": "a number"}},
              {"k": "good", "model": "m", "n": 4}], numeric=["n"])
@@ -166,7 +166,7 @@ class UpsertEngineTests(unittest.TestCase):
         # column in the label class, where `new or old` can shrink a token
         # count — invariant 1, broken with no error anywhere.
         with self.assertRaises(ValueError) as cm:
-            tokenstat._upsert(self.dest, "t", "k", [{"k": "a", "n": 1}],
+            tokenstats._upsert(self.dest, "t", "k", [{"k": "a", "n": 1}],
                               numeric=["nn"])
         self.assertIn("nn", str(cm.exception))
         self.assertIsNone(self.stored("a"))   # and nothing was written
@@ -175,13 +175,13 @@ class UpsertEngineTests(unittest.TestCase):
         # Overlapping classes resolve in numeric's favor today: a mistake in
         # the caller reads like a design choice.
         with self.assertRaises(ValueError) as cm:
-            tokenstat._upsert(self.dest, "t", "k", [{"k": "a", "n": 1}],
+            tokenstats._upsert(self.dest, "t", "k", [{"k": "a", "n": 1}],
                               numeric=["n"], overwrite=["n"])
         self.assertIn("n", str(cm.exception))
 
     def test_the_primary_key_is_not_a_column_class(self):
         with self.assertRaises(ValueError):
-            tokenstat._upsert(self.dest, "t", "k", [{"k": "a", "n": 1}],
+            tokenstats._upsert(self.dest, "t", "k", [{"k": "a", "n": 1}],
                               numeric=["k"])
 
     def test_a_missing_table_is_a_hard_error_not_an_empty_run(self):
@@ -189,7 +189,7 @@ class UpsertEngineTests(unittest.TestCase):
         # class name fails: a mis-wired ingest says so instead of quietly
         # counting every row skipped.
         with self.assertRaises(ValueError):
-            tokenstat._upsert(self.dest, "no_such_table", "k",
+            tokenstats._upsert(self.dest, "no_such_table", "k",
                               [{"k": "a", "n": 1}], numeric=["n"])
 
     def test_a_text_numeric_source_value_is_isolated_not_fatal(self):
@@ -197,9 +197,9 @@ class UpsertEngineTests(unittest.TestCase):
         # already isolates exactly this; the two ingest paths must not differ in
         # how wide one bad row reaches. Good row first, so the bad row is not
         # the only one covered (the malformed-row pin above covers that side).
-        tokenstat._upsert(self.dest, "t", "k", [{"k": "a", "n": 5}],
+        tokenstats._upsert(self.dest, "t", "k", [{"k": "a", "n": 5}],
                           numeric=["n"])
-        counts = tokenstat._upsert(
+        counts = tokenstats._upsert(
             self.dest, "t", "k",
             [{"k": "a", "n": "not-a-number"}, {"k": "b", "n": 4}],
             numeric=["n"])
@@ -1242,7 +1242,7 @@ class CliHarness(unittest.TestCase):
         return code, out.getvalue(), err.getvalue()
 
     def colored_main(self, argv):
-        with unittest.mock.patch.object(tokenstat, "_color_enabled",
+        with unittest.mock.patch.object(tokenstats, "_color_enabled",
                                         return_value=True):
             return self.run_main(argv)
 
@@ -1887,7 +1887,7 @@ class CostTests(unittest.TestCase):
     """annotate_cost: reference model-tier price overlay on row copies."""
 
     def test_annotate_cost_session_uses_all_token_classes_sonnet(self):
-        from tokenstat import annotate_cost
+        from tokenstats import annotate_cost
         rows = [{"tokens_input": 1_000_000, "tokens_output": 1_000_000,
                  "tokens_cache_read": 1_000_000, "tokens_cache_write": 1_000_000}]
         (r,) = annotate_cost(rows, "sonnet-5")
@@ -1895,44 +1895,44 @@ class CostTests(unittest.TestCase):
         self.assertAlmostEqual(r["cost_est"], 14.70)
 
     def test_annotate_cost_tier_changes_number(self):
-        from tokenstat import annotate_cost
+        from tokenstats import annotate_cost
         rows = [{"tokens_input": 1_000_000, "tokens_output": 0,
                  "tokens_cache_read": 0, "tokens_cache_write": 0}]
         self.assertAlmostEqual(annotate_cost(rows, "haiku-4.5")[0]["cost_est"], 1.0)
         self.assertAlmostEqual(annotate_cost(rows, "opus-5")[0]["cost_est"], 5.0)
 
     def test_annotate_cost_event_uses_prompt_completion(self):
-        from tokenstat import annotate_cost
+        from tokenstats import annotate_cost
         rows = [{"tokens_input": 1_000_000, "tokens_output": 1_000_000}]
         self.assertAlmostEqual(annotate_cost(rows, "sonnet-5")[0]["cost_est"], 12.0)
 
     def test_annotate_cost_run_uses_progress_only(self):
-        from tokenstat import annotate_cost
+        from tokenstats import annotate_cost
         rows = [{"progress_tokens": 1_000_000, "tokens_input": 1_000_000}]
         self.assertAlmostEqual(annotate_cost(rows, "sonnet-5")[0]["cost_est"], 10.0)
 
     def test_annotate_cost_does_not_mutate_input_rows(self):
-        from tokenstat import annotate_cost
+        from tokenstats import annotate_cost
         rows = [{"tokens_input": 10, "tokens_output": 10}]
         out = annotate_cost(rows, "sonnet-5")
         self.assertNotIn("cost_est", rows[0])  # inputs untouched...
         self.assertIn("cost_est", out[0])      # ...copies carry the estimate
 
     def test_resolve_cost_tier_alias_maps_to_mid_tier(self):
-        from tokenstat import resolve_cost_tier, FAMILY_ALIASES, PRICES
+        from tokenstats import resolve_cost_tier, FAMILY_ALIASES, PRICES
         for alias, target in FAMILY_ALIASES.items():
             self.assertEqual(resolve_cost_tier(alias), target)
             self.assertIn(target, PRICES)
             self.assertTrue(PRICES[target]["name"])
 
     def test_resolve_cost_tier_passes_model_slugs_through(self):
-        from tokenstat import resolve_cost_tier
+        from tokenstats import resolve_cost_tier
         self.assertEqual(resolve_cost_tier("sonnet-5"), "sonnet-5")
 
     def test_prices_and_family_aliases_do_not_collide(self):
         # A collision would make resolve_cost_tier silently shadow a real
         # model slug with the alias's target.
-        from tokenstat import PRICES, FAMILY_ALIASES
+        from tokenstats import PRICES, FAMILY_ALIASES
         self.assertFalse(set(PRICES) & set(FAMILY_ALIASES))
 
 
@@ -1940,7 +1940,7 @@ class CostFormatTests(unittest.TestCase):
     """cost-kind cells render $X.XX (2 decimals, human decision 2026-11-17)."""
 
     def test_render_table_cost_two_decimals(self):
-        from tokenstat import render_table
+        from tokenstats import render_table
         table = render_table([{"cost_est": 14.7}],
                              [("COST", "cost_est", "cost")])
         # "$14.70" alone would also match the old "$14.7000" — pin the cell.
@@ -1948,21 +1948,21 @@ class CostFormatTests(unittest.TestCase):
         self.assertNotIn("$14.7000", table)
 
     def test_render_table_sub_cent_cost_renders_zero(self):  # review-focus pin
-        from tokenstat import render_table
+        from tokenstats import render_table
         table = render_table([{"cost_est": 0.004}],
                              [("COST", "cost_est", "cost")])
         self.assertIn("$0.00\n", table)
         self.assertNotIn("$0.0040", table)
 
     def test_paint_cells_cost_two_decimals(self):
-        from tokenstat import paint_cells
+        from tokenstats import paint_cells
         (row,) = paint_cells([{"cost_est": 14.7}])
         self.assertIn("$14.70\x1b", row["cost_est"])  # cell ends at the reset
 
     def test_paint_cells_paints_stored_cost_key(self):  # review fix: REAL COST
         # The --real-cost column's key is "cost", not "cost_est" — it must be
         # themed like every other numeric cell, not emitted bare.
-        from tokenstat import paint_cells
+        from tokenstats import paint_cells
         (row,) = paint_cells([{"cost": 0.02}])
         self.assertEqual(row["cost"], "\x1b[38;2;244;240;255m$0.02\x1b[0m")
 
@@ -1970,7 +1970,7 @@ class CostFormatTests(unittest.TestCase):
         # "\n" in a header wraps the cell (mechanism kept; the shipped COST
         # header is single-line); header text BOTTOM-aligns, so each
         # column's last line sits on the rule directly above the data.
-        from tokenstat import render_table
+        from tokenstats import render_table
         table = render_table([{"a": 1, "cost_est": 14.7}],
                              [("A", "a", "int"),
                               ("PRICE\nClaude Sonnet 5 Rates",
@@ -1984,7 +1984,7 @@ class CostFormatTests(unittest.TestCase):
     def test_render_table_two_line_header_pads_later_columns(self):
         # A column AFTER the wrapped one: its name rides the bottom header
         # line and its data aligns past the wrapped column's widest line.
-        from tokenstat import render_table
+        from tokenstats import render_table
         table = render_table([{"cost_est": 14.7, "z": 5}],
                              [("PRICE\nClaude Sonnet 5 Rates",
                                "cost_est", "cost"),
@@ -1998,7 +1998,7 @@ class CostFormatTests(unittest.TestCase):
     def test_render_table_rule_separates_header(self):
         # every table gets a rule between head and body (human decision:
         # the wrapped header floated ambiguously between the two).
-        from tokenstat import render_table
+        from tokenstats import render_table
         table = render_table([{"a": 1, "b": 2}],
                              [("A", "a", "int"), ("B", "b", "int")])
         self.assertEqual(table.splitlines(),
@@ -2009,25 +2009,25 @@ class CacheOverlayTests(unittest.TestCase):
     """annotate_cache/with_cache: display-only CACHE overlay primitives."""
 
     def test_annotate_cache_combines_read_and_write(self):
-        from tokenstat import annotate_cache
+        from tokenstats import annotate_cache
         (r,) = annotate_cache([{"tokens_input": 1, "tokens_cache_read": 7000,
                                 "tokens_cache_write": 100}])
         self.assertEqual(r["cache"], 7100)
 
     def test_annotate_cache_missing_keys_default_to_zero(self):
-        from tokenstat import annotate_cache
+        from tokenstats import annotate_cache
         (r,) = annotate_cache([{}])
         self.assertEqual(r["cache"], 0)
 
     def test_annotate_cache_does_not_mutate_input_rows(self):
-        from tokenstat import annotate_cache
+        from tokenstats import annotate_cache
         rows = [{"tokens_cache_read": 5, "tokens_cache_write": 6}]
         out = annotate_cache(rows)
         self.assertNotIn("cache", rows[0])  # inputs untouched...
         self.assertIn("cache", out[0])      # ...copies carry the combined sum
 
     def test_with_cache_inserts_consecutively_before_total(self):
-        from tokenstat import DAILY_COLUMNS, SHARE_COLUMNS, SESSION_COLUMNS, \
+        from tokenstats import DAILY_COLUMNS, SHARE_COLUMNS, SESSION_COLUMNS, \
             with_cache
         for source in (SESSION_COLUMNS, DAILY_COLUMNS, SHARE_COLUMNS):
             headers = [h for h, _, _ in with_cache(source)]
@@ -2036,7 +2036,7 @@ class CacheOverlayTests(unittest.TestCase):
                              ("OUT", "TOTAL"))
 
     def test_with_cache_does_not_mutate_argument(self):
-        from tokenstat import SESSION_COLUMNS, with_cache
+        from tokenstats import SESSION_COLUMNS, with_cache
         original = list(SESSION_COLUMNS)
         with_cache(SESSION_COLUMNS)
         self.assertEqual(SESSION_COLUMNS, original)
@@ -2352,7 +2352,7 @@ class PaintBarsTests(unittest.TestCase):
         self.assertEqual(stripped, [" ██ "])
 
     def test_gradient_endpoints_are_in_and_out_colors(self):
-        from tokenstat import TOKEN_IN_RGB, TOKEN_OUT_RGB
+        from tokenstats import TOKEN_IN_RGB, TOKEN_OUT_RGB
         rows = [{"model": "a", "total": 10, "share": 100.0, "bar": "█" * 10,
                  "tokens_input": 5, "tokens_output": 5}]
         bar = paint_bars(rows, color=True)[0]["bar"]
@@ -2373,7 +2373,7 @@ class PaintBarsTests(unittest.TestCase):
         self.assertEqual(colors[-1], (250, 30, 90))   # right end = theme tout
 
     def test_gradient_endpoints_round_trip_for_every_theme(self):
-        from tokenstat import _token_rgb, gradient_stops
+        from tokenstats import _token_rgb, gradient_stops
         for slug, (_, theme) in THEMES.items():
             stops = gradient_stops(theme)
             self.assertEqual(len(stops), 7, slug)
@@ -2382,7 +2382,7 @@ class PaintBarsTests(unittest.TestCase):
 
     def test_default_paint_bars_unchanged_without_theme_arg(self):
         # the default path (no theme=) still paints the NEON-derived pins
-        from tokenstat import TOKEN_IN_RGB, TOKEN_OUT_RGB
+        from tokenstats import TOKEN_IN_RGB, TOKEN_OUT_RGB
 
         rows = [{"model": "a", "total": 10, "share": 100.0, "bar": "█" * 8,
                  "tokens_input": 5, "tokens_output": 5}]
@@ -2494,19 +2494,19 @@ class PanelTests(unittest.TestCase):
         lines = panel("t", ["x"])
         self.assertTrue(lines[0].lstrip().startswith("╭"))
         self.assertTrue(lines[-1].lstrip().startswith("╰"))
-        self.assertIn("tokenstat · t", _ANSI_RE.sub("", lines[0]))
+        self.assertIn("tokenstats · t", _ANSI_RE.sub("", lines[0]))
 
     def test_empty_lines_list_still_frames(self):
         lines = panel("t", [])
         self.assertEqual(len(lines), 2)   # top + bottom only
 
     def test_title_carries_label_role_after_accent_prefix(self):
-        # the strip is two runs: accent-bold " tokenstat · ", then the title
+        # the strip is two runs: accent-bold " tokenstats · ", then the title
         # itself in the label role (roles are the spec of the redesign)
         accent = "\x1b[1;38;2;{};{};{}m".format(*NEON["accent"])
         label = "\x1b[38;2;{};{};{}m".format(*NEON["label"])
         top = panel("sessions", ["x"])[0]
-        self.assertIn(accent + " tokenstat · " + "\x1b[0m" + label + "sessions ",
+        self.assertIn(accent + " tokenstats · " + "\x1b[0m" + label + "sessions ",
                       top)
         self.assertNotIn(label, panel("sessions", ["x"])[1])   # body: no title
 
@@ -2537,7 +2537,7 @@ class ReportHeaderTests(unittest.TestCase):
 
 class ColorEnabledTests(unittest.TestCase):
     def test_color_requires_tty_and_no_no_color(self):
-        from tokenstat import _color_enabled
+        from tokenstats import _color_enabled
 
         class Tty:
             def isatty(self): return True
@@ -2560,7 +2560,7 @@ class NeonThemeTests(unittest.TestCase):
             self.assertTrue(all(isinstance(v, int) and 0 <= v <= 255 for v in rgb), key)
 
     def test_gradient_endpoints_follow_theme(self):
-        from tokenstat import TOKEN_IN_RGB, TOKEN_OUT_RGB
+        from tokenstats import TOKEN_IN_RGB, TOKEN_OUT_RGB
         self.assertEqual(TOKEN_IN_RGB, NEON["tin"])
         self.assertEqual(TOKEN_OUT_RGB, NEON["tout"])
 
@@ -2773,7 +2773,7 @@ class ThemeExampleTests(unittest.TestCase):
         self.assertTrue(files, "themes/examples/ should ship an example")
         for fname in files:
             with self.subTest(theme=fname):
-                name, colors = tokenstat.load_theme_file(
+                name, colors = tokenstats.load_theme_file(
                     os.path.join(self.EXAMPLES, fname))
                 self.assertTrue(name.strip(), fname)
                 self.assertEqual(set(colors), set(THEME_ROLES), fname)
@@ -2936,7 +2936,7 @@ class CliNeonTests(CliHarness):
         for name, value in (("THEMES_DIR", no_themes),
                             ("THEME_CONFIG",
                              os.path.join(no_themes, "config.json"))):
-            patcher = unittest.mock.patch.object(tokenstat, name, value)
+            patcher = unittest.mock.patch.object(tokenstats, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
 
@@ -2955,7 +2955,7 @@ class CliNeonTests(CliHarness):
         self.assertIn("38;2;{};{};{}m".format(*NEON["tout"]), out)  # output-pink endpoint glyphs
         # panel() paints the title strip in two roles, so the title is
         # asserted on ANSI-stripped output (paint splits the substring)
-        self.assertIn("tokenstat · usage by model", _ANSI_RE.sub("", out))
+        self.assertIn("tokenstats · usage by model", _ANSI_RE.sub("", out))
         self.assertIn("sorted by share", _ANSI_RE.sub("", out))
 
     def test_piped_share_view_output_has_no_escapes(self):
@@ -3090,7 +3090,7 @@ class CliThemeTests(CliHarness):
         self.config = os.path.join(self.themes, "config.json")
         for name, value in (("THEMES_DIR", self.themes),
                             ("THEME_CONFIG", self.config)):
-            patcher = unittest.mock.patch.object(tokenstat, name, value)
+            patcher = unittest.mock.patch.object(tokenstats, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
 
@@ -3237,13 +3237,13 @@ class CliThemeTests(CliHarness):
     def test_an_unwritable_config_target_is_a_clean_error(self):
         # A read-only themes/ (here: the parent folder is a plain file, which
         # needs no chmod and so cannot leak permissions into the cleanup) is a
-        # CLI failure like every other one: tokenstat: error: ..., exit 2, and
+        # CLI failure like every other one: tokenstats: error: ..., exit 2, and
         # never a Python traceback.
         blocker = os.path.join(self.tmp.name, "not-a-folder")
         with open(blocker, "w") as fh:
             fh.write("a file where a folder should be")
         stuck = os.path.join(blocker, "config.json")
-        with unittest.mock.patch.object(tokenstat, "THEME_CONFIG", stuck):
+        with unittest.mock.patch.object(tokenstats, "THEME_CONFIG", stuck):
             err = self.exit_two(["--theme-default=nord"])
         self.assertIn("could not write", err)
         self.assertIn("config.json", err)
@@ -3439,7 +3439,7 @@ class CliThemeTests(CliHarness):
         # --no-index matters: without it, check-ignore exits 1 for a TRACKED
         # path, so committing the file would turn this into a confusing
         # "not ignored" failure instead of the intended tripwire.
-        repo = os.path.dirname(os.path.abspath(tokenstat.__file__))
+        repo = os.path.dirname(os.path.abspath(tokenstats.__file__))
         proc = subprocess.run(["git", "check-ignore", "--no-index", "-q",
                                "themes/config.json"],
                               cwd=repo, capture_output=True)
@@ -3450,43 +3450,43 @@ class CliThemeTests(CliHarness):
 class DefaultPathsTests(unittest.TestCase):
     def test_state_lives_in_one_home_directory(self):
         h = "/tmp/fake-home"
-        self.assertEqual(tokenstat.state_dir(h), "/tmp/fake-home/.tokenstat")
-        self.assertEqual(tokenstat.default_db(h), "/tmp/fake-home/.tokenstat/usage.db")
-        self.assertEqual(tokenstat.themes_dir(h), "/tmp/fake-home/.tokenstat/themes")
-        self.assertEqual(tokenstat.theme_config(h),
-                         "/tmp/fake-home/.tokenstat/themes/config.json")
+        self.assertEqual(tokenstats.state_dir(h), "/tmp/fake-home/.tokenstats")
+        self.assertEqual(tokenstats.default_db(h), "/tmp/fake-home/.tokenstats/usage.db")
+        self.assertEqual(tokenstats.themes_dir(h), "/tmp/fake-home/.tokenstats/themes")
+        self.assertEqual(tokenstats.theme_config(h),
+                         "/tmp/fake-home/.tokenstats/themes/config.json")
 
     def test_xdg_data_home_moves_the_opencode_default(self):
         with unittest.mock.patch.dict(os.environ,
                                       {"XDG_DATA_HOME": "/xdg/data"}):
-            self.assertEqual(tokenstat.default_src("/tmp/fake-home"),
+            self.assertEqual(tokenstats.default_src("/tmp/fake-home"),
                              "/xdg/data/opencode/opencode.db")
 
     def test_empty_or_relative_xdg_data_home_is_ignored(self):
         for value in ("", "relative/path"):
             with unittest.mock.patch.dict(os.environ, {"XDG_DATA_HOME": value}):
-                self.assertEqual(tokenstat.default_src("/tmp/fake-home"),
+                self.assertEqual(tokenstats.default_src("/tmp/fake-home"),
                                  "/tmp/fake-home/.local/share/opencode/opencode.db")
 
     def test_module_defaults_point_at_the_state_dir(self):
         # Pin the import-time bindings themselves: exec a second, isolated
-        # copy of tokenstat.py under a fake HOME and check each global
+        # copy of tokenstats.py under a fake HOME and check each global
         # against a literal. Comparing a live global with the function it is
         # assigned from holds by construction and cannot fail. The live
         # module is never reloaded, so the class identities (ThemeError et
         # al.) the rest of the suite imported at module level stay intact.
         import importlib.util
         spec = importlib.util.spec_from_file_location(
-            "tokenstat_fresh", tokenstat.__file__)
+            "tokenstats_fresh", tokenstats.__file__)
         fresh = importlib.util.module_from_spec(spec)
         with unittest.mock.patch.dict(os.environ, {"HOME": "/tmp/fake-home",
                                                    "XDG_DATA_HOME": ""}):
             spec.loader.exec_module(fresh)
-        self.assertEqual(fresh.STATE_DIR, "/tmp/fake-home/.tokenstat")
-        self.assertEqual(fresh.DEFAULT_DB, "/tmp/fake-home/.tokenstat/usage.db")
-        self.assertEqual(fresh.THEMES_DIR, "/tmp/fake-home/.tokenstat/themes")
+        self.assertEqual(fresh.STATE_DIR, "/tmp/fake-home/.tokenstats")
+        self.assertEqual(fresh.DEFAULT_DB, "/tmp/fake-home/.tokenstats/usage.db")
+        self.assertEqual(fresh.THEMES_DIR, "/tmp/fake-home/.tokenstats/themes")
         self.assertEqual(fresh.THEME_CONFIG,
-                         "/tmp/fake-home/.tokenstat/themes/config.json")
+                         "/tmp/fake-home/.tokenstats/themes/config.json")
         self.assertEqual(fresh.DEFAULT_SRC,
                          "/tmp/fake-home/.local/share/opencode/opencode.db")
 
@@ -3499,13 +3499,13 @@ class DefaultPathsTests(unittest.TestCase):
         import importlib.util
         with tempfile.TemporaryDirectory() as home:
             spec = importlib.util.spec_from_file_location(
-                "tokenstat_pure", tokenstat.__file__)
+                "tokenstats_pure", tokenstats.__file__)
             fresh = importlib.util.module_from_spec(spec)
             with unittest.mock.patch.dict(os.environ, {"HOME": home,
                                                        "XDG_DATA_HOME": ""}):
                 spec.loader.exec_module(fresh)
             self.assertEqual(os.listdir(home), [])
-            self.assertEqual(fresh.STATE_DIR, home + "/.tokenstat")
+            self.assertEqual(fresh.STATE_DIR, home + "/.tokenstats")
 
 
 def read_text(path):
@@ -3524,7 +3524,7 @@ class MigrationTests(unittest.TestCase):
         os.makedirs(self.legacy)
 
     def test_creates_the_state_dir_and_uses_it_when_empty(self):
-        self.assertEqual(tokenstat.default_store(self.state, self.legacy),
+        self.assertEqual(tokenstats.default_store(self.state, self.legacy),
                          os.path.join(self.state, "usage.db"))
         self.assertTrue(os.path.isdir(self.state))
 
@@ -3533,7 +3533,7 @@ class MigrationTests(unittest.TestCase):
         with open(old, "w") as fh:
             fh.write("history")
         with contextlib.redirect_stderr(io.StringIO()) as err:
-            used = tokenstat.default_store(self.state, self.legacy)
+            used = tokenstats.default_store(self.state, self.legacy)
         self.assertEqual(used, os.path.join(self.state, "usage.db"))
         self.assertEqual(read_text(used), "history")
         self.assertFalse(os.path.exists(old))
@@ -3544,7 +3544,7 @@ class MigrationTests(unittest.TestCase):
             with open(os.path.join(self.legacy, "usage.db" + suffix), "w") as fh:
                 fh.write(suffix)
         with contextlib.redirect_stderr(io.StringIO()) as err:
-            used = tokenstat.default_store(self.state, self.legacy)
+            used = tokenstats.default_store(self.state, self.legacy)
         self.assertEqual(used, os.path.join(self.state, "usage.db"))
         self.assertIn("migrated store:", err.getvalue())
         for suffix in ("", "-wal", "-shm"):
@@ -3574,10 +3574,10 @@ class MigrationTests(unittest.TestCase):
                 raise OSError("no such file or directory")
             return real(src, dst)
 
-        with unittest.mock.patch.object(tokenstat.os, "replace",
+        with unittest.mock.patch.object(tokenstats.os, "replace",
                                         side_effect=rival_wins):
             with contextlib.redirect_stderr(io.StringIO()):
-                used = tokenstat.default_store(self.state, self.legacy)
+                used = tokenstats.default_store(self.state, self.legacy)
         self.assertEqual(used, os.path.join(self.state, "usage.db"))
         self.assertEqual(read_text(os.path.join(self.state, "usage.db")), "")
         for suffix in ("-wal", "-shm"):
@@ -3592,17 +3592,17 @@ class MigrationTests(unittest.TestCase):
             fh.write("new")
         with open(os.path.join(self.legacy, "usage.db"), "w") as fh:
             fh.write("old")
-        tokenstat.default_store(self.state, self.legacy)
+        tokenstats.default_store(self.state, self.legacy)
         self.assertEqual(read_text(keep), "new")
 
     def test_an_unmovable_legacy_store_is_used_in_place(self):
         old = os.path.join(self.legacy, "usage.db")
         with open(old, "w") as fh:
             fh.write("history")
-        with unittest.mock.patch.object(tokenstat.os, "replace",
+        with unittest.mock.patch.object(tokenstats.os, "replace",
                                         side_effect=OSError("cross-device")):
             with contextlib.redirect_stderr(io.StringIO()) as err:
-                used = tokenstat.default_store(self.state, self.legacy)
+                used = tokenstats.default_store(self.state, self.legacy)
         self.assertEqual(used, old)                      # never an empty store
         self.assertIn("could not migrate", err.getvalue())
 
@@ -3624,10 +3624,10 @@ class MigrationTests(unittest.TestCase):
                 raise OSError("locked by another connection")
             return real_replace(src, dst)
 
-        with unittest.mock.patch.object(tokenstat.os, "replace",
+        with unittest.mock.patch.object(tokenstats.os, "replace",
                                         side_effect=replace):
             with contextlib.redirect_stderr(io.StringIO()) as err:
-                used = tokenstat.default_store(self.state, self.legacy)
+                used = tokenstats.default_store(self.state, self.legacy)
         # Whatever path comes back must be one that still holds the history.
         self.assertTrue(os.path.exists(used), used)
         self.assertEqual(used, old)
@@ -3654,10 +3654,10 @@ class MigrationTests(unittest.TestCase):
                 raise OSError("cross-device link")
             return real_replace(src, dst)
 
-        with unittest.mock.patch.object(tokenstat.os, "replace",
+        with unittest.mock.patch.object(tokenstats.os, "replace",
                                         side_effect=replace):
             with contextlib.redirect_stderr(io.StringIO()) as err:
-                used = tokenstat.default_store(self.state, self.legacy)
+                used = tokenstats.default_store(self.state, self.legacy)
         self.assertEqual(used, old)
         self.assertEqual(read_text(old), "history")
         for suffix in ("-wal", "-shm"):
@@ -3683,10 +3683,10 @@ class MigrationTests(unittest.TestCase):
             real_replace(src, dst)     # the winner's move lands first
             raise FileNotFoundError(2, "No such file or directory")
 
-        with unittest.mock.patch.object(tokenstat.os, "replace",
+        with unittest.mock.patch.object(tokenstats.os, "replace",
                                         side_effect=replace):
             with contextlib.redirect_stderr(io.StringIO()) as err:
-                used = tokenstat.default_store(self.state, self.legacy)
+                used = tokenstats.default_store(self.state, self.legacy)
         self.assertEqual(used, new)
         self.assertEqual(read_text(new), "history")
         self.assertFalse(os.path.exists(old))
@@ -3698,10 +3698,10 @@ class MigrationTests(unittest.TestCase):
         old = os.path.join(self.legacy, "usage.db")
         with open(old, "w") as fh:
             fh.write("history")
-        with unittest.mock.patch.object(tokenstat.os, "makedirs",
+        with unittest.mock.patch.object(tokenstats.os, "makedirs",
                                         side_effect=OSError("read-only")):
             with contextlib.redirect_stderr(io.StringIO()) as err:
-                used = tokenstat.default_store(self.state, self.legacy)
+                used = tokenstats.default_store(self.state, self.legacy)
         self.assertEqual(used, old)
         self.assertIn("could not create", err.getvalue())
 
@@ -3710,10 +3710,10 @@ class MigrationTests(unittest.TestCase):
         # frozen into def-time defaults: that is what lets a caller repoint
         # STATE_DIR and LEGACY_DIR (and what keeps main()'s run out of $HOME
         # the moment the globals move).
-        with unittest.mock.patch.object(tokenstat, "STATE_DIR", self.state), \
-                unittest.mock.patch.object(tokenstat, "LEGACY_DIR",
+        with unittest.mock.patch.object(tokenstats, "STATE_DIR", self.state), \
+                unittest.mock.patch.object(tokenstats, "LEGACY_DIR",
                                            self.legacy):
-            self.assertEqual(tokenstat.default_store(),
+            self.assertEqual(tokenstats.default_store(),
                              os.path.join(self.state, "usage.db"))
         self.assertTrue(os.path.isdir(self.state))
 
@@ -3727,7 +3727,7 @@ class MigrationTests(unittest.TestCase):
         with open(os.path.join(old_themes, "examples", "gta.json"), "w") as fh:
             fh.write("{}")
         with contextlib.redirect_stderr(io.StringIO()):
-            tokenstat.default_store(self.state, self.legacy)
+            tokenstats.default_store(self.state, self.legacy)
         self.assertTrue(os.path.exists(
             os.path.join(self.state, "themes", "mine.json")))
         self.assertTrue(os.path.exists(os.path.join(old_themes, "README.md")))
@@ -3736,8 +3736,8 @@ class MigrationTests(unittest.TestCase):
 
 
 class FreshMachineTests(unittest.TestCase):
-    """The end-user promise, end to end: a machine that has never run tokenstat
-    gets a report, and tokenstat's own state appears under $HOME — never
+    """The end-user promise, end to end: a machine that has never run tokenstats
+    gets a report, and tokenstats's own state appears under $HOME — never
     beside the script, and never depending on the working directory."""
 
     def test_runs_from_anywhere_against_an_empty_home(self):
@@ -3748,10 +3748,10 @@ class FreshMachineTests(unittest.TestCase):
             for path in (bin_dir, home, elsewhere):
                 os.makedirs(path)
             # A copy of the script with no legacy state beside it: this is a
-            # machine that has never seen tokenstat, not this working tree.
-            script = os.path.join(bin_dir, "tokenstat.py")
-            shutil.copyfile(tokenstat.__file__, script)
-            # OpenCode history but no tokenstat state: the dashboard needs a
+            # machine that has never seen tokenstats, not this working tree.
+            script = os.path.join(bin_dir, "tokenstats.py")
+            shutil.copyfile(tokenstats.__file__, script)
+            # OpenCode history but no tokenstats state: the dashboard needs a
             # session to render. The OpenCode source is present, so report mode
             # ingests it cleanly and leaves nothing on stderr.
             src_dir = os.path.join(home, ".local", "share", "opencode")
@@ -3764,8 +3764,8 @@ class FreshMachineTests(unittest.TestCase):
                 capture_output=True, text=True)
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertTrue(os.path.isfile(
-                os.path.join(home, ".tokenstat", "usage.db")))
-            self.assertIn("tokenstat", proc.stdout)
+                os.path.join(home, ".tokenstats", "usage.db")))
+            self.assertIn("tokenstats", proc.stdout)
             self.assertEqual(proc.stderr.count("could not read"), 0)
             # Nothing was written next to the script it ran from.
             self.assertFalse(os.path.exists(os.path.join(bin_dir, "usage.db")))
@@ -3783,7 +3783,7 @@ class SchemaTests(unittest.TestCase):
 class LegacyStoreOpensTests(CliHarness):
     """A store written while the tool still tracked Unsloth Studio still opens:
     its unsloth_events / unsloth_runs tables are simply ignored now. This pins
-    the upgrade-in-place promise — the same ~/.tokenstat/usage.db an older build
+    the upgrade-in-place promise — the same ~/.tokenstats/usage.db an older build
     created must never error on tables the current build no longer reads."""
 
     def test_report_runs_against_a_store_with_legacy_tables(self):
@@ -3882,16 +3882,16 @@ class FilterHelperTests(unittest.TestCase):
     used by all three _*_filters builders."""
 
     def test_like_pattern_is_lowered_and_escaped(self):
-        self.assertEqual(tokenstat._like_pattern("A%B_C"), "%a\\%b\\_c%")
+        self.assertEqual(tokenstats._like_pattern("A%B_C"), "%a\\%b\\_c%")
 
     def test_date_clauses_are_inclusive_and_until_day_end(self):
         since, until = ms(2026, 11, 1), ms(2026, 11, 3)
-        where, params = tokenstat._date_clauses("time_created", since, until)
+        where, params = tokenstats._date_clauses("time_created", since, until)
         self.assertEqual(where, ["time_created >= ?", "time_created < ?"])
-        self.assertEqual(params, [since, tokenstat._day_end_ms(until)])
+        self.assertEqual(params, [since, tokenstats._day_end_ms(until)])
 
     def test_date_clauses_are_empty_when_unbounded(self):
-        self.assertEqual(tokenstat._date_clauses("created_at", None, None),
+        self.assertEqual(tokenstats._date_clauses("created_at", None, None),
                          ([], []))
 
     def test_until_alone_is_still_a_half_open_window(self):
@@ -3901,9 +3901,9 @@ class FilterHelperTests(unittest.TestCase):
         # this is the only test that fails when the until clause is made to
         # depend on `since` being present.
         until = ms(2026, 11, 3)
-        where, params = tokenstat._date_clauses("created_at", None, until)
+        where, params = tokenstats._date_clauses("created_at", None, until)
         self.assertEqual(where, ["created_at < ?"])
-        self.assertEqual(params, [tokenstat._day_end_ms(until)])
+        self.assertEqual(params, [tokenstats._day_end_ms(until)])
 
 
 class LikeEscapingTests(unittest.TestCase):
@@ -3952,7 +3952,7 @@ class NoResourceWarningTests(unittest.TestCase):
             src = os.path.join(tmp, "src.db")
             self.addCleanup(make_file_db(src, [src_row()]).close)
             script = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                  "tokenstat.py")
+                                  "tokenstats.py")
             proc = subprocess.run(
                 [sys.executable, "-W", "error::ResourceWarning", script,
                  "--db", os.path.join(tmp, "usage.db"), "--src", src],
@@ -3964,7 +3964,7 @@ class NoResourceWarningTests(unittest.TestCase):
 class PanelEmptyTitleTests(unittest.TestCase):
     def test_empty_title_drops_the_separator(self):
         first = _ANSI_RE.sub("", panel("", ["content here"])[0])
-        self.assertTrue(first.startswith("\u256d tokenstat "))
+        self.assertTrue(first.startswith("\u256d tokenstats "))
         self.assertNotIn("\u00b7", first)
 
     def test_empty_title_keeps_uniform_width(self):
@@ -4032,7 +4032,7 @@ class PanelEmptyTitleTests(unittest.TestCase):
 
 
 class DefaultDashboardTests(CliHarness):
-    """Bare tokenstat run: hero + top-5 models + 5 most recent sessions."""
+    """Bare tokenstats run: hero + top-5 models + 5 most recent sessions."""
 
     def setUp(self):
         import tempfile
@@ -4071,7 +4071,7 @@ class DefaultDashboardTests(CliHarness):
     def test_bare_hero_has_no_section_name(self):
         code, out, _ = self.bare()
         first = _ANSI_RE.sub("", out.splitlines()[0])
-        self.assertTrue(first.startswith("\u256d tokenstat "))
+        self.assertTrue(first.startswith("\u256d tokenstats "))
         self.assertNotIn("\u00b7", first)
 
     def test_dashboard_share_pair_is_labeled(self):
@@ -4206,7 +4206,7 @@ class HeroUnitTests(unittest.TestCase):
 
     def run_hero(self, *flags):
         out, err = io.StringIO(), io.StringIO()
-        with unittest.mock.patch("tokenstat._color_enabled",
+        with unittest.mock.patch("tokenstats._color_enabled",
                                  lambda *a: True), \
                 contextlib.redirect_stdout(out), \
                 contextlib.redirect_stderr(err):
@@ -4284,7 +4284,7 @@ class CliSessionsTests(CliHarness):
     # -- direct unit pins for the two new helpers --
 
     def test_most_recent_reverses_and_truncates(self):
-        from tokenstat import most_recent
+        from tokenstats import most_recent
         rows = [{"n": 1}, {"n": 2}, {"n": 3}]
         self.assertEqual(most_recent(rows, 2), [{"n": 3}, {"n": 2}])
         self.assertEqual(most_recent(rows, 0), rows[::-1])   # 0 = all
@@ -4293,7 +4293,7 @@ class CliSessionsTests(CliHarness):
         self.assertEqual(rows, [{"n": 1}, {"n": 2}, {"n": 3}])  # no mutation
 
     def test_sessions_limit_resolver(self):
-        from tokenstat import SESSIONS_BARE, _sessions_limit
+        from tokenstats import SESSIONS_BARE, _sessions_limit
         self.assertIsNone(_sessions_limit(None, False, False))
         self.assertEqual(_sessions_limit(SESSIONS_BARE, False, False), 20)
         self.assertEqual(_sessions_limit(SESSIONS_BARE, True, False), 0)
@@ -4404,9 +4404,9 @@ class CliSessionsTests(CliHarness):
 
     def title_of(self, out):
         """The visible panel title, as rendered in the strip (colour
-        stripped): the top border reads `╭ tokenstat · {title} ───╮`."""
+        stripped): the top border reads `╭ tokenstats · {title} ───╮`."""
         text = self.plain(out)
-        m = re.search(r"tokenstat \u00b7 (.*?) \u2500+\u256e", text)
+        m = re.search(r"tokenstats \u00b7 (.*?) \u2500+\u256e", text)
         self.assertIsNotNone(m, f"no title strip in:\n{text}")
         return m.group(1)
 
@@ -4505,7 +4505,7 @@ class ByteIdentityGoldenTests(CliHarness):
     `golden/`. When a change is *meant* to move bytes, read the diff, then
     regenerate deliberately:
 
-        TOKENSTAT_UPDATE_GOLDEN=1 python3 -m unittest test_tokenstat
+        TOKENSTATS_UPDATE_GOLDEN=1 python3 -m unittest test_tokenstats
 
     The bytes are clock-independent (every fixture row carries an explicit
     timestamp) and TZ is pinned to UTC, because date columns render in local
@@ -4575,7 +4575,7 @@ class ByteIdentityGoldenTests(CliHarness):
         self.config = os.path.join(self.themes, "config.json")
         for name, value in (("THEMES_DIR", self.themes),
                             ("THEME_CONFIG", self.config)):
-            patcher = unittest.mock.patch.object(tokenstat, name, value)
+            patcher = unittest.mock.patch.object(tokenstats, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
 
@@ -4594,15 +4594,15 @@ class ByteIdentityGoldenTests(CliHarness):
 
     def assert_golden(self, name, tty, text):
         path = self.golden_path(name, tty)
-        if os.environ.get("TOKENSTAT_UPDATE_GOLDEN") == "1":
+        if os.environ.get("TOKENSTATS_UPDATE_GOLDEN") == "1":
             os.makedirs(GOLDEN_DIR, exist_ok=True)
             with open(path, "w", encoding="utf-8", newline="") as fh:
                 fh.write(text)
             return
         self.assertTrue(
             os.path.exists(path),
-            "no golden for %r yet: TOKENSTAT_UPDATE_GOLDEN=1 "
-            "python3 -m unittest test_tokenstat" % name)
+            "no golden for %r yet: TOKENSTATS_UPDATE_GOLDEN=1 "
+            "python3 -m unittest test_tokenstats" % name)
         with open(path, encoding="utf-8", newline="") as fh:
             self.assertEqual(
                 fh.read(), text,

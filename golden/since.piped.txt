@@ -1,5 +1,5 @@
-DATE        MODEL                                           IN     OUT  TOTAL  TOK/S  SESSION
+DATE        MODEL                                           TOTAL  TOK/S  IN     OUT  SESSION
 ─────────────────────────────────────────────────────────────────────────────────────────────
-2026-11-05  lemonade/gpt-oss-120b                           4,500  500  5,000         beta
-2026-11-06  lemonade/gpt-oss-120b                           1,500  250  1,750         gamma
-2026-11-07  unsloth-studio/unsloth/Qwen3.8-Flash-Next-GGUF  250    60   310           delta
+2026-11-05  lemonade/gpt-oss-120b                           5,000         4,500  500  beta
+2026-11-06  lemonade/gpt-oss-120b                           1,750         1,500  250  gamma
+2026-11-07  unsloth-studio/unsloth/Qwen3.8-Flash-Next-GGUF  310           250    60   delta

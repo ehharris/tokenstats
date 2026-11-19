@@ -1135,11 +1135,12 @@ class HeroTokSTests(unittest.TestCase):
         self.assertNotIn("tok/s",
                          _ANSI_RE.sub("", "\n".join(report_header("x", rows))))
 
-    def test_hero_tok_s_sits_between_out_and_cost(self):
+    def test_hero_tok_s_sits_after_the_grand_total(self):
         text = self.hero(cost_est=123.456)
         self.assertIn("tok/s", text)
-        self.assertLess(text.index("out"), text.index("tok/s"))
-        self.assertLess(text.index("tok/s"), text.index("~$"))
+        self.assertLess(text.index("tokens"), text.index("tok/s"))
+        self.assertLess(text.index("tok/s"), text.index("rows"))
+        self.assertLess(text.index("out"), text.index("~$"))
 
     def test_hero_real_cost_tail_sits_after_estimate(self):
         text = self.hero(cost_est=1.0, real_cost=5.0)
@@ -1163,6 +1164,78 @@ class HeroTokSTests(unittest.TestCase):
         lines = report_header("x", self.ROWS, color=False)
         self.assertNotIn("\x1b", "\n".join(lines))
         self.assertIn("133.3 tok/s", lines[1])
+
+
+class HeroOrderCacheTests(unittest.TestCase):
+    """Hero segment order (human decision 2026-11-18): tokens, tok/s, row
+    count, in, out — with --cache appending `· X cache` after out. Cost
+    tails stay at the right end. Tables follow the same stat order."""
+
+    ROWS = [{"total": 1200, "tokens_input": 1000, "tokens_output": 200,
+             "rate_weight": 240, "tok_s": 240.0, "date": "2026-11-16"},
+            {"total": 550, "tokens_input": 500, "tokens_output": 50,
+             "rate_weight": 1100, "tok_s": 110.0, "date": "2026-11-17"}]
+
+    def hero(self, **kw):
+        return _ANSI_RE.sub("", "\n".join(report_header("x", self.ROWS, **kw)))
+
+    def test_hero_segment_order(self):
+        text = self.hero(cost_est=1.0)
+        order = ["tokens", "tok/s", "rows", " in ", " out ", "~$"]
+        idx = [text.index(s) for s in order]
+        self.assertEqual(idx, sorted(idx), text)
+
+    def test_hero_cache_segment_sits_after_out(self):
+        text = self.hero(cache_total=7100, cost_est=1.0)
+        self.assertIn("7.1k cache", text)
+        self.assertLess(text.index(" out "), text.index("cache"))
+        self.assertLess(text.index("cache"), text.index("~$"))
+
+    def test_hero_cache_omitted_without_cache_total(self):
+        self.assertNotIn("cache", self.hero())
+
+    def test_hero_cache_number_painted_tcach_word_plain(self):
+        hero = report_header("x", self.ROWS, cache_total=7100)[1]
+        r, g, b = NEON["tcach"]
+        self.assertIn(f"\x1b[38;2;{r};{g};{b}m7.1k\x1b[0m", hero)
+        self.assertIn("\x1b[0m cache", hero)   # unit word stays terminal-color
+        self.assertNotIn("cache\x1b[0m", hero)
+
+    def test_hero_cache_stays_plain_when_color_is_off(self):
+        lines = report_header("x", self.ROWS, cache_total=7100, color=False)
+        self.assertNotIn("\x1b", "\n".join(lines))
+        self.assertIn("7.1k cache", lines[1])
+
+
+class TableOrderTests(unittest.TestCase):
+    """Table columns follow the hero's stat order (TOTAL, TOK/S, SESSIONS,
+    IN, OUT), row-label columns at the edges, CACHE after OUT, SHARE last."""
+
+    def test_session_columns_order(self):
+        from tokenstats import SESSION_COLUMNS
+        self.assertEqual([h for h, _, _ in SESSION_COLUMNS],
+                         ["DATE", "MODEL", "TOTAL", "TOK/S", "IN", "OUT",
+                          "SESSION"])
+
+    def test_daily_columns_order(self):
+        from tokenstats import DAILY_COLUMNS
+        self.assertEqual([h for h, _, _ in DAILY_COLUMNS],
+                         ["DATE", "TOTAL", "TOK/S", "SESSIONS", "IN", "OUT"])
+
+    def test_total_and_share_columns_order(self):
+        from tokenstats import SHARE_COLUMNS, TOTAL_COLUMNS
+        self.assertEqual([h for h, _, _ in TOTAL_COLUMNS],
+                         ["MODEL", "TOTAL", "TOK/S", "SESSIONS", "IN", "OUT"])
+        self.assertEqual([h for h, _, _ in SHARE_COLUMNS][-2:],
+                         ["SHARE %", "SHARE"])
+
+    def test_with_cache_inserts_after_out(self):
+        from tokenstats import DAILY_COLUMNS, SESSION_COLUMNS, SHARE_COLUMNS, \
+            with_cache
+        for source in (SESSION_COLUMNS, DAILY_COLUMNS, SHARE_COLUMNS):
+            headers = [h for h, _, _ in with_cache(source)]
+            i = headers.index("CACHE")
+            self.assertEqual(headers[i - 1], "OUT")
 
 
 class ParseDateTests(unittest.TestCase):
@@ -2026,15 +2099,6 @@ class CacheOverlayTests(unittest.TestCase):
         self.assertNotIn("cache", rows[0])  # inputs untouched...
         self.assertIn("cache", out[0])      # ...copies carry the combined sum
 
-    def test_with_cache_inserts_consecutively_before_total(self):
-        from tokenstats import DAILY_COLUMNS, SHARE_COLUMNS, SESSION_COLUMNS, \
-            with_cache
-        for source in (SESSION_COLUMNS, DAILY_COLUMNS, SHARE_COLUMNS):
-            headers = [h for h, _, _ in with_cache(source)]
-            i = headers.index("CACHE")
-            self.assertEqual((headers[i - 1], headers[i + 1]),
-                             ("OUT", "TOTAL"))
-
     def test_with_cache_does_not_mutate_argument(self):
         from tokenstats import SESSION_COLUMNS, with_cache
         original = list(SESSION_COLUMNS)
@@ -2065,13 +2129,13 @@ class CliCacheTests(CliHarness):
     def test_cache_flag_adds_column_to_session_view(self):
         code, out, _ = self.base("--cache")
         self.assertEqual(code, 0)
-        self.assertRegex(out, r"OUT\s+CACHE\s+TOTAL")
+        self.assertRegex(out, r"IN\s+OUT\s+CACHE")
         self.assertIn("7,100", out)   # per seeded session: 7000 read + 100 write
 
     def test_cache_daily_view_shows_combined(self):
         code, out, _ = self.base("--daily", "--cache")
         self.assertEqual(code, 0)
-        self.assertRegex(out.splitlines()[0], r"OUT\s+CACHE\s+TOTAL")
+        self.assertRegex(out.splitlines()[0], r"IN\s+OUT\s+CACHE")
         self.assertIn("14,200", out)  # two seeded sessions
 
     def test_cache_total_view_shows_combined(self):
@@ -2090,9 +2154,10 @@ class CliCacheTests(CliHarness):
         self.assertEqual(code, 0)
         all_row = next(ln for ln in out.splitlines() if "(all)" in ln)
         cells = all_row.split()
-        # MODEL SESSIONS IN OUT CACHE TOTAL — IN, OUT, TOTAL keep their
-        # no-cache values, with the new CACHE cell between OUT and TOTAL
-        self.assertEqual(cells[2:6], ["2,000", "400", "14,200", "2,400"])
+        # MODEL TOTAL TOK/S SESSIONS IN OUT CACHE — TOK/S is blank on this
+        # fixture so split() drops it; IN, OUT, TOTAL keep their no-cache
+        # values, with the new CACHE cell after OUT
+        self.assertEqual(cells[1:6], ["2,400", "2", "2,000", "400", "14,200"])
 
     def test_cache_keeps_share_bar_padded(self):
         # regression pin: inserting CACHE must not disable paint_bars
@@ -2114,6 +2179,28 @@ class CliCacheTests(CliHarness):
         rows_plain, rows_cached = json.loads(plain), json.loads(cached)
         self.assertEqual(set(rows_plain[0]), set(rows_cached[0]))
         self.assertNotIn("cache", rows_cached[0])
+
+    def test_cache_hero_segment_in_view(self):
+        # the hero over a session-family table reflects --cache: a combined
+        # cache stat appended after "out" (two seeded sessions: 2 x 7,100)
+        code, out, _ = self.colored_main(
+            ["--db", self.db, "--src", self.src, "--sessions", "--cache"])
+        self.assertEqual(code, 0)
+        hero = _ANSI_RE.sub("", out).splitlines()[1]
+        self.assertIn("14.2k cache", hero)
+        self.assertLess(hero.index(" out "), hero.index("cache"))
+
+    def test_cache_dashboard_hero(self):
+        # the bare dashboard hero (piped: plain) carries the same segment
+        code, out, _ = self.base("--cache")
+        self.assertEqual(code, 0)
+        self.assertIn("14.2k cache", out)
+
+    def test_no_cache_hero_segment_without_flag(self):
+        code, out, _ = self.base("--cache")
+        code2, out2, _ = self.base()
+        self.assertIn("cache", out)
+        self.assertNotIn("cache", out2)
 
 
 class DisplayAlignmentTests(CliHarness):
@@ -4319,7 +4406,7 @@ class DefaultDashboardTests(CliHarness):
         plain = _ANSI_RE.sub("", out)
         self.assertGreaterEqual(plain.count("CACHE"), 2)
         self.assertGreaterEqual(plain.count("COST"), 2)
-        self.assertRegex(plain, r"OUT\s+CACHE\s+TOTAL")
+        self.assertRegex(plain, r"IN\s+OUT\s+CACHE")
         self.assertEqual(sum(1 for ln in plain.splitlines()
                              if ln.rstrip(" │").endswith("Prices")), 2)
 

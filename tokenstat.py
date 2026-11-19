@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
 """tokenstat — permanent local record of AI token usage on this machine.
 
-Snapshots three tables from two sources (read-only) into our own SQLite
-store — OpenCode's per-session totals, plus Unsloth Studio's per-request
-events and generation runs — and reports them filtered by model, date, and
-token thresholds. Reporting views carry a TOK/S column (reconcile
-excepted): each session row is the mean of its per-turn decode rates (matching
-OpenCode's per-prompt number), aggregate rows are token-weighted by generated
-tokens, and --from-runs shows each run's true generation rate. Opt-in
---cost[=<slug>] overlays a reference dollar estimate priced at one chosen
-model (family names resolve to the provider's mid-tier); opt-in --real-cost
-shows the stored real USD OpenCode reported. See README.md.
+Snapshots OpenCode's per-session totals (read-only) into our own SQLite store
+and reports them filtered by model, date, and token thresholds. Reporting
+views carry a TOK/S column: each session row is the mean of its per-turn
+decode rates (matching OpenCode's per-prompt number), and aggregate rows are
+token-weighted by generated tokens. Opt-in --cost[=<slug>] overlays a
+reference dollar estimate priced at one chosen model (family names resolve to
+the provider's mid-tier); opt-in --real-cost shows the stored real USD OpenCode
+reported. See README.md.
 """
 import argparse
 import colorsys
@@ -46,13 +44,6 @@ def theme_config(home=None):
     return os.path.join(themes_dir(home), "config.json")
 
 
-def unsloth_db(home=None):
-    """Unsloth Studio's database: <home>/.unsloth/studio/studio.db."""
-    if home is None:
-        home = os.path.expanduser("~")
-    return os.path.join(home, ".unsloth", "studio", "studio.db")
-
-
 def default_src(home=None):
     """OpenCode's database: $XDG_DATA_HOME/opencode when that is an absolute
     path, else <home>/.local/share/opencode — matching how OpenCode itself
@@ -68,7 +59,6 @@ STATE_DIR = state_dir()
 LEGACY_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_DB = default_db()
 DEFAULT_SRC = default_src()
-DEFAULT_UNSLOTH_DB = unsloth_db()
 THEMES_DIR = themes_dir()
 THEME_CONFIG = theme_config()
 
@@ -207,24 +197,6 @@ def ensure_schema(dest: sqlite3.Connection) -> None:
                last_seen INTEGER NOT NULL)"""
     )
     dest.execute(
-        """CREATE TABLE IF NOT EXISTS unsloth_events (
-               event_id TEXT PRIMARY KEY,
-               model TEXT NOT NULL DEFAULT '',
-               prompt_tokens INTEGER NOT NULL DEFAULT 0,
-               completion_tokens INTEGER NOT NULL DEFAULT 0,
-               total_tokens INTEGER NOT NULL DEFAULT 0,
-               created_at INTEGER NOT NULL)"""
-    )
-    dest.execute(
-        """CREATE TABLE IF NOT EXISTS unsloth_runs (
-               run_id TEXT PRIMARY KEY,
-               model TEXT NOT NULL DEFAULT '',
-               progress_tokens INTEGER NOT NULL DEFAULT 0,
-               started_at INTEGER NOT NULL,
-               completed_at INTEGER,
-               status TEXT NOT NULL DEFAULT '')"""
-    )
-    dest.execute(
         """CREATE TABLE IF NOT EXISTS opencode_steps (
                message_id TEXT PRIMARY KEY,
                session_id TEXT NOT NULL,
@@ -234,10 +206,6 @@ def ensure_schema(dest: sqlite3.Connection) -> None:
                time_created INTEGER NOT NULL)"""
     )
     # Hot filter columns: date-windowed queries scan these first.
-    dest.execute(
-        """CREATE INDEX IF NOT EXISTS idx_unsloth_events_created
-               ON unsloth_events(created_at)"""
-    )
     dest.execute(
         """CREATE INDEX IF NOT EXISTS idx_usage_time_created
                ON usage(time_created)"""
@@ -422,8 +390,7 @@ def import_opencode_steps(src: sqlite3.Connection,
 
     One row per session_message.id; step_ms and tokens_generated are monotonic
     max, so re-recording can never double count and a pruned source can never
-    shrink history. A source without session_message imports as zero steps,
-    mirroring the chat_generation_runs no-op in import_unsloth_runs.
+    shrink history. A source without session_message imports as zero steps.
 
     This family keeps its own loop instead of folding into `_upsert`: the dense
     turn ordinals and the rule that a NULL step_ms never maxes against a real
@@ -575,70 +542,6 @@ def import_opencode_steps(src: sqlite3.Connection,
     return counts
 
 
-def import_unsloth(src: sqlite3.Connection, dest: sqlite3.Connection) -> dict:
-    """Upsert every api_usage_events row into our unsloth_events table.
-
-    One row per Unsloth event id; the token columns are monotonic max, so
-    re-importing can never double count (events themselves are immutable).
-    `model` rides the label class: a source that nulls it keeps the value we
-    already hold. `created_at` is insert-only: an event's timestamp is
-    immutable, so a source that ever rewrote one must not move the stored
-    value."""
-    rows = src.execute(
-        "SELECT id, model, prompt_tokens, completion_tokens, total_tokens,"
-        " created_at FROM api_usage_events").fetchall()
-    payload = [{"event_id": eid, "model": model or "",
-                "prompt_tokens": p or 0, "completion_tokens": c or 0,
-                "total_tokens": t or 0, "created_at": ts}
-               for eid, model, p, c, t, ts in rows]
-    counts = _upsert(dest, "unsloth_events", "event_id", payload,
-                     numeric=("prompt_tokens", "completion_tokens",
-                              "total_tokens"),
-                     insert_only=("created_at",))
-    dest.commit()
-    return counts
-
-
-def import_unsloth_runs(src: sqlite3.Connection,
-                        dest: sqlite3.Connection) -> dict:
-    """Upsert every chat_generation_runs row into our unsloth_runs table.
-
-    One row per Studio run id; progress_tokens is a monotonic max, so
-    re-importing can never double count. started_at, completed_at and status
-    take the source value unconditionally — even NULL — or a run that finished
-    would look unfinished forever. `model` rides the label class: a source that
-    stops naming the model keeps the name we already have. The model lives
-    inside request_json (no dedicated column); extract it in Python rather than
-    SQLite JSON1 so the query works on any build. A studio.db without the table
-    (older installs) reports zero runs instead of failing."""
-    has_table = src.execute(
-        "SELECT name FROM sqlite_master WHERE type='table'"
-        " AND name='chat_generation_runs'").fetchone()
-    if not has_table:
-        return Counter(inserted=0, updated=0, unchanged=0)
-    rows = src.execute(
-        "SELECT id, request_json, progress_tokens, started_at, completed_at,"
-        " status FROM chat_generation_runs").fetchall()
-    payload = []
-    for rid, request_json, progress, started, completed, status in rows:
-        try:
-            data = json.loads(request_json)
-        except (TypeError, ValueError):
-            data = None
-        # Non-dict JSON is an extraction failure, not a row error
-        # (mirrors parse_model): blank model, but the row still inserts.
-        model = data.get("model", "") if isinstance(data, dict) else ""
-        payload.append({"run_id": rid, "model": str(model),
-                        "progress_tokens": progress or 0,
-                        "started_at": started, "completed_at": completed,
-                        "status": status or ""})
-    counts = _upsert(dest, "unsloth_runs", "run_id", payload,
-                     numeric=("progress_tokens",),
-                     overwrite=("started_at", "completed_at", "status"))
-    dest.commit()
-    return counts
-
-
 def _like_pattern(model):
     """Lowered substring LIKE pattern for `model`, with the LIKE metacharacters
     `%` and `_` escaped so user text always matches literally (pairs with
@@ -658,112 +561,6 @@ def _date_clauses(column, since_ms, until_ms):
         where.append(column + " < ?")
         params.append(_day_end_ms(until_ms))  # until-day inclusive
     return where, params
-
-
-def _event_filters(model, since_ms, until_ms, min_in, min_out):
-    where, params = [], []
-    if model:
-        pattern = _like_pattern(model)
-        # Accept either the event's own model string or the provider-prefixed
-        # form shown in session reports (e.g. "unsloth-studio/unsloth/Qwen...").
-        where.append("(lower(model) LIKE ? ESCAPE '\\' OR "
-                     "lower(? || '/' || model) LIKE ? ESCAPE '\\')")
-        params.extend([pattern, UNSLOTH_PROVIDER, pattern])
-    date_where, date_params = _date_clauses("created_at", since_ms, until_ms)
-    where.extend(date_where)
-    params.extend(date_params)
-    if min_in is not None:
-        where.append("prompt_tokens >= ?")
-        params.append(min_in)
-    if min_out is not None:
-        where.append("completion_tokens >= ?")
-        params.append(min_out)
-    return where, params
-
-
-def query_events(dest, model=None, since_ms=None, until_ms=None,
-                 min_in=None, min_out=None):
-    """Imported Unsloth request events matching all filters, oldest first.
-
-    Dict shape matches query_sessions: tokens_input = prompt_tokens (which
-    include cache hits), tokens_output = completion_tokens. tok_s is always
-    None: a single event carries no duration."""
-    where, params = _event_filters(model, since_ms, until_ms, min_in, min_out)
-    sql = ("SELECT created_at, model, prompt_tokens, completion_tokens"
-           " FROM unsloth_events")
-    if where:
-        sql += " WHERE " + " AND ".join(where)
-    sql += " ORDER BY created_at ASC"
-    rows = []
-    for ts, model_id, p, c in dest.execute(sql, params):
-        date = datetime.datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d")
-        rows.append({"date": date, "model": model_id,
-                     "tokens_input": p, "tokens_output": c, "total": p + c,
-                     "cost": 0.0, "title": "", "tok_s": None})
-    return rows
-
-
-def daily_events(dest, model=None, since_ms=None, until_ms=None,
-                 min_in=None, min_out=None):
-    """Per-day event aggregates (sessions = request count), oldest first.
-    Events carry no duration, so there is no per-row rate to average: tok_s
-    spans the bucket's created_at range instead."""
-    where, params = _event_filters(model, since_ms, until_ms, min_in, min_out)
-    return _grouped_aggregates(
-        dest, "unsloth_events",
-        "date(created_at/1000, 'unixepoch', 'localtime')",
-        " COUNT(*), SUM(prompt_tokens), SUM(completion_tokens),"
-        " MIN(created_at), MAX(created_at)", where, params, None,
-        lambda day, counts, rate, weight: {
-            "date": day, "sessions": counts[0], "tokens_input": counts[1] or 0,
-            "tokens_output": counts[2] or 0,
-            "total": (counts[1] or 0) + (counts[2] or 0), "cost": 0.0,
-            "tok_s": _aggregate_rate((counts[1] or 0) + (counts[2] or 0),
-                                     counts[3], counts[4])})
-
-
-def total_events(dest, model=None, since_ms=None, until_ms=None,
-                 min_in=None, min_out=None, by_model=False):
-    """All-time event aggregates: one grand-total row; per-event-model rows
-    (ordered by it) with a model filter or by_model=True. Empty when no
-    events match. Mirrors total_totals; cost is always 0.0 (daily_events);
-    with no per-event duration to average, tok_s spans each row's created_at
-    range."""
-    where, params = _event_filters(model, since_ms, until_ms, min_in, min_out)
-    sums = (" COUNT(*), SUM(prompt_tokens), SUM(completion_tokens),"
-            " MIN(created_at), MAX(created_at)")
-    builder = lambda m, counts, rate, weight: {
-        "model": m, "sessions": counts[0], "tokens_input": counts[1] or 0,
-        "tokens_output": counts[2] or 0,
-        "total": (counts[1] or 0) + (counts[2] or 0), "cost": 0.0,
-        "tok_s": _aggregate_rate((counts[1] or 0) + (counts[2] or 0),
-                                 counts[3], counts[4])}
-    if not model and not by_model:
-        return _total_aggregates(dest, "unsloth_events", sums, where, params,
-                                 None, builder)
-    return _total_aggregates(dest, "unsloth_events", sums, where, params,
-                             None, builder, group_key_sql="model")
-
-
-def _run_filters(model, since_ms, until_ms):
-    """WHERE clauses for unsloth_runs queries: `model` is a substring match
-    on the raw stored model string (LIKE metacharacters escaped), the date
-    window applies to started_at with the until-day inclusive."""
-    where, params = [], []
-    if model:
-        where.append("lower(model) LIKE ? ESCAPE '\\'")
-        params.append(_like_pattern(model))
-    date_where, date_params = _date_clauses("started_at", since_ms, until_ms)
-    where.extend(date_where)
-    params.extend(date_params)
-    return where, params
-
-
-def _aggregate_rate(total, first_started, last_end):
-    """Tokens/second over one row's own span; None when the span is under a
-    second (rate would be meaningless)."""
-    span = (last_end - first_started) / 1000
-    return round(total / span, 1) if span >= 1 else None
 
 
 def _weighted_mean_rate_and_weight(pairs):
@@ -808,23 +605,6 @@ def _session_rate_groups(dest, key_sql, where, params):
     groups = {}
     for key, rate, generated in dest.execute(sql, params):
         groups.setdefault(key, []).append((rate, generated or 0))
-    return groups
-
-
-def _run_rate_groups(dest, key_sql, where, params):
-    """{group key: [(per-run true generation rate, progress tokens)]} for runs
-    matching `where`, using query_runs' formula: progress over the run's
-    wall-clock seconds. A rate is None for runs that haven't completed."""
-    sql = ("SELECT " + key_sql + ", started_at, progress_tokens, completed_at,"
-           " status FROM unsloth_runs")
-    if where:
-        sql += " WHERE " + " AND ".join(where)
-    groups = {}
-    for key, started, progress, completed, status in dest.execute(sql, params):
-        groups.setdefault(key, []).append(
-            (_aggregate_rate(progress, started, completed)
-             if completed is not None and status == "completed" else None,
-             progress))
     return groups
 
 
@@ -883,131 +663,6 @@ def _total_aggregates(dest, table, sums, where, params, groups, row_builder,
     else:
         rate, weight = _weighted_mean_rate_and_weight(groups.get("(all)", []))
     return [row_builder("(all)", tuple(found), rate, weight)]
-
-
-def query_runs(dest, model=None, since_ms=None, until_ms=None):
-    """Imported Unsloth generation runs matching all filters, oldest first.
-
-    tokens_input/total carry progress_tokens (runs have no in/out split);
-    tok_s is the run's true generation rate — progress over its wall-clock
-    seconds — and None for unfinished or sub-second runs."""
-    where, params = _run_filters(model, since_ms, until_ms)
-    sql = ("SELECT started_at, model, progress_tokens, completed_at, status"
-           " FROM unsloth_runs")
-    if where:
-        sql += " WHERE " + " AND ".join(where)
-    sql += " ORDER BY started_at ASC"
-    rows = []
-    for (started, model_id, progress, completed,
-         status) in dest.execute(sql, params):
-        date = datetime.datetime.fromtimestamp(started / 1000).strftime(
-            "%Y-%m-%d")
-        tok_s = None
-        # "hasn't completed" means EITHER condition: a failed run that
-        # recorded completed_at still renders blank.
-        if completed is not None and status == "completed":
-            tok_s = _aggregate_rate(progress, started, completed)
-        rows.append({"date": date, "model": model_id,
-                     "progress_tokens": progress,
-                     "tokens_input": progress, "tokens_output": 0,
-                     "total": progress, "tok_s": tok_s,
-                     "rate_weight": progress,
-                     "cost": 0.0, "title": ""})
-    return rows
-
-
-def daily_runs(dest, model=None, since_ms=None, until_ms=None):
-    """Per-day run aggregates (sessions = run count), keyed on the run's
-    started day, oldest first. TOK/S is the token-weighted mean of the day's
-    per-run rates."""
-    where, params = _run_filters(model, since_ms, until_ms)
-    day_sql = "date(started_at/1000, 'unixepoch', 'localtime')"
-    return _grouped_aggregates(
-        dest, "unsloth_runs", day_sql, " COUNT(*), SUM(progress_tokens)",
-        where, params, _run_rate_groups(dest, day_sql, where, params),
-        lambda day, counts, rate, weight: {
-            "date": day, "sessions": counts[0], "tokens_input": counts[1] or 0,
-            "progress_tokens": counts[1] or 0,
-            "tokens_output": 0, "total": counts[1] or 0,
-            "tok_s": rate, "rate_weight": weight})
-
-
-def total_runs(dest, model=None, since_ms=None, until_ms=None, by_model=False):
-    """All-time run aggregates: one grand-total row; per-run-model rows
-    (ordered by the raw stored model string) with a model filter or
-    by_model=True. Empty when no runs match. Mirrors total_events; TOK/S is
-    the token-weighted mean of the group's per-run rates."""
-    where, params = _run_filters(model, since_ms, until_ms)
-    sums = " COUNT(*), SUM(progress_tokens)"
-    builder = lambda m, counts, rate, weight: {
-        "model": m, "sessions": counts[0], "tokens_input": counts[1] or 0,
-        "progress_tokens": counts[1] or 0,
-        "tokens_output": 0, "total": counts[1] or 0,
-        "tok_s": rate, "rate_weight": weight}
-    if not model and not by_model:
-        return _total_aggregates(
-            dest, "unsloth_runs", sums, where, params,
-            _run_rate_groups(dest, "'(all)'", where, params), builder)
-    return _total_aggregates(
-        dest, "unsloth_runs", sums, where, params,
-        _run_rate_groups(dest, "model", where, params), builder,
-        group_key_sql="model")
-
-
-UNSLOTH_PROVIDER = "unsloth-studio"  # providerID OpenCode records for Studio traffic
-
-
-def reconcile(dest, model=None):
-    """Per-model totals from both sources; gap = Unsloth-reported minus
-    session-attributed (positive gap = usage OpenCode no longer records,
-    negative = OpenCode counted tokens Studio's log doesn't contain).
-
-    Portable LEFT JOIN + UNION ALL (no FULL OUTER JOIN, which needs SQLite
-    >= 3.39): every model from either side appears, with zeros on the other."""
-    sql = """
-        WITH u AS (SELECT model_id, COUNT(*) AS sessions,
-                          SUM(tokens_input + tokens_cache_read
-                              + tokens_cache_write) AS attributed_in,
-                          SUM(tokens_output + tokens_reasoning) AS attributed_out
-                     FROM usage WHERE provider = ?
-                     GROUP BY model_id),
-             e AS (SELECT model, COUNT(*) AS requests,
-                          SUM(prompt_tokens) AS reported_prompt,
-                          SUM(completion_tokens) AS reported_completion
-                     FROM unsloth_events GROUP BY model)
-        SELECT u.model_id AS model, u.sessions, u.attributed_in,
-               u.attributed_out,
-               e.requests, e.reported_prompt, e.reported_completion
-          FROM u LEFT JOIN e ON u.model_id = e.model
-        UNION ALL
-        SELECT e.model, NULL, NULL, NULL,
-               e.requests, e.reported_prompt, e.reported_completion
-          FROM e LEFT JOIN u ON u.model_id = e.model
-         WHERE u.model_id IS NULL
-         ORDER BY model ASC"""
-    rows = []
-    for (model_id, sess, ai, ao, reqs, rp, rc) in dest.execute(
-            sql, (UNSLOTH_PROVIDER,)):
-        if model and model.lower() not in (model_id or "").lower():
-            continue
-        sess, ai, ao = sess or 0, ai or 0, ao or 0
-        reqs, rp, rc = reqs or 0, rp or 0, rc or 0
-        rows.append({"model": model_id, "sessions": sess,
-                     "attributed_in": ai, "reported_prompt": rp,
-                     "gap_prompt": rp - ai, "attributed_out": ao,
-                     "reported_completion": rc,
-                     "gap_completion": rc - ao})
-    return rows
-
-
-RECON_COLUMNS = [
-    ("MODEL", "model", "text"), ("SESS", "sessions", "int"),
-    ("ATTR_IN", "attributed_in", "int"), ("REQ", "requests", "int"),
-    ("REPORTED_P", "reported_prompt", "int"), ("GAP_P", "gap_prompt", "int"),
-    ("ATTR_OUT", "attributed_out", "int"),
-    ("REPORTED_C", "reported_completion", "int"),
-    ("GAP_C", "gap_completion", "int"),
-]
 
 
 DAY_MS = 86_400_000
@@ -1141,11 +796,6 @@ DAILY_COLUMNS = [
 TOTAL_COLUMNS = [
     ("MODEL", "model", "text"), ("SESSIONS", "sessions", "int"),
     ("IN", "tokens_input", "int"), ("OUT", "tokens_output", "int"),
-    ("TOTAL", "total", "int"), ("TOK/S", "tok_s", "rate"),
-]
-RUNS_COLUMNS = [
-    ("DATE", "date", "text"), ("MODEL", "model", "text"),
-    ("IN", "progress_tokens", "int"), ("OUT", "tokens_output", "int"),
     ("TOTAL", "total", "int"), ("TOK/S", "tok_s", "rate"),
 ]
 SHARE_COLUMNS = TOTAL_COLUMNS + [
@@ -1701,8 +1351,7 @@ def report_header(title, rows, theme=NEON, cost_est=None, real_cost=None,
     unit1 = unit[:-1] if n_rows == 1 and unit.endswith("s") else unit
     # Same token-weighted mean the aggregate tables use, over exactly the rows
     # this hero summarizes, so the hero and the table under it never disagree.
-    # Views whose rows carry no rate (--from-unsloth per event, reconcile) get
-    # no TOK/S segment at all.
+    # A view whose rows carry no rate gets no TOK/S segment at all.
     rate = _weighted_mean_rate([(r.get("tok_s"),
                                  r.get("rate_weight", r.get("total") or 0))
                                 for r in rows])
@@ -1882,44 +1531,20 @@ def _connect_src(path):
 
 
 def _view_rows(dest, args, model, model_any, want_total, limit):
-    """(rows, columns) for the view the flags ask for: one branch per source.
+    """(rows, columns) for the view the flags ask for.
 
     The total family ends with SHARE and the share-descending sort (ties keep
     SQL's alphabetical-by-model order, because the sort is stable); the session
     list renders newest first when a --sessions cap is in force. main has
-    already rejected reconcile's unsupported flags and --total x --daily by
-    the time this runs."""
-    if args.command == "reconcile":
-        return reconcile(dest, model=model), RECON_COLUMNS
+    already rejected --total x --daily by the time this runs."""
     if want_total:
-        rows = (total_runs(dest, model=model, since_ms=args.since,
-                           until_ms=args.until, by_model=model_any)
-                if args.from_runs else
-                total_events(dest, model=model, since_ms=args.since,
-                             until_ms=args.until, min_in=args.min_in,
-                             min_out=args.min_out, by_model=model_any)
-                if args.from_unsloth else
-                total_totals(dest, model=model, since_ms=args.since,
-                             until_ms=args.until, min_in=args.min_in,
-                             min_out=args.min_out, by_model=model_any,
-                             limit=limit))
+        rows = total_totals(dest, model=model, since_ms=args.since,
+                            until_ms=args.until, min_in=args.min_in,
+                            min_out=args.min_out, by_model=model_any,
+                            limit=limit)
         rows = add_shares(rows)
         rows.sort(key=lambda r: -r["share"])  # biggest share first
         return rows, SHARE_COLUMNS
-    if args.from_runs:
-        rows = (daily_runs(dest, model=model, since_ms=args.since,
-                           until_ms=args.until) if args.daily else
-                query_runs(dest, model=model, since_ms=args.since,
-                           until_ms=args.until))
-        return rows, (DAILY_COLUMNS if args.daily else RUNS_COLUMNS)
-    if args.from_unsloth:
-        rows = (daily_events(dest, model=model, since_ms=args.since,
-                             until_ms=args.until, min_in=args.min_in,
-                             min_out=args.min_out) if args.daily else
-                query_events(dest, model=model, since_ms=args.since,
-                             until_ms=args.until, min_in=args.min_in,
-                             min_out=args.min_out))
-        return rows, (DAILY_COLUMNS if args.daily else SESSION_COLUMNS)
     rows = (daily_totals(dest, model=model, since_ms=args.since,
                          until_ms=args.until, min_in=args.min_in,
                          min_out=args.min_out, limit=limit)
@@ -1937,24 +1562,17 @@ def _view_rows(dest, args, model, model_any, want_total, limit):
 def _view_title(args, share_view, limit):
     """(panel title, hero row-unit) for the view those flags picked.
 
-    Reconcile gets no hero, so its unit is never read. A positive --sessions
-    cap on an aggregate says so in the title (` · last N sessions`); the list
-    view names its scope instead (`sessions · N most recent`, `sessions ·
-    all`), and a 0 cap leaves every title byte-identical to the uncapped
-    view."""
-    if args.command == "reconcile":
-        title, hero_unit = "reconcile", "rows"  # reconcile gets no hero
-    elif share_view:
+    A positive --sessions cap on an aggregate says so in the title
+    (` · last N sessions`); the list view names its scope instead
+    (`sessions · N most recent`, `sessions · all`), and a 0 cap leaves every
+    title byte-identical to the uncapped view."""
+    if share_view:
         # Rows here are per-model totals, or the single grand total.
         title = ("usage by model · sorted by share"
                  if args.model is not None else "totals")
         hero_unit = "models" if args.model is not None else "totals"
     elif args.daily:
         title, hero_unit = "daily", "days"
-    elif args.from_runs:
-        title, hero_unit = "studio runs", "runs"
-    elif args.from_unsloth:
-        title, hero_unit = "unsloth events", "requests"
     else:
         title, hero_unit = "sessions", "sessions"
         if args.sessions is not None:
@@ -1993,13 +1611,11 @@ def render_report(title, rows, columns, share_view, color, theme, head=()):
 def main(argv):
     parser = argparse.ArgumentParser(
         prog="tokenstat",
-        description="Record and report AI token usage from OpenCode and "
-                    "Unsloth Studio into a permanent local store.")
+        description="Record and report AI token usage from OpenCode into a "
+                    "permanent local store.")
     parser.add_argument("command", nargs="?",
-                        choices=["record", "import-unsloth", "reconcile"],
-                        help="record = snapshot OpenCode now; import-unsloth ="
-                             " snapshot Unsloth Studio now (events + runs);"
-                             " reconcile = compare both sources per model"
+                        choices=["record"],
+                        help="record = snapshot OpenCode now"
                              " (default: report)")
     parser.add_argument("--model", nargs="?", const=MODEL_ANY,
                         help="substring match on provider/model — literal,"
@@ -2032,26 +1648,17 @@ def main(argv):
     parser.add_argument("--db", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--src", default=DEFAULT_SRC,
                         help=argparse.SUPPRESS)
-    parser.add_argument("--unsloth-db", default=DEFAULT_UNSLOTH_DB, dest="unsloth_db",
-                        help=argparse.SUPPRESS)
-    parser.add_argument("--from-unsloth", action="store_true", dest="from_unsloth",
-                        help=argparse.SUPPRESS)
-    parser.add_argument("--from-runs", action="store_true", dest="from_runs",
-                        help="report imported Unsloth generation runs (IN ="
-                             " progress tokens, no in/out split) with true"
-                             " tokens/second")
     parser.add_argument("--cost", nargs="?", const="sonnet-5", default=None,
                         metavar="TIER", dest="cost",
                         choices=sorted(PRICES) + sorted(FAMILY_ALIASES),
                         help="add a reference cost estimate column priced at"
                              " TIER (model slug or family name; default:"
-                             " sonnet-5); display-only overlay (not with"
-                             " reconcile). Prefer --cost=TIER: the space form"
+                             " sonnet-5); display-only overlay. Prefer"
+                             " --cost=TIER: the space form"
                              " can swallow a following command")
     parser.add_argument("--real-cost", action="store_true", dest="real_cost",
                         help="add a REAL COST column with the stored real USD"
-                             " OpenCode reported (session views only; not with"
-                             " reconcile or the Unsloth source views)")
+                             " OpenCode reported")
     # --cost-tier was removed with the --cost rework; kept as a suppressed
     # shim so stale shell-history invocations get a migration message
     # instead of argparse blaming the word it swallowed as the command.
@@ -2061,8 +1668,7 @@ def main(argv):
     parser.add_argument("--cache", action="store_true", dest="cache",
                         help="add a CACHE column (cache read + write) between"
                              " OUT and TOTAL in session views; informational,"
-                             " TOTAL unchanged (not with reconcile or the"
-                             " Unsloth source views)")
+                             " TOTAL unchanged")
     parser.add_argument("--theme", nargs="?", const=THEME_LIST, default=None,
                         metavar="SLUG",
                         help="bare --theme lists all themes and exits; with"
@@ -2216,21 +1822,10 @@ def main(argv):
             ok = _ingest(args.src, lambda src: record(src, dest, now_ms),
                          verbose=True)
             return 0 if ok else 1
-        if args.command == "import-unsloth":
-            ok = _ingest(args.unsloth_db,
-                         lambda src: import_unsloth(src, dest), verbose=True)
-            runs_ok = _ingest(
-                args.unsloth_db, lambda src: import_unsloth_runs(src, dest),
-                verbose=True)
-            return 0 if (ok and runs_ok) else 1
 
-        # Report modes: snapshot both sources first, degrade gracefully if
-        # either is missing or locked.
+        # Report mode: snapshot OpenCode first, degrade gracefully if the
+        # source is missing or locked.
         _ingest(args.src, lambda src: record(src, dest, now_ms), verbose=False)
-        _ingest(args.unsloth_db, lambda src: import_unsloth(src, dest),
-                verbose=False)
-        _ingest(args.unsloth_db, lambda src: import_unsloth_runs(src, dest),
-                verbose=False)
 
         # Compact default dashboard (design 2026-11-15): a truly bare run —
         # no command, no view/filter flags (--cost/--cache are overlays, not
@@ -2238,7 +1833,6 @@ def main(argv):
         # --json keeps the full flat array (display-only limits).
         compact_dash = (args.command is None and args.model is None
                         and not args.daily and not args.total
-                        and not args.from_unsloth and not args.from_runs
                         and args.sessions is None
                         and args.since is None and args.until is None
                         and args.min_in is None and args.min_out is None)
@@ -2285,70 +1879,35 @@ def main(argv):
 
         model_any = args.model is MODEL_ANY
         # Bare --model is a shortcut for `--total --model`: totals per model.
-        # (With --daily it just means "all models", as before; reconcile keeps
-        # its own flag handling.)
+        # (With --daily it just means "all models", as before.)
         want_total = args.total or (model_any and not args.daily)
         model = None if model_any else args.model
 
-        if args.from_runs and (args.min_in is not None or args.min_out is not None):
-            parser.error("--from-runs does not support --min-in/--min-out"
-                         " (runs store only progress tokens)")
-        if args.cache and (args.from_unsloth or args.from_runs):
-            parser.error("--cache requires OpenCode session rows; Unsloth"
-                         " event/run sources fold cache hits into prompt"
-                         " tokens with no split")
-        if args.real_cost and (args.from_unsloth or args.from_runs):
-            parser.error("--real-cost requires OpenCode session rows; Unsloth"
-                         " event/run sources store no real cost")
-        if args.sessions is not None and (args.from_unsloth or args.from_runs):
-            parser.error("--sessions applies to OpenCode session views only;"
-                         " unsupported with --from-unsloth/--from-runs")
         # The SQL layer can't guard this: a negative LIMIT silently
         # degenerates to no cap, so the CLI is the only rejection point.
         limit = _sessions_limit(args.sessions, args.daily, want_total)
         if limit is not None and limit < 0:
             parser.error("--sessions must be a non-negative number of"
                          " sessions (0 = all)")
-        if args.command == "reconcile":
-            # One list of what reconcile cannot do, in the order the message
-            # has always listed it (the guards above never see these flags, and
-            # --model is the only one it accepts).
-            rejected = [("--since", args.since is not None),
-                        ("--until", args.until is not None),
-                        ("--min-in", args.min_in is not None),
-                        ("--min-out", args.min_out is not None),
-                        ("--daily", bool(args.daily)),
-                        ("--from-unsloth", bool(args.from_unsloth)),
-                        ("--from-runs", bool(args.from_runs)),
-                        ("--total", bool(args.total)),
-                        ("--sessions", args.sessions is not None),
-                        ("--cost", bool(args.cost)),
-                        ("--real-cost", bool(args.real_cost)),
-                        ("--cache", bool(args.cache))]
-            unsupported = [flag for flag, is_set in rejected if is_set]
-            if unsupported:
-                parser.error("reconcile supports only --model; unsupported:"
-                             f" {', '.join(unsupported)}")
-        elif want_total and args.daily:
+        if want_total and args.daily:
             parser.error("--total cannot be combined with --daily")
         rows, columns = _view_rows(dest, args, model, model_any, want_total,
                                    limit)
         # Opt-in --cost overlay: reference pricing on row copies, never stored
-        # data; reconcile keeps its own reject list above. The share-view flag
-        # is captured BEFORE appending cost_column — the append creates a new
-        # list, and render_report must still recognize the share view.
+        # data. The share-view flag is captured BEFORE appending cost_column —
+        # the append creates a new list, and render_report must still recognize
+        # the share view.
         share_view = columns is SHARE_COLUMNS
         # Panel title, derived from the same flags that picked `columns`
         # (a daily share view cannot occur: --total rejects --daily).
         title, hero_unit = _view_title(args, share_view, limit)
-        if args.cost and columns is not RECON_COLUMNS:
+        if args.cost:
             rows = annotate_cost(rows, cost_tier)
             columns = columns + [cost_column(cost_tier)]
-        if args.real_cost and columns is not RECON_COLUMNS:
+        if args.real_cost:
             columns = columns + [REAL_COST_COLUMN]
         # Opt-in --cache overlay: combined cache classes as one informational
-        # column between OUT and TOTAL; TOTAL stays IN + OUT. The guard above
-        # keeps it off the cache-blind Unsloth views; reconcile rejects it.
+        # column between OUT and TOTAL; TOTAL stays IN + OUT.
         if args.cache:
             rows = annotate_cache(rows)
             columns = with_cache(columns)
@@ -2360,13 +1919,9 @@ def main(argv):
                               for r in rows], indent=2))
         else:
             color = _color_enabled(sys.stdout, os.environ)
-            # Reconcile rows carry no summed token classes, so a hero header
-            # would imply zeros the view never computed — the compare view gets
-            # the table panel only. A total view narrowed to a single aggregate
-            # row already shows the grand total in-table — the hero would be a
-            # pure echo (reconcile skips its own for the same kind of reason).
-            head = ([] if args.command == "reconcile"
-                    or (want_total and len(rows) == 1)
+            # A total view narrowed to a single aggregate row already shows the
+            # grand total in-table — the hero would be a pure echo.
+            head = ([] if (want_total and len(rows) == 1)
                     else report_header(title, rows, theme, unit=hero_unit))
             print(render_report(title, rows, columns, share_view, color, theme,
                                 head=head), end="")

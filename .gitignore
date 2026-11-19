@@ -1,5 +1,8 @@
 usage.db*
 __pycache__/
+dist/
+build/
+*.egg-info/
 .superpowers/
 record.log
 # The live theme files and the saved default (--theme-default) now live in

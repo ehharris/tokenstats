@@ -1968,5 +1968,10 @@ def main(argv):
             dest.close()
 
 
+def cli_main():
+    """Console-script entry point: argv from sys.argv, exit code from main()."""
+    return main(sys.argv[1:])
+
+
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))

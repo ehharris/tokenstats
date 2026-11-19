@@ -3,7 +3,7 @@ __pycache__/
 .superpowers/
 record.log
 # The live theme files and the saved default (--theme-default) now live in
-# ~/.tokenstat/themes/; this entry only catches a legacy copy left beside the
+# ~/.tokenstats/themes/; this entry only catches a legacy copy left beside the
 # script, which the first run migrates away. Same story for usage.db* and
 # record.log above: personal state, never committed.
 themes/*.json

@@ -3458,18 +3458,36 @@ class DefaultPathsTests(unittest.TestCase):
 
     def test_xdg_data_home_moves_the_opencode_default(self):
         # Existence-based now: an absolute XDG wins only when its db is there.
+        # OPENCODE_DB cleared so an ambient value cannot outrank XDG.
         with tempfile.TemporaryDirectory() as xdg:
             db = os.path.join(xdg, "opencode", "opencode.db")
             os.makedirs(os.path.dirname(db))
             open(db, "w").close()
-            with unittest.mock.patch.dict(os.environ, {"XDG_DATA_HOME": xdg}):
+            with unittest.mock.patch.dict(os.environ, {"XDG_DATA_HOME": xdg,
+                                                       "OPENCODE_DB": ""}):
                 self.assertEqual(tokenstats.default_src("/tmp/fake-home"), db)
 
     def test_empty_or_relative_xdg_data_home_is_ignored(self):
-        for value in ("", "relative/path"):
-            with unittest.mock.patch.dict(os.environ, {"XDG_DATA_HOME": value}):
-                self.assertEqual(tokenstats.default_src("/tmp/fake-home"),
-                                 "/tmp/fake-home/.local/share/opencode/opencode.db")
+        # A relative XDG_DATA_HOME is ignored EVEN WHEN a db exists at that
+        # relative path — only the isabs guard rejects it. OPENCODE_DB is
+        # cleared so an ambient value cannot outrank the candidate under test.
+        with tempfile.TemporaryDirectory() as cwd:
+            rel_db = os.path.join(cwd, "relative", "path", "opencode",
+                                  "opencode.db")
+            os.makedirs(os.path.dirname(rel_db))
+            open(rel_db, "w").close()
+            prev = os.getcwd()
+            os.chdir(cwd)
+            try:
+                for value in ("", "relative/path"):
+                    with unittest.mock.patch.dict(
+                            os.environ, {"XDG_DATA_HOME": value,
+                                         "OPENCODE_DB": ""}):
+                        self.assertEqual(
+                            tokenstats.default_src("/tmp/fake-home"),
+                            "/tmp/fake-home/.local/share/opencode/opencode.db")
+            finally:
+                os.chdir(prev)
 
     def test_module_defaults_point_at_the_state_dir(self):
         # Pin the import-time bindings themselves: exec a second, isolated
@@ -3483,7 +3501,8 @@ class DefaultPathsTests(unittest.TestCase):
             "tokenstats_fresh", tokenstats.__file__)
         fresh = importlib.util.module_from_spec(spec)
         with unittest.mock.patch.dict(os.environ, {"HOME": "/tmp/fake-home",
-                                                   "XDG_DATA_HOME": ""}):
+                                                   "XDG_DATA_HOME": "",
+                                                   "OPENCODE_DB": ""}):
             spec.loader.exec_module(fresh)
         self.assertEqual(fresh.STATE_DIR, "/tmp/fake-home/.tokenstats")
         self.assertEqual(fresh.DEFAULT_DB, "/tmp/fake-home/.tokenstats/usage.db")
@@ -3536,13 +3555,23 @@ class PathResolutionTests(CliHarness):
                 self.assertEqual(tokenstats.default_src(home), db)
 
     def test_relative_opencode_db_env_is_ignored(self):
-        with tempfile.TemporaryDirectory() as home:
-            with unittest.mock.patch.dict(
-                    os.environ, {"OPENCODE_DB": "relative/oc.db"}, clear=True):
-                self.assertEqual(
-                    tokenstats.default_src(home),
-                    os.path.join(home, ".local", "share", "opencode",
-                                 "opencode.db"))
+        # A relative OPENCODE_DB is ignored EVEN WHEN a file exists at that
+        # relative path: only the isabs guard rejects it, not the exists probe.
+        # (Without the guard, default_src would return "oc.db" here.)
+        with tempfile.TemporaryDirectory() as home, \
+                tempfile.TemporaryDirectory() as cwd:
+            open(os.path.join(cwd, "oc.db"), "w").close()
+            prev = os.getcwd()
+            os.chdir(cwd)
+            try:
+                with unittest.mock.patch.dict(
+                        os.environ, {"OPENCODE_DB": "oc.db"}, clear=True):
+                    self.assertEqual(
+                        tokenstats.default_src(home),
+                        os.path.join(home, ".local", "share", "opencode",
+                                     "opencode.db"))
+            finally:
+                os.chdir(prev)
 
     def test_xdg_data_home_wins_when_it_exists(self):
         with tempfile.TemporaryDirectory() as home:
@@ -3568,6 +3597,29 @@ class PathResolutionTests(CliHarness):
                     os.environ, {"APPDATA": appdata}, clear=True), \
                     unittest.mock.patch.object(sys, "platform", "win32"):
                 self.assertEqual(tokenstats.default_src(home), db)
+
+    def test_local_share_outranks_darwin_when_both_exist(self):
+        # Pins the documented ORDER, not just presence: .local/share (candidate
+        # 3) wins over the darwin path (candidate 4) when both files exist.
+        with tempfile.TemporaryDirectory() as home:
+            local = self.touch(os.path.join(home, ".local", "share",
+                                            "opencode", "opencode.db"))
+            self.touch(os.path.join(home, "Library", "Application Support",
+                                    "opencode", "opencode.db"))
+            with unittest.mock.patch.dict(os.environ, {}, clear=True), \
+                    unittest.mock.patch.object(sys, "platform", "darwin"):
+                self.assertEqual(tokenstats.default_src(home), local)
+
+    def test_local_share_outranks_win32_when_both_exist(self):
+        with tempfile.TemporaryDirectory() as home:
+            local = self.touch(os.path.join(home, ".local", "share",
+                                            "opencode", "opencode.db"))
+            appdata = os.path.join(home, "AppData")
+            self.touch(os.path.join(appdata, "opencode", "opencode.db"))
+            with unittest.mock.patch.dict(
+                    os.environ, {"APPDATA": appdata}, clear=True), \
+                    unittest.mock.patch.object(sys, "platform", "win32"):
+                self.assertEqual(tokenstats.default_src(home), local)
 
     def test_legacy_dot_opencode_path_is_found(self):
         with tempfile.TemporaryDirectory() as home:
@@ -3599,14 +3651,29 @@ class EnsureUtf8Tests(unittest.TestCase):
     """_ensure_utf8_streams forces UTF-8 where it can and stays silent where
     it cannot (StringIO in tests, already-UTF-8 POSIX consoles)."""
 
-    def test_reconfigures_a_stream_that_supports_it(self):
+    def test_reconfigures_a_non_utf8_stream(self):
+        # Start from a NON-utf8 encoding: a fresh TextIOWrapper already
+        # reports the locale's UTF-8, so asserting on it before the call would
+        # pass vacuously. Only a real reconfigure moves ascii -> utf-8.
         stream = io.TextIOWrapper(io.BytesIO())
+        stream.reconfigure(encoding="ascii")
+        self.assertEqual(stream.encoding.lower(), "ascii")
         tokenstats._ensure_utf8_streams(out=stream, err=stream)
         self.assertIn(stream.encoding.lower(), ("utf-8", "utf8"))
 
     def test_noop_on_a_stream_without_reconfigure(self):
         # StringIO has no reconfigure; the call must not raise.
         tokenstats._ensure_utf8_streams(out=io.StringIO(), err=io.StringIO())
+
+    def test_main_forces_utf8_before_parsing(self):
+        # main() must call it first — before argparse — so a Windows cp1252
+        # console is UTF-8 before any box-drawing byte is written. --help
+        # exits during argparse, so a call here proves it ran first.
+        with unittest.mock.patch("tokenstats._ensure_utf8_streams") as m, \
+                self.assertRaises(SystemExit), \
+                contextlib.redirect_stdout(io.StringIO()):
+            tokenstats.main(["--help"])
+        m.assert_called_once()
 
 
 class MigrationTests(unittest.TestCase):
@@ -3886,23 +3953,32 @@ class LegacyStoreOpensTests(CliHarness):
             store = sqlite3.connect(db)
             self.addCleanup(store.close)
             ensure_schema(store)
-            # Hand-build the two tables the two-source tool created, with a row
-            # each, exactly as a store predating the Unsloth removal would hold.
+            # Hand-build the two tables EXACTLY as the two-source tool created
+            # them (no last_seen column, plus the events created_at index), so
+            # this is a faithful store predating the Unsloth removal.
             store.execute(
                 """CREATE TABLE unsloth_events (
-                       event_id TEXT PRIMARY KEY, model TEXT,
-                       prompt_tokens INTEGER, completion_tokens INTEGER,
-                       total_tokens INTEGER, created_at INTEGER,
-                       last_seen INTEGER)""")
+                       event_id TEXT PRIMARY KEY,
+                       model TEXT NOT NULL DEFAULT '',
+                       prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                       completion_tokens INTEGER NOT NULL DEFAULT 0,
+                       total_tokens INTEGER NOT NULL DEFAULT 0,
+                       created_at INTEGER NOT NULL)""")
+            store.execute(
+                """CREATE INDEX IF NOT EXISTS idx_unsloth_events_created
+                       ON unsloth_events(created_at)""")
             store.execute(
                 """CREATE TABLE unsloth_runs (
-                       run_id TEXT PRIMARY KEY, model TEXT,
-                       progress_tokens INTEGER, started_at INTEGER,
-                       completed_at INTEGER, status TEXT, last_seen INTEGER)""")
+                       run_id TEXT PRIMARY KEY,
+                       model TEXT NOT NULL DEFAULT '',
+                       progress_tokens INTEGER NOT NULL DEFAULT 0,
+                       started_at INTEGER NOT NULL,
+                       completed_at INTEGER,
+                       status TEXT NOT NULL DEFAULT '')""")
             store.execute("INSERT INTO unsloth_events VALUES "
-                          "('e1','m',100,5,105,1,1)")
+                          "('e1','m',100,5,105,1)")
             store.execute("INSERT INTO unsloth_runs VALUES "
-                          "('r1','m',100,1,2,'completed',1)")
+                          "('r1','m',100,1,2,'completed')")
             store.commit()
             store.close()
 
@@ -3913,6 +3989,14 @@ class LegacyStoreOpensTests(CliHarness):
             self.assertEqual(code, 0, err)
             self.assertEqual(err, "")
             self.assertIn("TOTAL", out)
+            # The legacy tables and their rows are untouched: the current build
+            # neither reads nor drops them, so an upgrade never loses history.
+            after = sqlite3.connect(db)
+            self.addCleanup(after.close)
+            self.assertEqual(
+                after.execute("SELECT count(*) FROM unsloth_events").fetchone()[0], 1)
+            self.assertEqual(
+                after.execute("SELECT count(*) FROM unsloth_runs").fetchone()[0], 1)
 
 
 class StepsSchemaTests(unittest.TestCase):
@@ -4607,7 +4691,7 @@ class ByteIdentityGoldenTests(CliHarness):
     on this machine must not repaint a golden.
     """
 
-    # 18 invocations x {piped, tty} = the 36 comparisons the theme review made.
+    # 15 invocations x {piped, tty} = the 30 comparisons the theme review made.
     CASES = (
         ("bare", ()),
         ("total", ("--total",)),

@@ -15,6 +15,7 @@ import colorsys
 import datetime
 import json
 import os
+import pathlib
 import re
 import sqlite3
 import sys
@@ -377,7 +378,10 @@ def record(src: sqlite3.Connection, dest: sqlite3.Connection, now_ms: int) -> di
     time_created are written once — a creation stamp is immutable, so a
     source that ever rewrote one must not move the stored value — and the
     labels — provider, model_id, title, directory and agent — keep the best
-    we already have (invariant 3).
+    we already have (invariant 3). Numeric fields are coerced per row before
+    the upsert: a source value that cannot be a number is a malformed row and
+    bumps `skipped`, never a poisoned store row that crashes every later
+    report.
     """
     rows = src.execute(
         "SELECT id, model, tokens_input, tokens_output, tokens_reasoning,"
@@ -385,22 +389,36 @@ def record(src: sqlite3.Connection, dest: sqlite3.Connection, now_ms: int) -> di
         " agent, time_created, time_updated FROM session_v2"
     ).fetchall()
     payload = []
+    bad = 0
     for (sid, model_raw, tin, tout, treas, tcr, tcw, cost, title, directory,
          agent, created, updated) in rows:
-        provider, model_id = parse_model(model_raw)
-        payload.append({
-            "session_id": sid, "provider": provider, "model_id": model_id,
-            "tokens_input": tin or 0, "tokens_output": tout or 0,
-            "tokens_reasoning": treas or 0, "tokens_cache_read": tcr or 0,
-            "tokens_cache_write": tcw or 0, "cost": cost or 0,
-            "title": title, "directory": directory, "agent": agent,
-            "time_created": created, "time_updated": updated,
-            "first_seen": now_ms, "last_seen": now_ms,
-        })
+        try:
+            # Coerce every numeric field HERE, not in the store: SQLite's
+            # column affinity happily files text like 'oops' into an INTEGER
+            # column, and a text time_created or cost that gets stored never
+            # leaves (invariant 1: the store never shrinks) — it would then
+            # crash every later report (fromtimestamp(str), f"{str:.2f}").
+            # Isolation belongs at ingest, where the skipped counter lives.
+            provider, model_id = parse_model(model_raw)
+            payload.append({
+                "session_id": sid, "provider": provider, "model_id": model_id,
+                "tokens_input": int(tin or 0), "tokens_output": int(tout or 0),
+                "tokens_reasoning": int(treas or 0),
+                "tokens_cache_read": int(tcr or 0),
+                "tokens_cache_write": int(tcw or 0), "cost": float(cost or 0),
+                "title": title, "directory": directory, "agent": agent,
+                "time_created": int(created),
+                "time_updated": None if updated is None else int(updated),
+                "first_seen": now_ms, "last_seen": now_ms,
+            })
+        except (TypeError, ValueError):
+            bad += 1
     counts = _upsert(dest, "usage", "session_id", payload,
                      numeric=TOKEN_COLUMNS,
                      overwrite=("time_updated", "last_seen"),
                      insert_only=("first_seen", "time_created"))
+    if bad:  # only when nonzero: a clean run carries no `skipped` key at all
+        counts["skipped"] = counts.get("skipped", 0) + bad
     counts.update(import_opencode_steps(src, dest))
     dest.commit()
     return counts
@@ -1234,8 +1252,11 @@ def _paint_gradient(bar, frac_in, stops):
 
 
 def _color_enabled(out, environ):
-    """True-color output only on a terminal, and never under NO_COLOR."""
-    return bool(out.isatty()) and "NO_COLOR" not in environ
+    """True-color output only on a terminal, and never under NO_COLOR. A
+    stream that cannot answer isatty (None, as under pythonw) is not a
+    terminal: plain output, no crash."""
+    isatty = getattr(out, "isatty", None)
+    return bool(isatty is not None and isatty()) and "NO_COLOR" not in environ
 
 
 def paint_bars(rows, color, theme=NEON):
@@ -1259,7 +1280,10 @@ def compact(n):
     if n >= 1_000_000:
         return f"{n / 1e6:.2f}M"
     if n >= 1_000:
-        return f"{n / 1e3:.1f}k"
+        k = f"{n / 1e3:.1f}"
+        # 999_950..999_999 would round the k-form to "1000.0k"; one step down
+        # reads truer than promoting to M below the M threshold.
+        return ("999.9" if k == "1000.0" else k) + "k"
     return str(n)
 
 
@@ -1549,7 +1573,17 @@ def _total_row(model, n, tin, tout, cost, tcr, tcw, rate, weight):
 
 
 def _connect_src(path):
-    return sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    """Open the source read-only via a proper file URI. The path is resolved
+    and percent-encoded (`pathlib.Path.as_uri`), because a raw `#` truncates
+    the URI filename and a raw `?` starts the query — either one silently
+    drops `mode=ro` and points SQLite at the wrong file, where it would
+    CREATE one (invariant 4: the source is never written). A path that cannot
+    be a URI at all (a Windows UNC share) falls back to the naive form."""
+    try:
+        uri = pathlib.Path(path).resolve().as_uri() + "?mode=ro"
+    except ValueError:
+        uri = f"file:{path}?mode=ro"
+    return sqlite3.connect(uri, uri=True)
 
 
 def _view_rows(dest, args, model, model_any, want_total, limit):
@@ -1606,7 +1640,8 @@ def _view_title(args, share_view, limit):
     # already names its scope, and a limit of 0 (all) leaves every title
     # byte-identical to the uncapped view.
     if limit and (share_view or args.daily):
-        title = f"{title} · last {limit} sessions"
+        title = (f"{title} · last {limit} session"
+                 f"{'s' if limit != 1 else ''}")
     return title, hero_unit
 
 
@@ -1730,6 +1765,15 @@ def main(argv):
         args.theme = None
     if args.theme_default == "":
         args.theme_default = THEME_SAVE
+    # `--model=` (an explicit empty pattern, e.g. an expanded empty shell
+    # variable) is indistinguishable from no pattern in the filter layer, so
+    # normalize it to absent here — the panel title then matches the filter.
+    if args.model == "":
+        args.model = None
+    # Windows cmd does not expand `~`; do it for any user-typed path.
+    args.src = os.path.expanduser(args.src)
+    if args.db is not None:
+        args.db = os.path.expanduser(args.db)
     if args._cost_tier is not None:
         parser.error("--cost-tier was removed; use --cost=<slug>"
                      " (e.g. --cost=opus-5); see --help")
@@ -1821,9 +1865,12 @@ def main(argv):
                 args.db = default_store()
             dest = sqlite3.connect(args.db)
             # WAL + busy_timeout so a scheduled `record` and an interactive
-            # query can overlap without either failing.
-            dest.execute("PRAGMA journal_mode=WAL")
+            # query can overlap without either failing. busy_timeout FIRST:
+            # the rollback-journal -> WAL conversion on a store's first run
+            # needs a brief lock, and this is the one moment a concurrent
+            # writer could otherwise bounce us out with "database is locked".
             dest.execute("PRAGMA busy_timeout=5000")
+            dest.execute("PRAGMA journal_mode=WAL")
             ensure_schema(dest)
         except sqlite3.Error as exc:
             print(f"warning: could not open our store {args.db}: {exc}",
@@ -1957,8 +2004,9 @@ def main(argv):
         else:
             color = _color_enabled(sys.stdout, os.environ)
             # A total view narrowed to a single aggregate row already shows the
-            # grand total in-table — the hero would be a pure echo.
-            head = ([] if (want_total and len(rows) == 1)
+            # grand total in-table — the hero would be a pure echo. Piped
+            # output never renders the hero at all, so do not build it.
+            head = ([] if not color or (want_total and len(rows) == 1)
                     else report_header(title, rows, theme, unit=hero_unit))
             print(render_report(title, rows, columns, share_view, color, theme,
                                 head=head), end="")

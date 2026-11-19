@@ -13,9 +13,12 @@ runs straight from the file. Ported 2026-11-18 from the two-source
 `token_counter` tool: the second data source and its comparison view were
 removed, leaving a single-source OpenCode tool. Design doc in
 `docs/superpowers/specs/`, implementation plan in `docs/superpowers/plans/`.
+User docs: `README.md` (quick start + screenshots), `docs/reference.md` (full
+option list, number methodology, guarantees), `themes/README.md` (theme file
+format); screenshots live in `docs/images/`.
 
 **State at handoff (2026-11-18):** work sits on `master` (no remote configured —
-local-only repo, no push). 381 tests green, clean under
+local-only repo, no push). 401 tests green, clean under
 `-W error::ResourceWarning`. Connection hygiene: every sqlite connection
 `main()` opens is closed — the store via try/finally and the read-only source by
 `_ingest` owning its open/close; `NoResourceWarningTests` subprocess-pins a
@@ -223,6 +226,25 @@ unrelated cwd — the end-user promise end to end), `HiddenOptionsTests`,
 `CliMainTests`, `FilterHelperTests`, `AggregateRowShapeTests`,
 `UpsertEngineTests`, `ViewDispatchTests`.
 
+**Final review pass (2026-11-18, fresh-eyes reviewer + coordinator).** Fixes
+that landed after the port: `_connect_src` now routes the path through
+`pathlib.Path.resolve().as_uri()` before appending `?mode=ro` — a raw `#` or
+`?` in a path used to truncate the URI filename, silently drop `mode=ro`, and
+let SQLite CREATE a stray writable file at the truncated path (invariant 4);
+`record()` coerces every numeric field per row (`int`/`float`) so a source
+row carrying text in `time_created`/`cost` bumps `skipped` at ingest instead
+of poisoning the never-shrinking store and crashing every later report;
+`PRAGMA busy_timeout` now runs before `journal_mode=WAL` (the first-run
+rollback→WAL conversion is the one moment a concurrent writer could bounce
+the store open); `_color_enabled` survives a stream without `isatty`
+(pythonw-style `stdout=None`); `--db`/`--src` get `expanduser` (Windows cmd
+does not expand `~`); `--model=` (empty pattern) normalizes to absent so the
+title matches the filter; aggregate titles singularize (`last 1 session`);
+`compact()` never renders `1000.0k`; the hero is not built for piped output.
+New test classes: `SourceUriTests`, `PoisonedSourceRowTests`,
+`ColorGateTests`, `TitleGrammarTests`, `TildePathTests`,
+`CompactBoundaryTests`.
+
 ## Commands (run from this directory)
 
 ```bash
@@ -243,7 +265,7 @@ python3 tokenstats.py --total --model --cache              # combined cache colu
 python3 tokenstats.py --theme[=SLUG]                       # list themes / paint this run (display-only overlay)
 python3 tokenstats.py --theme-default=SLUG                 # save the default theme in ~/.tokenstats/themes/config.json
 python3 tokenstats.py record                               # explicit snapshot (exit 1 if the source is unreadable)
-python3 -m unittest test_tokenstats -v                     # tests (~0.5s, no deps)
+python3 -m unittest test_tokenstats -v                     # tests (~0.6s, no deps)
 python3 -W error::ResourceWarning -m unittest test_tokenstats   # strict variant: must stay warning-clean
 TOKENSTATS_UPDATE_GOLDEN=1 python3 -m unittest test_tokenstats   # re-pin golden/ only AFTER reading the diff
 ```
@@ -317,6 +339,15 @@ of `$HOME`. tokenstats' own state is `~/.tokenstats/` (store, `themes/`,
 - Dates in session mode bucket by **session creation day**; some real sessions
   span multiple days, so per-day session numbers differ from a request-dated
   daily breakdown. Totals agree; attribution differs.
+- **DST zones where midnight itself shifts** (America/Havana, America/Santiago:
+  the clock jumps at 00:00) get a one-hour-shifted `--since`/`--until` window
+  and a filter/bucket mismatch for the affected day. The calendar-midnight math
+  is correct for zones that shift at other hours (all documented cases, incl.
+  MST/MDT); a `fold`-aware rewrite is the only real fix and was judged not
+  worth it.
+- `--theme-default=SLUG --theme=bogus` saves SLUG and exits 0 without ever
+  validating the paint-only `--theme` (the save short-circuits before
+  resolution). Cosmetic surprise only.
 - `--model` patterns are LITERAL: LIKE metacharacters `%`/`_` are escaped
   (`ESCAPE '\'`) in the filter path.
 - Ingestion has per-row error isolation: `record()` — one malformed source row

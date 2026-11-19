@@ -4880,5 +4880,26 @@ class ViewDispatchTests(CliHarness):
                 self.assertTrue(out.splitlines()[0].strip(), extra)
 
 
+class CliMainTests(unittest.TestCase):
+    """cli_main is the console-script entry point: argv from sys.argv, the
+    same exit code main() returns."""
+
+    def test_cli_main_is_callable_and_mirrors_main(self):
+        self.assertTrue(callable(tokenstats.cli_main))
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, "src.db")
+            self.addCleanup(make_file_db(src, [src_row(sid="s1")]).close)
+            db = os.path.join(tmp, "usage.db")
+            argv = ["--db", db, "--src", src, "--total"]
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                expected = main(argv)
+                with unittest.mock.patch.object(sys, "argv",
+                                                ["tokenstats", *argv]):
+                    got = tokenstats.cli_main()
+            self.assertEqual(got, expected)
+            self.assertEqual(got, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -38,6 +38,7 @@ tokenstats --daily                           # per-day totals
 tokenstats --total                           # one all-time grand-total row
 tokenstats --sessions=10                     # the 10 most recent sessions
 tokenstats --cost=claude                     # reference $ overlay — families: claude, codex, openai, deepseek, qwen
+tokenstats --cache                           # combined cache read+write column (session views)
 tokenstats --json | jq '.[].total'           # machine-readable rows
 tokenstats record                            # snapshot OpenCode, no report
 ```

@@ -45,14 +45,36 @@ def theme_config(home=None):
 
 
 def default_src(home=None):
-    """OpenCode's database: $XDG_DATA_HOME/opencode when that is an absolute
-    path, else <home>/.local/share/opencode — matching how OpenCode itself
-    resolves it."""
+    """OpenCode's database, resolved the way it can be found on each OS. Every
+    candidate is tried in order and the first that exists wins; with nothing on
+    disk the XDG-style default is returned so the caller still has a real path
+    to report. Order: $OPENCODE_DB (absolute) → $XDG_DATA_HOME/opencode/
+    opencode.db (absolute) → <home>/.local/share → macOS ~/Library/Application
+    Support → Windows %APPDATA% → legacy <home>/.opencode."""
     if home is None:
         home = os.path.expanduser("~")
+    local_default = os.path.join(home, ".local", "share", "opencode",
+                                 "opencode.db")
+    candidates = []
+    env_db = os.environ.get("OPENCODE_DB", "")
+    if os.path.isabs(env_db):
+        candidates.append(env_db)
     xdg = os.environ.get("XDG_DATA_HOME", "")
-    base = xdg if os.path.isabs(xdg) else os.path.join(home, ".local", "share")
-    return os.path.join(base, "opencode", "opencode.db")
+    if os.path.isabs(xdg):
+        candidates.append(os.path.join(xdg, "opencode", "opencode.db"))
+    candidates.append(local_default)
+    if sys.platform == "darwin":
+        candidates.append(os.path.join(home, "Library", "Application Support",
+                                       "opencode", "opencode.db"))
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA", "")
+        if os.path.isabs(appdata):
+            candidates.append(os.path.join(appdata, "opencode", "opencode.db"))
+    candidates.append(os.path.join(home, ".opencode", "opencode.db"))
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return local_default
 
 
 STATE_DIR = state_dir()
@@ -1608,7 +1630,22 @@ def render_report(title, rows, columns, share_view, color, theme, head=()):
     return render_table(rows, columns)
 
 
+def _ensure_utf8_streams(out=None, err=None):
+    """Best-effort UTF-8 so box-drawing/Unicode never crashes a Windows cp1252
+    console. No-op on streams without reconfigure (StringIO in tests, already
+    UTF-8 POSIX consoles)."""
+    for stream in (sys.stdout if out is None else out,
+                   sys.stderr if err is None else err):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8")
+            except (ValueError, OSError):
+                pass
+
+
 def main(argv):
+    _ensure_utf8_streams()
     parser = argparse.ArgumentParser(
         prog="tokenstats",
         description="Record and report AI token usage from OpenCode into a "

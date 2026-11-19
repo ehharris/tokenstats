@@ -3457,10 +3457,13 @@ class DefaultPathsTests(unittest.TestCase):
                          "/tmp/fake-home/.tokenstats/themes/config.json")
 
     def test_xdg_data_home_moves_the_opencode_default(self):
-        with unittest.mock.patch.dict(os.environ,
-                                      {"XDG_DATA_HOME": "/xdg/data"}):
-            self.assertEqual(tokenstats.default_src("/tmp/fake-home"),
-                             "/xdg/data/opencode/opencode.db")
+        # Existence-based now: an absolute XDG wins only when its db is there.
+        with tempfile.TemporaryDirectory() as xdg:
+            db = os.path.join(xdg, "opencode", "opencode.db")
+            os.makedirs(os.path.dirname(db))
+            open(db, "w").close()
+            with unittest.mock.patch.dict(os.environ, {"XDG_DATA_HOME": xdg}):
+                self.assertEqual(tokenstats.default_src("/tmp/fake-home"), db)
 
     def test_empty_or_relative_xdg_data_home_is_ignored(self):
         for value in ("", "relative/path"):
@@ -3513,6 +3516,97 @@ def read_text(path):
     under -W error::ResourceWarning, so no bare open(...).read() here."""
     with open(path) as fh:
         return fh.read()
+
+
+class PathResolutionTests(CliHarness):
+    """default_src probes per-OS candidates and returns the first that exists,
+    falling back to the XDG-style default. sys.platform and os.environ are
+    faked; a real temp home holds the files being probed."""
+
+    def touch(self, path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        open(path, "w").close()
+        return path
+
+    def test_opencode_db_env_wins_when_it_exists(self):
+        with tempfile.TemporaryDirectory() as home:
+            db = self.touch(os.path.join(home, "elsewhere", "oc.db"))
+            with unittest.mock.patch.dict(
+                    os.environ, {"OPENCODE_DB": db}, clear=True):
+                self.assertEqual(tokenstats.default_src(home), db)
+
+    def test_relative_opencode_db_env_is_ignored(self):
+        with tempfile.TemporaryDirectory() as home:
+            with unittest.mock.patch.dict(
+                    os.environ, {"OPENCODE_DB": "relative/oc.db"}, clear=True):
+                self.assertEqual(
+                    tokenstats.default_src(home),
+                    os.path.join(home, ".local", "share", "opencode",
+                                 "opencode.db"))
+
+    def test_xdg_data_home_wins_when_it_exists(self):
+        with tempfile.TemporaryDirectory() as home:
+            xdg = os.path.join(home, "xdg")
+            db = self.touch(os.path.join(xdg, "opencode", "opencode.db"))
+            with unittest.mock.patch.dict(
+                    os.environ, {"XDG_DATA_HOME": xdg}, clear=True):
+                self.assertEqual(tokenstats.default_src(home), db)
+
+    def test_darwin_library_path_is_found(self):
+        with tempfile.TemporaryDirectory() as home:
+            db = self.touch(os.path.join(home, "Library", "Application Support",
+                                         "opencode", "opencode.db"))
+            with unittest.mock.patch.dict(os.environ, {}, clear=True), \
+                    unittest.mock.patch.object(sys, "platform", "darwin"):
+                self.assertEqual(tokenstats.default_src(home), db)
+
+    def test_win32_appdata_path_is_found(self):
+        with tempfile.TemporaryDirectory() as home:
+            appdata = os.path.join(home, "AppData")
+            db = self.touch(os.path.join(appdata, "opencode", "opencode.db"))
+            with unittest.mock.patch.dict(
+                    os.environ, {"APPDATA": appdata}, clear=True), \
+                    unittest.mock.patch.object(sys, "platform", "win32"):
+                self.assertEqual(tokenstats.default_src(home), db)
+
+    def test_legacy_dot_opencode_path_is_found(self):
+        with tempfile.TemporaryDirectory() as home:
+            db = self.touch(os.path.join(home, ".opencode", "opencode.db"))
+            with unittest.mock.patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(tokenstats.default_src(home), db)
+
+    def test_nothing_exists_falls_back_to_local_share(self):
+        with tempfile.TemporaryDirectory() as home:
+            with unittest.mock.patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(
+                    tokenstats.default_src(home),
+                    os.path.join(home, ".local", "share", "opencode",
+                                 "opencode.db"))
+
+    def test_explicit_src_overrides_the_default(self):
+        # --src still wins outright: main reads exactly the file it names.
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, "src.db")
+            self.addCleanup(make_file_db(src, [src_row(sid="s1")]).close)
+            db = os.path.join(tmp, "usage.db")
+            code, out, err = self.run_main(
+                ["--db", db, "--src", src, "--total"])
+            self.assertEqual(code, 0, err)
+            self.assertIn("TOTAL", out)
+
+
+class EnsureUtf8Tests(unittest.TestCase):
+    """_ensure_utf8_streams forces UTF-8 where it can and stays silent where
+    it cannot (StringIO in tests, already-UTF-8 POSIX consoles)."""
+
+    def test_reconfigures_a_stream_that_supports_it(self):
+        stream = io.TextIOWrapper(io.BytesIO())
+        tokenstats._ensure_utf8_streams(out=stream, err=stream)
+        self.assertIn(stream.encoding.lower(), ("utf-8", "utf8"))
+
+    def test_noop_on_a_stream_without_reconfigure(self):
+        # StringIO has no reconfigure; the call must not raise.
+        tokenstats._ensure_utf8_streams(out=io.StringIO(), err=io.StringIO())
 
 
 class MigrationTests(unittest.TestCase):

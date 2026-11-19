@@ -1,7 +1,7 @@
-# `~/.tokenstat/themes/` — your own palettes
+# `~/.tokenstats/themes/` — your own palettes
 
-`tokenstat` ships ten built-in themes. Anything you drop in
-`~/.tokenstat/themes/` joins that list on the next run — no code change, no
+`tokenstats` ships ten built-in themes. Anything you drop in
+`~/.tokenstats/themes/` joins that list on the next run — no code change, no
 restart. One `.json` per theme, and the filename stem is the slug you type.
 
 This folder in the repository is documentation only: the format reference you
@@ -9,7 +9,7 @@ are reading, plus `examples/`. It is not read at runtime.
 
 ## Format
 
-`~/.tokenstat/themes/copper-dusk.json` is theme `copper-dusk`, displayed as
+`~/.tokenstats/themes/copper-dusk.json` is theme `copper-dusk`, displayed as
 `Copper Dusk`:
 
 ```json
@@ -37,7 +37,7 @@ are reading, plus `examples/`. It is not read at runtime.
   where you find out why a file is missing from the list. Its slug then does not
   exist, so `--theme=<that slug>` reports `unknown theme`.
 - A file whose stem matches a built-in slug **shadows** it:
-  `~/.tokenstat/themes/dracula.json` replaces the built-in Dracula.
+  `~/.tokenstats/themes/dracula.json` replaces the built-in Dracula.
 - `track` is a legacy role — it still lives in the built-in Neon Midnight dict,
   nothing reads it, and it is not part of this schema.
 
@@ -46,8 +46,8 @@ are reading, plus `examples/`. It is not read at runtime.
 | role | what it paints |
 | --- | --- |
 | `border` | the panel frame: corners, side rails, and the rule under the table header |
-| `accent` | the `tokenstat ·` half of every panel title, and every TOK/S number (hero and table) |
-| `label` | the view name in a panel title (`tokenstat · sessions`), the hero's date span, the table's column names |
+| `accent` | the `tokenstats ·` half of every panel title, and every TOK/S number (hero and table) |
+| `label` | the view name in a panel title (`tokenstats · sessions`), the hero's date span, the table's column names |
 | `num` | money: the `--cost` and `--real-cost` columns and the hero's `$` tails |
 | `tin` | the `IN` column and the hero's in-count; the left end of the SHARE bar gradient |
 | `tout` | the `OUT` column and the hero's out-count; the right end of that gradient |
@@ -61,36 +61,36 @@ is asked for.
 
 ## Commands
 
-Run these from the folder that holds `tokenstat.py` (this folder's parent):
+Run these from the folder that holds `tokenstats.py` (this folder's parent):
 
 ```bash
-python3 tokenstat.py --theme                       # list slugs + names, mark the default
-python3 tokenstat.py --theme=nord --total          # paint this run (overlay, like --cost)
-python3 tokenstat.py --theme-default=nord          # save the default for later runs
-python3 tokenstat.py --theme=nord --theme-default  # ...or save this run's --theme
+python3 tokenstats.py --theme                       # list slugs + names, mark the default
+python3 tokenstats.py --theme=nord --total          # paint this run (overlay, like --cost)
+python3 tokenstats.py --theme-default=nord          # save the default for later runs
+python3 tokenstats.py --theme=nord --theme-default  # ...or save this run's --theme
 ```
 
-Precedence: `--theme` > `~/.tokenstat/themes/config.json` > Neon Midnight. An
+Precedence: `--theme` > `~/.tokenstats/themes/config.json` > Neon Midnight. An
 unknown `--theme=SLUG` exits 2 and lists the available slugs; a saved default
-that no longer resolves warns naming `~/.tokenstat/themes/config.json` and
+that no longer resolves warns naming `~/.tokenstats/themes/config.json` and
 renders in Neon Midnight rather than costing you the report.
 
-`~/.tokenstat/themes/config.json` is that saved default (`{"default":
+`~/.tokenstats/themes/config.json` is that saved default (`{"default":
 "<slug>"}`), written by `--theme-default` — it is **not** a theme, and the scan
 skips a file with exactly that name. It and your `*.json` themes are personal
-state: they live under `~/.tokenstat/`, not in the repository, and the ten
-built-ins live in `tokenstat.py` itself.
+state: they live under `~/.tokenstats/`, not in the repository, and the ten
+built-ins live in `tokenstats.py` itself.
 
 ## examples/
 
 `examples/` is the tracked part of this folder: reference themes to copy into
-`~/.tokenstat/themes/` and edit. The scan reads only that folder's own `*.json`
+`~/.tokenstats/themes/` and edit. The scan reads only that folder's own `*.json`
 files — subfolders are not walked — so an example is inert until you copy it in:
 
 ```bash
-mkdir -p ~/.tokenstat/themes
-cp themes/examples/gta-vi.json ~/.tokenstat/themes/   # then: --theme=gta-vi
-python3 tokenstat.py --theme                          # gta-vi — GTA VI
+mkdir -p ~/.tokenstats/themes
+cp themes/examples/gta-vi.json ~/.tokenstats/themes/   # then: --theme=gta-vi
+python3 tokenstats.py --theme                          # gta-vi — GTA VI
 ```
 
 `gta-vi.json` is a worked example in the Vice City register: dusk-violet chrome,

@@ -178,7 +178,8 @@ directory, `~/.tokenstats/` — `usage.db` (plus its `-wal`/`-shm` siblings),
 math lives in `state_dir`, `default_db`, `themes_dir` and `theme_config` (pure,
 each takes `home=`), bound at import to the globals
 `STATE_DIR`/`DEFAULT_DB`/`THEMES_DIR`/`THEME_CONFIG`; importing `tokenstats`
-still touches no filesystem. `default_store()` is the only function here that
+creates nothing on disk (it only `stat`s candidate paths to resolve
+`DEFAULT_SRC`). `default_store()` is the only function here that
 creates directories or moves files on its own (`write_default_theme` also
 writes, but only because `--theme-default` asked it to), and `main()` is its only
 caller — and only when `--db` was not given, so every test and every run that

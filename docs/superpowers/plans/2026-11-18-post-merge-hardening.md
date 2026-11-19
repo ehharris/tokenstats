@@ -13,7 +13,9 @@
 ## Global Constraints
 
 - Stdlib only; the tool stays one file; no install step.
-- `python3 -m unittest test_tokenstat` passes (427 tests today, 434 after this plan), and `python3 -W error::ResourceWarning -m unittest test_tokenstat` passes with no warnings.
+- `python3 -m unittest test_tokenstat` passes (427 tests today, 435 after this
+  plan — 427 + 5 from Task 1 + 1 from Task 2 + 2 from Task 4), and
+  `python3 -W error::ResourceWarning -m unittest test_tokenstat` passes with no warnings.
 - `golden/` stays byte-identical: run the suite **without** `TOKENSTAT_UPDATE_GOLDEN`. If a golden diff appears, the change is wrong — do not re-pin.
 - `--help` output stays byte-identical (nothing in this plan touches argparse).
 - The invariants from `AGENTS.md` hold unchanged: monotonic-max upserts, never an increment (1); labels never shrink (3); date windows local-time and until-day inclusive via `_day_end_ms` (4); sources read-only (5).
@@ -387,9 +389,11 @@ Append to `FilterHelperTests`:
 
 ```python
     def test_until_alone_is_still_a_half_open_window(self):
-        # The other half of the window: with only `until`, the clause is the
-        # exclusive day-end bound and nothing else. No test covered this side,
-        # so an `elif` in _date_clauses would pass the suite.
+        # The other half of the window, which nothing exercised: `until` alone
+        # must still give the exclusive day-end bound and nothing else. The
+        # both-bounds pin above cannot cover this side — verified by mutation,
+        # this is the only test that fails when the until clause is made to
+        # depend on `since` being present.
         until = ms(2026, 11, 3)
         where, params = tokenstat._date_clauses("created_at", None, until)
         self.assertEqual(where, ["created_at < ?"])
@@ -473,7 +477,7 @@ git add test_tokenstat.py
 git commit -m "test: pin the until-only window, a hermetic reconcile guard, import purity"
 ```
 
-Expected: `OK` twice (434 tests), `golden/` clean.
+Expected: `OK` twice (435 tests), `golden/` clean.
 
 ---
 
@@ -507,7 +511,7 @@ python3 tokenstat.py --help | head -3
 python3 tokenstat.py --total | tail -3
 ```
 
-Expected: `OK` twice (434 tests), `golden/` clean, `-h` unchanged, and a real report from the live store with exit 0 (this run is read-only against `~/.tokenstat/usage.db` apart from the usual idempotent snapshot).
+Expected: `OK` twice (435 tests), `golden/` clean, `-h` unchanged, and a real report from the live store with exit 0 (this run is read-only against `~/.tokenstat/usage.db` apart from the usual idempotent snapshot).
 
 - [ ] **Step 3: Commit**
 
@@ -520,4 +524,4 @@ git commit -m "docs: record the post-merge hardening pass"
 
 ## After the plan
 
-Verify on `master` after the fast-forward merge: `python3 -m unittest test_tokenstat` (434 OK), the `-W error::ResourceWarning` variant, `git status --porcelain golden/` empty, and `git log --oneline master ^post-merge-hardening` empty. Then delete the branch. Update `.superpowers/sdd/` with a short ledger entry for this increment (gitignored — no commit).
+Verify on `master` after the fast-forward merge: `python3 -m unittest test_tokenstat` (435 OK), the `-W error::ResourceWarning` variant, `git status --porcelain golden/` empty, and `git log --oneline master ^post-merge-hardening` empty. Then delete the branch. Update `.superpowers/sdd/` with a short ledger entry for this increment (gitignored — no commit).

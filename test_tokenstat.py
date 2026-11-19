@@ -19,14 +19,12 @@ import unittest.mock
 from tokenstat import (_ANSI_RE, _table_panel, _turn_index, _visible,
                        GRUVBOX_DARK, NEON, NORD, SESSION_COLUMNS,
                        SHARE_COLUMNS, THEMES, THEME_ROLES, ThemeError,
-                       add_shares, compact, daily_events, daily_runs,
-                       daily_totals, ensure_schema, import_unsloth,
-                       import_unsloth_runs, load_theme_file, main, paint_bars,
-                       paint_cells, paint_header_block, panel, parse_date,
-                       parse_model, query_events, query_runs, query_sessions,
-                       read_default_theme, reconcile, record, render_table,
-                       report_header, resolve_theme, scan_themes, total_events,
-                       total_runs, total_totals, write_default_theme)
+                       add_shares, compact, daily_totals, ensure_schema,
+                       load_theme_file, main, paint_bars, paint_cells,
+                       paint_header_block, panel, parse_date, parse_model,
+                       query_sessions, read_default_theme, record,
+                       render_table, report_header, resolve_theme, scan_themes,
+                       total_totals, write_default_theme)
 
 LEMONADE_JSON = '{"id":"gpt-oss-120b","providerID":"lemonade"}'
 UNSLOTH_MODEL_ID = "unsloth/Qwen3.8-Flash-Next-GGUF"
@@ -715,16 +713,6 @@ class SessionTokSTests(unittest.TestCase):
         self.assertIn("tokens_cache_read", row)
         self.assertIn("tokens_cache_write", row)
 
-    def test_event_rows_have_none_rate(self):
-        # from ImportUnslothTests.setUp style
-        dest = make_dest()
-        self.addCleanup(dest.close)
-        src = make_unsloth_src([unsloth_event("e1")])
-        self.addCleanup(src.close)
-        import_unsloth(src, dest)
-        self.assertIsNone(query_events(dest)[0]["tok_s"])
-
-
 class SessionTurnRateTests(unittest.TestCase):
     """A session's TOK/S is the unweighted mean of its turns' rates, matching
     OpenCode's per-prompt number: Σ(output+reasoning) / Σ(streamed - firstToken)
@@ -822,42 +810,6 @@ class SessionTurnRateTests(unittest.TestCase):
         ]
         row = query_sessions(self.dest_for(messages))[0]
         self.assertEqual(row["tok_s"], round((1000 / 3 + 1000 / 7) / 2, 1))
-
-
-class EventTokSTests(unittest.TestCase):
-    """Aggregated event views derive tok_s from their rows' created_at span;
-    per-event rows carry no duration and report None."""
-
-    def setUp(self):
-        self.dest = make_dest()
-        self.addCleanup(self.dest.close)
-        self.base = 1_764_000_000_000  # fixed instant; both events share one local day
-        src = make_unsloth_src([
-            unsloth_event("e1", prompt=100, completion=50, created=self.base),
-            unsloth_event("e2", prompt=300, completion=50,
-                          created=self.base + 5_000),
-        ])
-        self.addCleanup(src.close)
-        import_unsloth(src, self.dest)
-
-    def test_daily_events_rate_from_created_span(self):
-        days = daily_events(self.dest)
-        self.assertEqual(len(days), 1)
-        # (100+50) + (300+50) tokens over a 5 s created_at span = 100.0
-        self.assertAlmostEqual(days[0]["tok_s"], 100.0, places=2)
-        # sub-second span -> None (same semantics as _aggregate_rate)
-        dest = make_dest()
-        self.addCleanup(dest.close)
-        src = make_unsloth_src([
-            unsloth_event("f1", prompt=10, created=self.base),
-            unsloth_event("f2", prompt=10, created=self.base + 500)])
-        self.addCleanup(src.close)
-        import_unsloth(src, dest)
-        self.assertIsNone(daily_events(dest)[0]["tok_s"])
-
-    def test_total_events_grand_row_rate(self):
-        r = total_events(self.dest)[0]
-        self.assertAlmostEqual(r["tok_s"], 100.0, places=2)
 
 
 class AggregateWeightedRateTests(unittest.TestCase):
@@ -1025,53 +977,6 @@ class AggregateWeightedRateTests(unittest.TestCase):
         self.assertAlmostEqual(total_totals(dest)[0]["tok_s"], expected,
                                places=2)
 
-    def runs_dest(self, *rows):
-        dest = make_dest()
-        self.addCleanup(dest.close)
-        src = make_runs_src(list(rows))
-        self.addCleanup(src.close)
-        import_unsloth_runs(src, dest)
-        return dest
-
-    def test_total_runs_rate_is_token_weighted_mean(self):
-        dest = self.runs_dest(
-            run_row("r1", progress=200, started=self.BASE,
-                    completed=self.BASE + 10_000),     # 200 tok / 10 s = 20.0
-            run_row("r2", progress=100, started=self.BASE + 30_000,
-                    completed=self.BASE + 31_000))     # 100 tok / 1 s = 100.0
-        # (20*200 + 100*100) / 300 = 46.7; flat mean would say 60.0
-        row = total_runs(dest)[0]
-        self.assertAlmostEqual(row["tok_s"], 46.7, places=2)
-        self.assertEqual(row["rate_weight"], 200 + 100)
-        self.assertAlmostEqual(total_runs(dest, by_model=True)[0]["tok_s"],
-                               46.7, places=2)
-        self.assertEqual(total_runs(dest, by_model=True)[0]["rate_weight"],
-                         200 + 100)
-
-    def test_daily_runs_rate_is_token_weighted_mean(self):
-        day = ms(2026, 11, 1)
-        dest = self.runs_dest(
-            run_row("r1", progress=200, started=day, completed=day + 10_000),
-            run_row("r2", progress=100, started=day + 30_000,
-                    completed=day + 31_000))
-        row = daily_runs(dest)[0]
-        self.assertAlmostEqual(row["tok_s"], 46.7, places=2)
-        self.assertEqual(row["rate_weight"], 200 + 100)
-
-    def test_runs_without_a_rate_are_excluded_from_the_mean(self):
-        dest = self.runs_dest(
-            run_row("r1", progress=200, started=self.BASE,
-                    completed=self.BASE + 10_000),     # 20.0
-            run_row("r2", progress=100, started=self.BASE + 30_000,
-                    completed=self.BASE + 31_000),     # 100.0
-            run_row("r3", progress=9999, started=self.BASE + 60_000,
-                    completed=None))                   # unfinished: no rate
-        row = total_runs(dest)[0]
-        self.assertAlmostEqual(row["tok_s"], 46.7, places=2)
-        # r3 is unfinished (no rate): its 9,999 progress tokens must not add
-        # to the weight either.
-        self.assertEqual(row["rate_weight"], 200 + 100)
-
 
 class AggregateTurnWeightTests(unittest.TestCase):
     """Daily/total/hero TOK/S is the token-weighted mean of the session rates
@@ -1189,31 +1094,6 @@ class AggregateTurnWeightTests(unittest.TestCase):
         self.assertIsNotNone(shown)
         self.assertLessEqual(abs(float(shown.group(1)) - grand), 0.1)
 
-    def runs_dest(self):
-        dest = make_dest()
-        self.addCleanup(dest.close)
-        src = make_runs_src([
-            run_row("r1", progress=243, started=self.BASE,
-                    completed=self.BASE + 16_082),
-            run_row("r2", progress=51, started=self.BASE + 30_000,
-                    completed=self.BASE + 30_000 + 4_911),
-        ])
-        self.addCleanup(src.close)
-        import_unsloth_runs(src, dest)
-        return dest
-
-    def test_run_rows_carry_progress_as_rate_weight(self):
-        rows = query_runs(self.runs_dest())
-        self.assertEqual([r["rate_weight"] for r in rows], [243, 51])
-        # The key restates the weight; it must not move any displayed number.
-        self.assertEqual([r["rate_weight"] for r in rows],
-                         [r["total"] for r in rows])
-
-    def test_runs_hero_unchanged(self):
-        rows = query_runs(self.runs_dest())
-        hero = _ANSI_RE.sub("", "\n".join(report_header("", rows)))
-        self.assertIn("14.3 tok/s", hero)
-
 
 class HeroTokSTests(unittest.TestCase):
     """The hero carries the same token-weighted TOK/S as the table under it,
@@ -1234,8 +1114,8 @@ class HeroTokSTests(unittest.TestCase):
         self.assertIn("133.3 tok/s", self.hero())
 
     def test_hero_falls_back_to_total_without_rate_weight(self):
-        # Event/reconcile rows carry no rate_weight: their hero must still use
-        # in+out total exactly as before.
+        # Rows that carry no rate_weight (no per-turn rate to weight by): their
+        # hero must still use in+out total exactly as before.
         rows = [{k: v for k, v in r.items() if k != "rate_weight"}
                 for r in self.ROWS]
         text = _ANSI_RE.sub("", "\n".join(report_header("x", rows)))
@@ -1249,7 +1129,7 @@ class HeroTokSTests(unittest.TestCase):
         self.assertIn("300 tokens", text)
 
     def test_hero_omits_tok_s_for_rows_without_the_key(self):
-        # reconcile-shaped rows and the older hero fixtures carry no tok_s.
+        # Rows that carry no tok_s key at all render no TOK/S segment.
         rows = [{"total": 300, "tokens_input": 200, "tokens_output": 100,
                  "date": "2026-11-16"}]
         self.assertNotIn("tok/s",
@@ -1483,494 +1363,6 @@ class StoreErrorTests(unittest.TestCase):
         self.assertNotIn("Traceback", err.getvalue())
 
 
-def make_unsloth_src(rows=()):
-    """Fake Unsloth Studio DB with the api_usage_events columns we read."""
-    conn = sqlite3.connect(":memory:")
-    conn.execute(
-        """CREATE TABLE api_usage_events (
-               id TEXT PRIMARY KEY, subject TEXT, endpoint TEXT, model TEXT,
-               status TEXT, prompt_tokens INTEGER, completion_tokens INTEGER,
-               total_tokens INTEGER, created_at INTEGER)"""
-    )
-    for row in rows:
-        conn.execute("INSERT INTO api_usage_events VALUES (?,?,?,?,?,?,?,?,?)", row)
-    return conn
-
-
-def unsloth_event(eid="e1", model=UNSLOTH_MODEL_ID, prompt=1000, completion=50,
-                  created=1_764_000_000_000):
-    return (eid, "unsloth", "/v1/chat/completions", model, "completed",
-            prompt, completion, prompt + completion, created)
-
-
-def make_file_unsloth_db(path, rows=()):
-    """On-disk fake Unsloth Studio DB (for CLI-level tests)."""
-    conn = sqlite3.connect(path)
-    conn.execute(
-        """CREATE TABLE api_usage_events (
-               id TEXT PRIMARY KEY, subject TEXT, endpoint TEXT, model TEXT,
-               status TEXT, prompt_tokens INTEGER, completion_tokens INTEGER,
-               total_tokens INTEGER, created_at INTEGER)"""
-    )
-    for row in rows:
-        conn.execute("INSERT INTO api_usage_events VALUES (?,?,?,?,?,?,?,?,?)", row)
-    conn.commit()
-    return conn
-
-
-def make_runs_src(rows=()):
-    """Fake Studio DB with the chat_generation_runs columns we read."""
-    conn = sqlite3.connect(":memory:")
-    conn.execute("""CREATE TABLE chat_generation_runs (
-           id TEXT PRIMARY KEY, request_json TEXT, progress_tokens INTEGER,
-           started_at INTEGER, completed_at INTEGER, status TEXT)""")
-    for r in rows:
-        conn.execute("INSERT INTO chat_generation_runs VALUES (?,?,?,?,?,?)", r)
-    return conn
-
-
-def run_row(rid="r1", model="unsloth/Ornith-1.5-122B-GGUF", progress=100,
-            started=1_764_000_000_000, completed=1_764_000_010_000,
-            status="completed"):
-    return (rid, json.dumps({"model": model}), progress, started, completed,
-            status)
-
-
-class ImportRunsTests(unittest.TestCase):
-    def setUp(self):
-        self.dest = make_dest()
-        self.addCleanup(self.dest.close)
-
-    def stored(self, rid="r1"):
-        return self.dest.execute(
-            "SELECT model, progress_tokens FROM unsloth_runs WHERE run_id = ?",
-            (rid,)).fetchone()
-
-    def test_ensure_schema_has_unsloth_runs(self):
-        cols = [c[1] for c in self.dest.execute("PRAGMA table_info(unsloth_runs)")]
-        self.assertEqual(cols, ["run_id", "model", "progress_tokens",
-                                "started_at", "completed_at", "status"])
-
-    def test_import_runs_inserts_then_is_idempotent(self):
-        src = make_runs_src([run_row("r1"), run_row("r2", progress=20)])
-        self.addCleanup(src.close)
-        first = import_unsloth_runs(src, self.dest)
-        self.assertEqual(first, {"inserted": 2, "updated": 0, "unchanged": 0})
-        second = import_unsloth_runs(src, self.dest)
-        self.assertEqual(second, {"inserted": 0, "updated": 0, "unchanged": 2})
-
-    def test_import_runs_extracts_model_from_request_json(self):
-        src = make_runs_src([run_row("r1")])
-        self.addCleanup(src.close)
-        import_unsloth_runs(src, self.dest)
-        self.assertEqual(self.stored()[0], "unsloth/Ornith-1.5-122B-GGUF")
-
-    def test_import_runs_never_shrinks_on_regression(self):
-        src = make_runs_src([run_row("r1", progress=100)])
-        self.addCleanup(src.close)
-        import_unsloth_runs(src, self.dest)
-        src.execute("UPDATE chat_generation_runs SET progress_tokens = 50"
-                    " WHERE id = 'r1'")
-        import_unsloth_runs(src, self.dest)
-        self.assertEqual(self.stored()[1], 100)
-
-    def test_import_runs_missing_table_is_noop(self):
-        conn = sqlite3.connect(":memory:")  # no chat_generation_runs table
-        self.addCleanup(conn.close)
-        self.assertEqual(import_unsloth_runs(conn, self.dest),
-                         {"inserted": 0, "updated": 0, "unchanged": 0})
-
-    def test_import_runs_non_dict_request_json_keeps_row_blank_model(self):
-        # Valid JSON that is NOT an object ('null', '[1,2]') is an EXTRACTION
-        # failure, not a row error (mirrors parse_model): model becomes "" and
-        # the row still inserts — its progress/start are valid data.
-        src = make_runs_src([
-            ("r_null", 'null', 42, 1_764_000_000_000, 1_764_000_010_000,
-             "completed"),
-            ("r_list", '[1,2]', 7, 1_764_000_000_000, 1_764_000_010_000,
-             "completed"),
-        ])
-        self.addCleanup(src.close)
-        counts = import_unsloth_runs(src, self.dest)
-        self.assertEqual(counts["inserted"], 2)
-        self.assertEqual(self.stored("r_null"), ("", 42))
-        self.assertEqual(self.stored("r_list"), ("", 7))
-
-
-class RunsQueryTests(unittest.TestCase):
-    def setUp(self):
-        self.dest = make_dest()
-        self.addCleanup(self.dest.close)
-        src = make_runs_src([
-            run_row("r1", model="unsloth/Qwen3.8-Flash-Next-GGUF", progress=243,
-                    started=ms(2026, 11, 1),
-                    completed=ms(2026, 11, 1) + 16082),
-            run_row("r2", model="unsloth/Ornith-1.5-122B-GGUF", progress=51,
-                    started=ms(2026, 11, 5), completed=ms(2026, 11, 5) + 4911),
-        ])
-        self.addCleanup(src.close)
-        import_unsloth_runs(src, self.dest)
-
-    def test_query_runs_reports_progress_and_rate(self):
-        rows = query_runs(self.dest)
-        self.assertEqual([r["progress_tokens"] for r in rows], [243, 51])
-        # tok_s is rounded to one decimal (per the run-rate contract), so
-        # compare against the rounded rate, not the raw quotient.
-        self.assertAlmostEqual(rows[0]["tok_s"], round(243 / 16.082, 1))
-
-    def test_query_runs_blank_rate_when_no_duration(self):
-        src = make_runs_src([run_row("r3", model="rate-blank-probe",
-                                     started=1_764_000_000_000,
-                                     completed=None)])
-        self.addCleanup(src.close)
-        import_unsloth_runs(src, self.dest)
-        rows = query_runs(self.dest, model="rate-blank-probe")
-        self.assertIsNone(rows[0]["tok_s"])
-
-    def test_query_runs_blank_rate_when_status_not_completed(self):
-        # A failed run that recorded completed_at must NOT render a rate:
-        # TOK/S is blank when the run hasn't completed (spec), so the gate
-        # is completed_at set AND status == "completed".
-        src = make_runs_src([run_row("r4", model="failed-probe",
-                                     progress=500,
-                                     started=1_764_000_000_000,
-                                     completed=1_764_000_010_000,
-                                     status="failed")])
-        self.addCleanup(src.close)
-        import_unsloth_runs(src, self.dest)
-        rows = query_runs(self.dest, model="failed-probe")
-        self.assertIsNone(rows[0]["tok_s"])
-
-    def test_daily_runs_groups_by_started_day(self):
-        days = daily_runs(self.dest)
-        self.assertEqual([d["date"] for d in days], ["2026-11-01", "2026-11-05"])
-
-    def test_total_runs_per_model(self):
-        rows = total_runs(self.dest, by_model=True)
-        self.assertEqual({r["model"] for r in rows},
-                         {"unsloth/Ornith-1.5-122B-GGUF",
-                          "unsloth/Qwen3.8-Flash-Next-GGUF"})
-
-
-class ImportUnslothTests(unittest.TestCase):
-    def setUp(self):
-        self.dest = make_dest()
-        self.addCleanup(self.dest.close)
-
-    def stored_total(self):
-        row = self.dest.execute(
-            "SELECT COUNT(*), SUM(prompt_tokens), SUM(completion_tokens)"
-            " FROM unsloth_events").fetchone()
-        return row if row[0] else (0, 0, 0)
-
-    def test_import_inserts_then_is_idempotent(self):
-        src = make_unsloth_src([unsloth_event("e1"), unsloth_event("e2", prompt=20)])
-        self.addCleanup(src.close)
-        first = import_unsloth(src, self.dest)
-        self.assertEqual(first, {"inserted": 2, "updated": 0, "unchanged": 0})
-        second = import_unsloth(src, self.dest)
-        self.assertEqual(second, {"inserted": 0, "updated": 0, "unchanged": 2})
-        self.assertEqual(self.stored_total(), (2, 1020, 100))
-
-    def test_import_never_shrinks_on_source_regression(self):
-        src = make_unsloth_src([unsloth_event("e1", prompt=100)])
-        self.addCleanup(src.close)
-        import_unsloth(src, self.dest)
-        src.execute("UPDATE api_usage_events SET prompt_tokens = 50 WHERE id='e1'")
-        import_unsloth(src, self.dest)
-        stored = self.dest.execute(
-            "SELECT prompt_tokens FROM unsloth_events"
-            " WHERE event_id='e1'").fetchone()
-        self.assertEqual(stored[0], 100)
-
-    def test_import_created_at_is_insert_only(self):
-        # The pre-engine UPDATE omitted created_at: a source that rewrites an
-        # immutable event timestamp must not move the stored one, while the
-        # token columns still fold to max and the counters behave as before.
-        src = make_unsloth_src([unsloth_event("e1", prompt=100)])
-        self.addCleanup(src.close)
-        import_unsloth(src, self.dest)
-        src.execute("UPDATE api_usage_events SET created_at = 1763999999001,"
-                    " prompt_tokens = 500, total_tokens = 550 WHERE id = 'e1'")
-        result = import_unsloth(src, self.dest)
-        self.assertEqual(result, {"inserted": 0, "updated": 1, "unchanged": 0})
-        row = self.dest.execute(
-            "SELECT created_at, prompt_tokens, total_tokens FROM unsloth_events"
-            " WHERE event_id = 'e1'").fetchone()
-        self.assertEqual(row[0], 1_764_000_000_000)     # first-seen stamp stands
-        self.assertEqual((row[1], row[2]), (500, 550))  # numerics still fold
-
-    def test_query_events_filters(self):
-        src = make_unsloth_src([
-            unsloth_event("e1", created=ms(2026, 11, 1)),
-            unsloth_event("e2", model="unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
-                          prompt=50, completion=7, created=ms(2026, 11, 5)),
-        ])
-        self.addCleanup(src.close)
-        import_unsloth(src, self.dest)
-        rows = query_events(self.dest, model="qwen3-coder")
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["tokens_output"], 7)  # completion maps to OUT
-        both = query_events(self.dest, since_ms=ms(2026, 11, 1),
-                            until_ms=ms(2026, 11, 5))
-        self.assertEqual(len(both), 2)
-        only_big = query_events(self.dest, min_in=500)
-        self.assertEqual([r["date"] for r in only_big], ["2026-11-01"])
-
-    def test_daily_events_groups_by_request_date(self):
-        src = make_unsloth_src([
-            unsloth_event("e1", prompt=100, completion=1, created=ms(2026, 11, 1)),
-            unsloth_event("e2", prompt=200, completion=2, created=ms(2026, 11, 1)),
-            unsloth_event("e3", prompt=400, completion=4, created=ms(2026, 11, 5)),
-        ])
-        self.addCleanup(src.close)
-        import_unsloth(src, self.dest)
-        days = daily_events(self.dest)
-        self.assertEqual([d["date"] for d in days], ["2026-11-01", "2026-11-05"])
-        self.assertEqual(days[0]["sessions"], 2)  # request count under same key
-        self.assertEqual(days[0]["tokens_input"], 300)
-        self.assertEqual(days[0]["total"], 303)
-
-    def test_reconcile_computes_gap(self):
-        osrc = make_src([src_row(sid="s1", tin=1000, tcr=5000, tcw=0, tout=200)])
-        self.addCleanup(osrc.close)
-        record(osrc, self.dest, now_ms=1)
-        usrc = make_unsloth_src([
-            unsloth_event("e1", prompt=9000, completion=300),
-            unsloth_event("e2", prompt=1000, completion=100),
-        ])
-        self.addCleanup(usrc.close)
-        import_unsloth(usrc, self.dest)
-        rows = reconcile(self.dest)
-        self.assertEqual(len(rows), 1)
-        r = rows[0]
-        self.assertEqual(r["model"], UNSLOTH_MODEL_ID)
-        self.assertEqual(r["attributed_in"], 6000)   # in + cache_read
-        self.assertEqual(r["reported_prompt"], 10000)
-        self.assertEqual(r["gap_prompt"], 4000)      # lost to pruning
-        self.assertEqual(r["attributed_out"], 250)  # out + reasoning (200+50)
-        self.assertEqual(r["reported_completion"], 400)
-        self.assertEqual(r["gap_completion"], 150)  # 400 - (200 out + 50 reasoning)
-
-
-def make_file_runs_db(path, events=(), runs=()):
-    """On-disk fake Studio DB holding both tables we ingest."""
-    conn = sqlite3.connect(path)
-    conn.execute("""CREATE TABLE api_usage_events (
-           id TEXT PRIMARY KEY, subject TEXT, endpoint TEXT, model TEXT,
-           status TEXT, prompt_tokens INTEGER, completion_tokens INTEGER,
-           total_tokens INTEGER, created_at INTEGER)""")
-    conn.execute("""CREATE TABLE chat_generation_runs (
-           id TEXT PRIMARY KEY, request_json TEXT, progress_tokens INTEGER,
-           started_at INTEGER, completed_at INTEGER, status TEXT)""")
-    for r in events:
-        conn.execute("INSERT INTO api_usage_events VALUES (?,?,?,?,?,?,?,?,?)", r)
-    for r in runs:
-        conn.execute("INSERT INTO chat_generation_runs VALUES (?,?,?,?,?,?)", r)
-    conn.commit()
-    return conn
-
-
-class CliUnslothTests(CliHarness):
-    def setUp(self):
-        import tempfile
-        self.tmp = tempfile.TemporaryDirectory()
-        self.db = os.path.join(self.tmp.name, "usage.db")
-        self.src = os.path.join(self.tmp.name, "src.db")
-        self.udb = os.path.join(self.tmp.name, "studio.db")
-
-    def tearDown(self):
-        self.tmp.cleanup()
-
-    def test_import_unsloth_subcommand_prints_counts(self):
-        self.addCleanup(make_file_unsloth_db(
-            self.udb, [unsloth_event("e1")]).close)
-        code, out, _ = self.run_main(
-            ["import-unsloth", "--db", self.db, "--unsloth-db", self.udb])
-        self.assertEqual(code, 0)
-        self.assertRegex(out.strip(),
-                         r"inserted=\d+ updated=\d+ unchanged=\d+")
-
-    def test_import_unsloth_subcommand_also_imports_runs(self):
-        self.addCleanup(make_file_runs_db(
-            self.udb, events=[unsloth_event("e1")],
-            runs=[run_row("r1")]).close)
-        code, out, _ = self.run_main(
-            ["import-unsloth", "--db", self.db, "--unsloth-db", self.udb])
-        self.assertEqual(code, 0)
-        probe = sqlite3.connect(self.db)
-        self.addCleanup(probe.close)
-        stored = probe.execute(
-            "SELECT COUNT(*) FROM unsloth_runs").fetchone()[0]
-        self.assertEqual(stored, 1)
-
-    def test_from_unsloth_query_renders_events(self):
-        self.addCleanup(make_file_unsloth_db(self.udb, [unsloth_event("e1")]).close)
-        code, out, _ = self.run_main(
-            ["--db", self.db, "--src", os.path.join(self.tmp.name, "none.db"),
-             "--unsloth-db", self.udb, "--from-unsloth"])
-        self.assertEqual(code, 0)
-        self.assertIn(UNSLOTH_MODEL_ID, out)
-
-    def test_from_runs_renders_runs(self):
-        self.addCleanup(make_file_runs_db(self.udb, runs=[run_row("r1")]).close)
-        code, out, _ = self.run_main(
-            ["--db", self.db, "--src", os.path.join(self.tmp.name, "none.db"),
-             "--unsloth-db", self.udb, "--from-runs"])
-        self.assertEqual(code, 0)
-        self.assertIn("TOK/S", out.splitlines()[0])
-
-    def test_from_runs_with_cost_renders_dollar_column(self):
-        # composition pin: --from-runs x --cost (run rows price output-only)
-        self.addCleanup(make_file_runs_db(self.udb, runs=[run_row("r1")]).close)
-        code, out, _ = self.run_main(
-            ["--db", self.db, "--src", os.path.join(self.tmp.name, "none.db"),
-             "--unsloth-db", self.udb, "--from-runs", "--cost"])
-        self.assertEqual(code, 0)
-        self.assertIn("COST", out)
-        self.assertIn("$", out)
-
-    def test_from_runs_with_daily_renders_table(self):
-        # composition pin: --from-runs x --daily (closes a coverage gap)
-        self.addCleanup(make_file_runs_db(self.udb, runs=[run_row("r1")]).close)
-        code, out, _ = self.run_main(
-            ["--db", self.db, "--src", os.path.join(self.tmp.name, "none.db"),
-             "--unsloth-db", self.udb, "--from-runs", "--daily"])
-        self.assertEqual(code, 0)
-        self.assertIn("DATE", out.splitlines()[0])
-
-    def test_from_runs_rejects_min_flags(self):
-        with self.assertRaises(SystemExit) as cm:
-            with contextlib.redirect_stderr(io.StringIO()):
-                main(["--db", self.db, "--src", os.path.join(self.tmp.name, "none.db"),
-                      "--unsloth-db", self.udb, "--from-runs", "--min-in", "10"])
-        self.assertEqual(cm.exception.code, 2)
-
-    def test_reconcile_subcommand(self):
-        self.addCleanup(make_file_unsloth_db(self.udb, [unsloth_event("e1")]).close)
-        code, out, _ = self.run_main(
-            ["reconcile", "--db", self.db, "--src",
-             os.path.join(self.tmp.name, "none.db"), "--unsloth-db", self.udb])
-        self.assertEqual(code, 0)
-        self.assertIn(UNSLOTH_MODEL_ID, out)
-
-    def test_implicit_unsloth_import_falls_back_when_missing(self):
-        code, out, err = self.run_main(
-            ["--db", self.db, "--src", os.path.join(self.tmp.name, "none.db"),
-             "--unsloth-db", os.path.join(self.tmp.name, "no-studio.db")])
-        self.assertEqual(code, 0)
-        self.assertIn("warning:", err)
-
-
-class ReviewFixTests2(unittest.TestCase):
-    """Regression pins for whole-branch review of increment 2."""
-
-    def setUp(self):
-        self.dest = make_dest()
-        self.addCleanup(self.dest.close)
-
-    def test_reconcile_one_sided_models_both_directions(self):
-        # usage-only model: negative gap (OpenCode counted what Studio's log lacks)
-        osrc = make_src([src_row(sid="u1", model=LEMONADE_JSON, tin=1500, tout=30)])
-        self.addCleanup(osrc.close)
-        record(osrc, self.dest, now_ms=1)  # lemonade: not in unsloth side at all
-        # unsloth-only model
-        usrc = make_unsloth_src([unsloth_event("e1", prompt=900, completion=9)])
-        self.addCleanup(usrc.close)
-        import_unsloth(usrc, self.dest)
-        rows = {r["model"]: r for r in reconcile(self.dest)}
-        u = rows[UNSLOTH_MODEL_ID]
-        self.assertEqual((u["sessions"], u["attributed_in"]), (0, 0))
-        self.assertEqual(u["reported_prompt"], 900)
-        self.assertEqual(u["gap_prompt"], 900)
-
-    def test_import_skips_bad_row_keeps_good_rows(self):
-        src = make_unsloth_src([unsloth_event("good", prompt=100)])
-        self.addCleanup(src.close)
-        src.execute("INSERT INTO api_usage_events VALUES ('bad','unsloth','/x',"
-                    "'m','completed',5,5,10,NULL)")
-        counts = import_unsloth(src, self.dest)
-        self.assertEqual(counts.get("skipped"), 1)
-        self.assertEqual(counts["inserted"], 1)
-        stored = self.dest.execute(
-            "SELECT COUNT(*), SUM(prompt_tokens) FROM unsloth_events").fetchone()
-        self.assertEqual(stored, (1, 100))  # good row persisted despite bad one
-
-    def test_event_filter_accepts_provider_prefixed_string(self):
-        src = make_unsloth_src([unsloth_event("e1")])
-        self.addCleanup(src.close)
-        import_unsloth(src, self.dest)
-        # the string shown in session reports must also work in event mode
-        self.assertEqual(len(query_events(self.dest, model="unsloth-studio")), 1)
-        self.assertEqual(len(query_events(self.dest, model="qwen3.8")), 1)
-
-    def test_event_until_dst_boundary(self):
-        late = int(datetime.datetime(2026, 11, 1, 23, 30).timestamp() * 1000)
-        src = make_unsloth_src([unsloth_event("e1", created=late)])
-        self.addCleanup(src.close)
-        import_unsloth(src, self.dest)
-        rows = query_events(self.dest, since_ms=ms(2026, 11, 1),
-                            until_ms=ms(2026, 11, 1))
-        self.assertEqual(len(rows), 1)
-
-    def test_report_stable_across_repeated_imports(self):
-        src = make_unsloth_src([unsloth_event("e1", prompt=500),
-                                unsloth_event("e2", prompt=7)])
-        self.addCleanup(src.close)
-        import_unsloth(src, self.dest)
-        before = sum(r["total"] for r in query_events(self.dest))
-        import_unsloth(src, self.dest)
-        after = sum(r["total"] for r in query_events(self.dest))
-        self.assertEqual(before, after)
-
-    def test_reconcile_rejects_unsupported_flags(self):
-        # Hermetic on every path. An explicit --db keeps the default store
-        # (~/.tokenstat, which only exists once the migration has run) out of
-        # it, and --src/--unsloth-db keep reconcile's implicit ingestion out
-        # of the live OpenCode and Studio databases: the guard fires after
-        # that ingestion, so without these the test reads real user data
-        # before it ever reaches the exit 2 it is asserting.
-        with tempfile.TemporaryDirectory() as tmp:
-            seen = []
-            real = tokenstat._connect_src
-
-            def spy(path):
-                seen.append(path)
-                return real(path)
-
-            with unittest.mock.patch.object(tokenstat, "_connect_src", spy):
-                with contextlib.redirect_stderr(io.StringIO()):
-                    with self.assertRaises(SystemExit) as cm:
-                        main(["--db", os.path.join(tmp, "usage.db"),
-                              "--src", os.path.join(tmp, "none.db"),
-                              "--unsloth-db", os.path.join(tmp, "none.db"),
-                              "reconcile", "--since", "2026-11-01"])
-        self.assertEqual(cm.exception.code, 2)
-        # The proof, not just the exit code: every source this run opened was
-        # inside the temp dir.
-        self.assertTrue(seen)
-        for path in seen:
-            self.assertTrue(path.startswith(tmp), path)
-
-
-class CliUnslothFailTests(unittest.TestCase):
-    def setUp(self):
-        import tempfile
-        self.tmp = tempfile.TemporaryDirectory()
-
-    def tearDown(self):
-        self.tmp.cleanup()
-
-    def test_explicit_import_unsloth_fails_nonzero_when_missing(self):
-        out, err = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = main(["import-unsloth", "--db",
-                         os.path.join(self.tmp.name, "usage.db"),
-                         "--unsloth-db", os.path.join(self.tmp.name, "none.db")])
-        self.assertEqual(code, 1)
-        self.assertIn("warning:", err.getvalue())
-
-
 class TotalTotalsTests(unittest.TestCase):
     def setUp(self):
         self.dest = make_dest()
@@ -2199,68 +1591,14 @@ class AggregateLimitTests(unittest.TestCase):
                          sum(r["rate_weight"] for r in capped))
 
 
-class TotalEventsTests(unittest.TestCase):
-    def setUp(self):
-        self.dest = make_dest()
-        self.addCleanup(self.dest.close)
-        src = make_unsloth_src([
-            unsloth_event("e1", prompt=900, completion=30),
-            unsloth_event("e2", model="other-model", prompt=100, completion=5),
-        ])
-        self.addCleanup(src.close)
-        import_unsloth(src, self.dest)
-
-    def test_total_events_single_grand_row(self):
-        rows = total_events(self.dest)
-        self.assertEqual(len(rows), 1)
-        r = rows[0]
-        self.assertEqual(r["model"], "(all)")
-        self.assertEqual((r["sessions"], r["tokens_input"],
-                          r["tokens_output"], r["total"]), (2, 1000, 35, 1035))
-        self.assertEqual(r["cost"], 0.0)
-
-    def test_total_events_per_model_when_filtered(self):
-        src = make_unsloth_src([unsloth_event("e3", prompt=50)])
-        self.addCleanup(src.close)
-        import_unsloth(src, self.dest)  # same model as e1
-        rows = total_events(self.dest, model="qwen")
-        self.assertEqual([r["model"] for r in rows], [UNSLOTH_MODEL_ID])
-        self.assertEqual((rows[0]["sessions"], rows[0]["tokens_input"]), (2, 950))
-
-    def test_total_events_provider_prefixed_filter(self):
-        # the provider-prefixed string shown in session reports selects just
-        # that model's events (every event belongs to the unsloth provider)
-        rows = total_events(self.dest, model="unsloth-studio/" + UNSLOTH_MODEL_ID)
-        self.assertEqual([r["model"] for r in rows], [UNSLOTH_MODEL_ID])
-
-    def test_total_events_thresholds_and_empty(self):
-        r = total_events(self.dest, min_in=500)[0]
-        self.assertEqual((r["sessions"], r["tokens_input"]), (1, 900))
-        self.assertEqual(total_events(self.dest, model="nope"), [])
-
-    def test_total_events_by_model_without_filter(self):
-        rows = total_events(self.dest, by_model=True)
-        self.assertEqual([r["model"] for r in rows],
-                         ["other-model", UNSLOTH_MODEL_ID])
-        self.assertEqual(sum(r["sessions"] for r in rows), 2)
-
-
 class AggregateRowShapeTests(unittest.TestCase):
     """--json serialises rows in dict insertion order, so the key order of
     every aggregate row is pinned output, not an implementation detail."""
 
     KEYS = {
-        "daily_events": ["date", "sessions", "tokens_input", "tokens_output",
-                         "total", "cost", "tok_s"],
-        "daily_runs": ["date", "sessions", "tokens_input", "progress_tokens",
-                       "tokens_output", "total", "tok_s", "rate_weight"],
         "daily_totals": ["date", "sessions", "tokens_input", "tokens_output",
                          "total", "cost", "tokens_cache_read",
                          "tokens_cache_write", "tok_s", "rate_weight"],
-        "total_events": ["model", "sessions", "tokens_input", "tokens_output",
-                         "total", "cost", "tok_s"],
-        "total_runs": ["model", "sessions", "tokens_input", "progress_tokens",
-                       "tokens_output", "total", "tok_s", "rate_weight"],
         "total_totals": ["model", "sessions", "tokens_input", "tokens_output",
                          "total", "cost", "tokens_cache_read",
                          "tokens_cache_write", "tok_s", "rate_weight"],
@@ -2275,28 +1613,10 @@ class AggregateRowShapeTests(unittest.TestCase):
         ])
         self.addCleanup(src.close)
         record(src, self.dest, now_ms=1)
-        usrc = make_unsloth_src([
-            unsloth_event("e1", created=ms(2026, 11, 1)),
-            unsloth_event("e2", model="other-model", created=ms(2026, 11, 2)),
-        ])
-        self.addCleanup(usrc.close)
-        import_unsloth(usrc, self.dest)
-        rsrc = make_runs_src([
-            run_row("r1", started=ms(2026, 11, 1),
-                    completed=ms(2026, 11, 1) + 10_000),
-            run_row("r2", model="other/run", started=ms(2026, 11, 2),
-                    completed=ms(2026, 11, 2) + 10_000),
-        ])
-        self.addCleanup(rsrc.close)
-        import_unsloth_runs(rsrc, self.dest)
 
     def test_every_aggregate_view_keeps_its_key_order(self):
         calls = {
-            "daily_events": lambda: daily_events(self.dest),
-            "daily_runs": lambda: daily_runs(self.dest),
             "daily_totals": lambda: daily_totals(self.dest),
-            "total_events": lambda: total_events(self.dest),
-            "total_runs": lambda: total_runs(self.dest),
             "total_totals": lambda: total_totals(self.dest),
         }
         for name, call in calls.items():
@@ -2310,8 +1630,6 @@ class AggregateRowShapeTests(unittest.TestCase):
         # from the grand-total row; --json would expose a reordered dict
         # there just the same, so pin it too
         calls = {
-            "total_events": lambda: total_events(self.dest, by_model=True),
-            "total_runs": lambda: total_runs(self.dest, by_model=True),
             "total_totals": lambda: total_totals(self.dest, by_model=True),
         }
         for name, call in calls.items():
@@ -2332,14 +1650,13 @@ class CliTotalTests(CliHarness):
             src_row(sid="s1"),                        # unsloth-studio model
             src_row(sid="s2", model=qwen_lemonade),   # lemonade qwen-mini
         ]).close)
-        self.no_udb = os.path.join(self.tmp.name, "no-studio.db")
 
     def tearDown(self):
         self.tmp.cleanup()
 
     def test_total_flag_renders_grand_row(self):
         code, out, _ = self.run_main(
-            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+            ["--db", self.db, "--src", self.src,
              "--total"])
         self.assertEqual(code, 0)
         self.assertIn("(all)", out)
@@ -2347,7 +1664,7 @@ class CliTotalTests(CliHarness):
 
     def test_total_flag_per_model_rows(self):
         code, out, _ = self.run_main(
-            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+            ["--db", self.db, "--src", self.src,
              "--total", "--model", "qwen"])
         self.assertEqual(code, 0)
         self.assertIn("lemonade/qwen-mini", out)
@@ -2356,7 +1673,7 @@ class CliTotalTests(CliHarness):
 
     def test_total_json_shape(self):
         code, out, _ = self.run_main(
-            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+            ["--db", self.db, "--src", self.src,
              "--total", "--json"])
         self.assertEqual(code, 0)
         rows = json.loads(out)
@@ -2371,20 +1688,12 @@ class CliTotalTests(CliHarness):
     def test_total_rejects_daily(self):
         with self.assertRaises(SystemExit) as cm:
             with contextlib.redirect_stderr(io.StringIO()):
-                main(["--db", self.db, "--src", self.src,
-                      "--unsloth-db", self.no_udb, "--total", "--daily"])
-        self.assertEqual(cm.exception.code, 2)
-
-    def test_reconcile_rejects_total(self):
-        with self.assertRaises(SystemExit) as cm:
-            with contextlib.redirect_stderr(io.StringIO()):
-                main(["reconcile", "--db", self.db, "--src", self.src,
-                      "--unsloth-db", self.no_udb, "--total"])
+                main(["--db", self.db, "--src", self.src, "--total", "--daily"])
         self.assertEqual(cm.exception.code, 2)
 
     def test_total_bare_model_lists_all_models(self):
         code, out, _ = self.run_main(
-            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+            ["--db", self.db, "--src", self.src,
              "--total", "--model"])
         self.assertEqual(code, 0)
         self.assertIn("lemonade/qwen-mini", out)
@@ -2395,46 +1704,33 @@ class CliTotalTests(CliHarness):
         # superseded 2026-11-14: bare --model no longer errors; with --daily
         # it means "all models" and renders the ordinary daily table
         code, out, _ = self.run_main(
-            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+            ["--db", self.db, "--src", self.src,
              "--daily", "--model"])
         self.assertEqual(code, 0)
         self.assertIn("DATE", out.splitlines()[0])
         self.assertNotIn("SHARE", out)
 
-    def test_from_unsloth_total_bare_model(self):
-        udb = os.path.join(self.tmp.name, "studio.db")
-        self.addCleanup(make_file_unsloth_db(
-            udb, [unsloth_event("e1"),
-                  unsloth_event("e2", model="other-model")]).close)
-        code, out, _ = self.run_main(
-            ["--db", self.db, "--src", os.path.join(self.tmp.name, "none.db"),
-             "--unsloth-db", udb, "--from-unsloth", "--total", "--model"])
-        self.assertEqual(code, 0)
-        self.assertIn(UNSLOTH_MODEL_ID, out)
-        self.assertIn("other-model", out)
-        self.assertNotIn("(all)", out)
-
     def test_cost_flag_adds_cost_column_and_json_field(self):
         code, out, _ = self.run_main(
-            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+            ["--db", self.db, "--src", self.src,
              "--total", "--cost"])
         self.assertEqual(code, 0)
         self.assertIn("COST", out)
         code, out, _ = self.run_main(
-            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+            ["--db", self.db, "--src", self.src,
              "--total", "--cost", "--json"])
         self.assertIn("cost_est", json.loads(out)[0])
 
     def test_cost_default_off_still_has_no_cost_column(self):
         code, out, _ = self.run_main(
-            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+            ["--db", self.db, "--src", self.src,
              "--total"])
         self.assertEqual(code, 0)
         self.assertNotIn("COST", out)
 
     def test_cost_on_any_model_and_piped_plain(self):
         code, out, _ = self.run_main(
-            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+            ["--db", self.db, "--src", self.src,
              "--total", "--cost"])
         self.assertEqual(code, 0)
         self.assertIn("$", out)          # estimate prints for non-Claude traffic
@@ -2445,7 +1741,7 @@ class CliTotalTests(CliHarness):
         # (the print path's identity check on SHARE_COLUMNS would silently
         # turn bars off for --cost --total --model)
         code, out, _ = self.run_main(
-            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+            ["--db", self.db, "--src", self.src,
              "--total", "--model", "--cost"])
         self.assertEqual(code, 0)
         unsloth_line = next(ln for ln in out.splitlines() if "unsloth" in ln)
@@ -2453,16 +1749,9 @@ class CliTotalTests(CliHarness):
         # percent column), then block glyphs — bars still painted
         self.assertRegex(unsloth_line, r"\d+\.\d%\s+[█░▒▓]")
 
-    def test_reconcile_rejects_cost(self):
-        with self.assertRaises(SystemExit) as cm:
-            with contextlib.redirect_stderr(io.StringIO()):
-                main(["reconcile", "--db", self.db, "--src", self.src,
-                      "--unsloth-db", self.no_udb, "--cost"])
-        self.assertEqual(cm.exception.code, 2)
-
     def test_cost_bare_header_names_pinned_model(self):
         code, out, _ = self.run_main(
-            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+            ["--db", self.db, "--src", self.src,
              "--total", "--cost"])
         self.assertEqual(code, 0)
         # single-line header (human decision): "COST · <model> Prices" sits
@@ -2473,15 +1762,14 @@ class CliTotalTests(CliHarness):
 
     def test_cost_slug_changes_header(self):
         code, out, _ = self.run_main(
-            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+            ["--db", self.db, "--src", self.src,
              "--total", "--cost=deepseek-v3.2"])
         self.assertEqual(code, 0)
         lines = out.splitlines()
         self.assertIn("COST \u00b7 DeepSeek V3.2 Prices", lines[0])
 
     def test_cost_family_alias_equals_model_slug(self):
-        base = ["--db", self.db, "--src", self.src, "--unsloth-db",
-                self.no_udb, "--total"]
+        base = ["--db", self.db, "--src", self.src, "--total"]
         _, alias, _ = self.run_main(base + ["--cost=qwen"])
         _, model, _ = self.run_main(base + ["--cost=qwen-plus"])
         self.assertEqual(alias, model)
@@ -2491,24 +1779,21 @@ class CliTotalTests(CliHarness):
     def test_cost_invalid_slug_exits_2(self):
         with self.assertRaises(SystemExit) as cm, \
                 contextlib.redirect_stderr(io.StringIO()):
-            main(["--db", self.db, "--src", self.src,
-                  "--unsloth-db", self.no_udb, "--total", "--cost=bogus"])
+            main(["--db", self.db, "--src", self.src, "--total", "--cost=bogus"])
         self.assertEqual(cm.exception.code, 2)
 
     def test_cost_empty_value_exits_2(self):  # review-focus pin
         with self.assertRaises(SystemExit) as cm, \
                 contextlib.redirect_stderr(io.StringIO()):
-            main(["--db", self.db, "--src", self.src,
-                  "--unsloth-db", self.no_udb, "--total", "--cost="])
+            main(["--db", self.db, "--src", self.src, "--total", "--cost="])
         self.assertEqual(cm.exception.code, 2)
 
     def test_cost_space_form_swallows_command_exits_2(self):  # review-focus pin
-        # "--cost reconcile": argparse eats the command as the tier value;
+        # "--cost record": argparse eats the command as the tier value;
         # the user must get exit 2, never a silent dashboard.
         with self.assertRaises(SystemExit) as cm, \
                 contextlib.redirect_stderr(io.StringIO()):
-            main(["--db", self.db, "--src", self.src,
-                  "--unsloth-db", self.no_udb, "--cost", "reconcile"])
+            main(["--db", self.db, "--src", self.src, "--cost", "record"])
         self.assertEqual(cm.exception.code, 2)
 
     def test_cost_tier_flag_removed(self):
@@ -2518,8 +1803,7 @@ class CliTotalTests(CliHarness):
         err = io.StringIO()
         with self.assertRaises(SystemExit) as cm, \
                 contextlib.redirect_stderr(err):
-            main(["--db", self.db, "--src", self.src,
-                  "--unsloth-db", self.no_udb, "--total",
+            main(["--db", self.db, "--src", self.src, "--total",
                   "--cost-tier", "opus"])
         self.assertEqual(cm.exception.code, 2)
         self.assertIn("--cost-tier was removed", err.getvalue())
@@ -2527,8 +1811,7 @@ class CliTotalTests(CliHarness):
 
     def test_cost_bare_equals_explicit_default_slug(self):
         # spec "left to the builder" pin: bare --cost IS --cost=sonnet-5.
-        base = ["--db", self.db, "--src", self.src, "--unsloth-db",
-                self.no_udb, "--total"]
+        base = ["--db", self.db, "--src", self.src, "--total"]
         _, bare, _ = self.run_main(base + ["--cost"])
         _, pinned, _ = self.run_main(base + ["--cost=sonnet-5"])
         self.assertEqual(bare, pinned)
@@ -2547,14 +1830,13 @@ class RealCostTests(CliHarness):
             src_row(sid="s1"),                        # unsloth-studio model
             src_row(sid="s2", model=qwen_lemonade),   # lemonade qwen-mini
         ]).close)
-        self.no_udb = os.path.join(self.tmp.name, "no-studio.db")
 
     def tearDown(self):
         self.tmp.cleanup()
 
     def test_real_cost_column_shows_stored_cost(self):
         code, out, _ = self.run_main(
-            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+            ["--db", self.db, "--src", self.src,
              "--total", "--real-cost"])
         self.assertEqual(code, 0)
         self.assertIn("REAL COST", out)
@@ -2562,7 +1844,7 @@ class RealCostTests(CliHarness):
 
     def test_real_cost_coexists_with_estimate(self):
         code, out, _ = self.run_main(
-            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+            ["--db", self.db, "--src", self.src,
              "--total", "--cost", "--real-cost"])
         self.assertEqual(code, 0)
         lines = out.splitlines()
@@ -2572,25 +1854,15 @@ class RealCostTests(CliHarness):
                         lines[0].index("REAL COST"))
 
     def test_real_cost_json_shape_unchanged(self):  # review-focus pin
-        base = ["--db", self.db, "--src", self.src, "--unsloth-db",
-                self.no_udb, "--total"]
+        base = ["--db", self.db, "--src", self.src, "--total"]
         _, plain, _ = self.run_main(base + ["--json"])
         _, real, _ = self.run_main(base + ["--real-cost", "--json"])
         self.assertEqual(set(json.loads(plain)[0]), set(json.loads(real)[0]))
 
-    def test_real_cost_rejects_unsupported_views(self):
-        for extra in (["reconcile"], ["--from-unsloth"], ["--from-runs"]):
-            with self.subTest(extra=extra), self.assertRaises(SystemExit) as cm, \
-                    contextlib.redirect_stderr(io.StringIO()):
-                main(["--db", self.db, "--src", self.src,
-                      "--unsloth-db", self.no_udb] + extra + ["--real-cost"])
-            self.assertEqual(cm.exception.code, 2)
-
     def test_real_cost_on_daily_and_sessions_views(self):
         # review fix: the column belongs to every session-family view, not
         # just --total.
-        base = ["--db", self.db, "--src", self.src, "--unsloth-db",
-                self.no_udb]
+        base = ["--db", self.db, "--src", self.src]
         code, out, _ = self.run_main(base + ["--daily", "--real-cost"])
         self.assertEqual(code, 0)
         self.assertIn("REAL COST", out)
@@ -2605,7 +1877,7 @@ class RealCostTests(CliHarness):
         free = os.path.join(self.tmp.name, "free.db")
         self.addCleanup(make_file_db(free, [src_row(sid="s9", cost=0.0)]).close)
         code, out, _ = self.run_main(
-            ["--db", self.db, "--src", free, "--unsloth-db", self.no_udb,
+            ["--db", self.db, "--src", free,
              "--total", "--real-cost"])
         self.assertEqual(code, 0)
         self.assertIn("$0.00", out)
@@ -2638,24 +1910,6 @@ class CostTests(unittest.TestCase):
         from tokenstat import annotate_cost
         rows = [{"progress_tokens": 1_000_000, "tokens_input": 1_000_000}]
         self.assertAlmostEqual(annotate_cost(rows, "sonnet-5")[0]["cost_est"], 10.0)
-
-    def test_run_aggregate_rows_carry_progress_tokens(self):
-        # regression pin (task-4 review): --cost prices by key presence, so
-        # run AGGREGATE rows must carry progress_tokens — without it they
-        # silently price via the event branch at the input rate.
-        from tokenstat import annotate_cost
-        dest = make_dest()
-        self.addCleanup(dest.close)
-        src = make_runs_src([run_row("r1", progress=100),
-                             run_row("r2", progress=400)])
-        self.addCleanup(src.close)
-        import_unsloth_runs(src, dest)
-        self.assertIn("progress_tokens", daily_runs(dest)[0])
-        (row,) = total_runs(dest, by_model=True)  # both runs share one model
-        self.assertIn("progress_tokens", row)
-        # output-only pricing: (100 + 400) * 10 / 1e6
-        (priced,) = annotate_cost(total_runs(dest, by_model=True), "sonnet-5")
-        self.assertAlmostEqual(priced["cost_est"], 0.005)
 
     def test_annotate_cost_does_not_mutate_input_rows(self):
         from tokenstat import annotate_cost
@@ -2801,14 +2055,12 @@ class CliCacheTests(CliHarness):
             src_row(sid="s1"),                        # unsloth-studio model
             src_row(sid="s2", model=qwen_lemonade),   # lemonade qwen-mini
         ]).close)
-        self.no_udb = os.path.join(self.tmp.name, "no-studio.db")
 
     def tearDown(self):
         self.tmp.cleanup()
 
     def base(self, *flags):
-        return self.run_main(["--db", self.db, "--src", self.src,
-                              "--unsloth-db", self.no_udb, *flags])
+        return self.run_main(["--db", self.db, "--src", self.src, *flags])
 
     def test_cache_flag_adds_column_to_session_view(self):
         code, out, _ = self.base("--cache")
@@ -2863,29 +2115,6 @@ class CliCacheTests(CliHarness):
         self.assertEqual(set(rows_plain[0]), set(rows_cached[0]))
         self.assertNotIn("cache", rows_cached[0])
 
-    def test_reconcile_rejects_cache(self):
-        with self.assertRaises(SystemExit) as cm:
-            with contextlib.redirect_stderr(io.StringIO()):
-                main(["reconcile", "--db", self.db, "--src", self.src,
-                      "--unsloth-db", self.no_udb, "--cache"])
-        self.assertEqual(cm.exception.code, 2)
-
-    def test_from_unsloth_rejects_cache(self):
-        with self.assertRaises(SystemExit) as cm:
-            with contextlib.redirect_stderr(io.StringIO()):
-                main(["--db", self.db, "--src", self.src,
-                      "--unsloth-db", self.no_udb, "--from-unsloth",
-                      "--cache"])
-        self.assertEqual(cm.exception.code, 2)
-
-    def test_from_runs_rejects_cache(self):
-        with self.assertRaises(SystemExit) as cm:
-            with contextlib.redirect_stderr(io.StringIO()):
-                main(["--db", self.db, "--src", self.src,
-                      "--unsloth-db", self.no_udb, "--from-runs",
-                      "--cache"])
-        self.assertEqual(cm.exception.code, 2)
-
 
 class DisplayAlignmentTests(CliHarness):
     def setUp(self):
@@ -2894,7 +2123,6 @@ class DisplayAlignmentTests(CliHarness):
         self.db = os.path.join(self.tmp.name, "usage.db")
         self.src = os.path.join(self.tmp.name, "src.db")
         self.addCleanup(make_file_db(self.src, [src_row(sid="s1", cost=0.05)]).close)
-        self.no_udb = os.path.join(self.tmp.name, "no-studio.db")
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -2925,13 +2153,11 @@ class DisplayAlignmentTests(CliHarness):
         for argv_extra in ([], ["--daily"], ["--total"]):
             with self.subTest(argv_extra=argv_extra):
                 code, out, _ = self.run_main(
-                    ["--db", self.db, "--src", self.src,
-                     "--unsloth-db", self.no_udb] + argv_extra)
+                    ["--db", self.db, "--src", self.src] + argv_extra)
                 self.assertEqual(code, 0)
                 self.assertNotIn("COST", out)
         # ...while --json still carries the data
-        code, out, _ = self.run_main(["--db", self.db, "--src", self.src,
-                                      "--unsloth-db", self.no_udb, "--total",
+        code, out, _ = self.run_main(["--db", self.db, "--src", self.src, "--total",
                                       "--json"])
         self.assertEqual(code, 0)
         self.assertIn("cost", json.loads(out)[0])
@@ -3003,14 +2229,13 @@ class CliShareTests(CliHarness):
             src_row(sid="s1", tin=9000, tout=1000),   # unsloth-studio: 10k
             src_row(sid="s2", model=qwen_lemonade, tin=4500, tout=500),  # 5k
         ]).close)
-        self.no_udb = os.path.join(self.tmp.name, "no-studio.db")
 
     def tearDown(self):
         self.tmp.cleanup()
 
     def test_total_per_model_table_shares_and_bars(self):
         code, out, _ = self.run_main(
-            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+            ["--db", self.db, "--src", self.src,
              "--total", "--model"])
         self.assertEqual(code, 0)
         lines = out.splitlines()
@@ -3026,7 +2251,7 @@ class CliShareTests(CliHarness):
 
     def test_bare_model_is_now_valid_per_model_totals(self):
         code, out, _ = self.run_main(
-            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+            ["--db", self.db, "--src", self.src,
              "--model"])
         self.assertEqual(code, 0)
         self.assertIn("lemonade/qwen-mini", out)
@@ -3036,14 +2261,14 @@ class CliShareTests(CliHarness):
 
     def test_total_grand_row_shares_full(self):
         code, out, _ = self.run_main(
-            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+            ["--db", self.db, "--src", self.src,
              "--total"])
         self.assertEqual(code, 0)
         self.assertIn("100.0%", out)
 
     def test_total_json_carries_share_not_bar(self):
         code, out, _ = self.run_main(
-            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+            ["--db", self.db, "--src", self.src,
              "--total", "--model", "--json"])
         self.assertEqual(code, 0)
         rows = json.loads(out)
@@ -3054,28 +2279,11 @@ class CliShareTests(CliHarness):
         self.assertAlmostEqual(
             sum(r["share"] for r in rows), 100.0, places=6)
 
-    def test_from_unsloth_total_shares(self):
-        udb = os.path.join(self.tmp.name, "studio.db")
-        self.addCleanup(make_file_unsloth_db(
-            udb, [unsloth_event("e1", prompt=900, completion=100),
-                  unsloth_event("e2", model="other-model",
-                                prompt=500)]).close)
-        code, out, _ = self.run_main(
-            ["--db", self.db, "--src", os.path.join(self.tmp.name, "none.db"),
-             "--unsloth-db", udb, "--from-unsloth", "--total", "--model"])
-        self.assertEqual(code, 0)
-        self.assertIn("SHARE", out.splitlines()[0])
-        self.assertIn("1,000", out)  # unsloth total renders
-        self.assertIn("35.5%", out)  # other-model = 550/1,550
-
-    # Superseded for bare runs on 2026-11-15 by the compact default dashboard
-    # (bare now shows the share panel; daily remains SHARE/BAR-free).
     def test_session_and_daily_tables_unchanged(self):
         for extra in (["--daily"],):
             with self.subTest(extra=extra):
                 code, out, _ = self.run_main(
-                    ["--db", self.db, "--src", self.src,
-                     "--unsloth-db", self.no_udb] + extra)
+                    ["--db", self.db, "--src", self.src] + extra)
                 self.assertEqual(code, 0)
                 self.assertNotIn("SHARE", out)
                 self.assertNotIn("BAR", out)
@@ -3085,7 +2293,7 @@ class CliShareTests(CliHarness):
         # (33.3%); alphabetical order would put lemonade first, so assert
         # the unsloth line precedes the lemonade line
         code, out, _ = self.run_main(
-            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+            ["--db", self.db, "--src", self.src,
              "--total", "--model"])
         self.assertEqual(code, 0)
         lines = out.splitlines()
@@ -3107,7 +2315,7 @@ class CliShareTests(CliHarness):
         ]).close)
         code, out, _ = self.run_main(
             ["--db", os.path.join(self.tmp.name, "usage3.db"),
-             "--src", src, "--unsloth-db", self.no_udb,
+             "--src", src,
              "--total", "--model", "--json"])
         self.assertEqual(code, 0)
         rows = json.loads(out)
@@ -3245,8 +2453,8 @@ class PaintCellsTests(unittest.TestCase):
                       str(rows[0]["tok_s"]))
 
     def test_sessions_column_painted_tshare(self):
-        # Same teal the hero's row-count stat wears; the key carries runs in
-        # --from-runs and requests in --from-unsloth, and follows everywhere.
+        # Same teal the hero's row-count stat wears; the SESSIONS column wears
+        # it too, and follows the theme everywhere.
         rows = paint_cells([{"sessions": 54, "total": 100}])
         self.assertIn("38;2;{};{};{}m54".format(*NEON["tshare"]),
                       str(rows[0]["sessions"]))
@@ -3690,14 +2898,13 @@ class CliColorTests(CliHarness):
             src_row(sid="s1", tin=9000, tout=1000),
             src_row(sid="s2", model=qwen_lemonade, tin=4500, tout=500),
         ]).close)
-        self.no_udb = os.path.join(self.tmp.name, "no-studio.db")
 
     def tearDown(self):
         self.tmp.cleanup()
 
     def test_piped_output_plain_but_padded(self):
         code, out, _ = self.run_main(
-            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+            ["--db", self.db, "--src", self.src,
              "--total", "--model"])
         self.assertEqual(code, 0)
         self.assertNotIn("\x1b", out)
@@ -3720,7 +2927,6 @@ class CliNeonTests(CliHarness):
             src_row(sid="s1", tin=9000, tout=1000),
             src_row(sid="s2", model=qwen_lemonade, tin=4500, tout=500),
         ]).close)
-        self.no_udb = os.path.join(self.tmp.name, "no-studio.db")
         self.udb = os.path.join(self.tmp.name, "studio.db")
         # This repo's own themes/ folder stays invisible to these tests: they
         # pin the Neon Midnight default, and a default someone saved with
@@ -3737,33 +2943,9 @@ class CliNeonTests(CliHarness):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_runs_share_rows_render_gradient_glyph_bars(self):
-        # runs have no in/out split (all-input rows), but on a terminal their
-        # share bars are the SAME per-glyph gradient glyph bars as any other
-        # share row — an all-input row renders the pure input-blue endpoint
-        self.addCleanup(make_file_runs_db(self.udb,
-                                          runs=[run_row("r1")]).close)
-        _, out, _ = self.colored_main(
-            ["--db", self.db, "--src", os.path.join(self.tmp.name, "none.db"),
-             "--unsloth-db", self.udb, "--from-runs", "--total", "--model"])
-        self.assertIn("█", out)                       # glyph bars, not blocks
-        self.assertIn("38;2;{};{};{}m".format(*NEON["tin"]), out)  # input-blue glyphs (fg)
-        self.assertNotIn("48;2;", out)                # no background blocks
-
-    def test_reconcile_colored_skips_hero_header(self):
-        # compare view pin: no hero "tokens ·" line — reconcile rows carry
-        # no summed token classes, and a zero hero would imply values the
-        # view never computed
-        _, out, _ = self.colored_main(
-            ["reconcile", "--db", self.db, "--src", self.src,
-             "--unsloth-db", self.no_udb])
-        plain = _ANSI_RE.sub("", out)
-        self.assertIn("tokenstat · reconcile", plain)
-        self.assertNotIn("tokens ·", plain)
-
     def test_share_view_colored_uses_gradient_glyph_bars(self):
         code, out, _ = self.colored_main(
-            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+            ["--db", self.db, "--src", self.src,
              "--total", "--model"])
         self.assertEqual(code, 0)
         self.assertIn("█", out)                           # glyph bars remain
@@ -3780,7 +2962,7 @@ class CliNeonTests(CliHarness):
         # regression pin: piped runs stay byte-plain even with the violet
         # TOTAL / teal SHARE painting (painting is gated by _color_enabled)
         code, out, _ = self.run_main(
-            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+            ["--db", self.db, "--src", self.src,
              "--total", "--model"])
         self.assertEqual(code, 0)
         self.assertNotIn("\x1b", out)
@@ -3790,32 +2972,32 @@ class CliNeonTests(CliHarness):
         # panel/header painters must honor the color gate too: piped stays
         # byte-plain (spec non-goal: piped/NO_COLOR output is plain text)
         code, out, _ = self.run_main(
-            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb])
+            ["--db", self.db, "--src", self.src])
         self.assertEqual(code, 0)
         self.assertNotIn("\x1b", out)
 
     def test_cache_overlay_column_is_lime_under_color(self):
         _, out, _ = self.colored_main(
-            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+            ["--db", self.db, "--src", self.src,
              "--total", "--model", "--cache"])
         self.assertIn("38;2;{};{};{}m".format(*NEON["tcach"]), out)  # CACHE column
 
     def test_header_panel_prints(self):
         _, out, _ = self.colored_main(
-            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+            ["--db", self.db, "--src", self.src,
              "--total", "--model"])
         self.assertIn("tokens", out.splitlines()[0] + out.splitlines()[1])
         self.assertIn("╭", out)
 
     def test_empty_result_plain_even_when_color_enabled(self):
         _, out, _ = self.colored_main(
-            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+            ["--db", self.db, "--src", self.src,
              "--model", "zzz-nothing"])
         self.assertEqual(out, "no sessions match\n")      # Review Focus pin
 
     def test_piped_cli_still_byte_identical(self):
         _, out, _ = self.run_main(
-            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb,
+            ["--db", self.db, "--src", self.src,
              "--total", "--model"])                       # no patch: piped
         self.assertNotIn("\x1b", out)
         self.assertIn("█", out)                           # glyphs remain plain-path
@@ -3898,9 +3080,7 @@ class CliThemeTests(CliHarness):
             src_row(sid="s1", tin=9000, tout=1000),
             src_row(sid="s2", model=qwen_lemonade, tin=4500, tout=500),
         ]).close)
-        self.no_udb = os.path.join(self.tmp.name, "no-studio.db")
-        self.base = ["--db", self.db, "--src", self.src,
-                     "--unsloth-db", self.no_udb]
+        self.base = ["--db", self.db, "--src", self.src]
         # Every test gets an isolated themes folder. main() must read the
         # THEMES_DIR / THEME_CONFIG module globals at call time (the default
         # arguments of resolve_theme/read_default_theme are bound at def time),
@@ -4106,10 +3286,10 @@ class CliThemeTests(CliHarness):
         self.assertIn("nord", err)                    # available slugs listed
 
     def test_theme_swallowing_a_command_is_a_theme_error(self):
-        # Review Focus: `--theme reconcile` is the known --cost quirk — the
+        # Review Focus: `--theme record` is the known --cost quirk — the
         # error is about the bad slug, not argparse blaming the command word.
-        err = self.exit_two(self.base + ["--theme", "reconcile"])
-        self.assertIn("reconcile", err)
+        err = self.exit_two(self.base + ["--theme", "record"])
+        self.assertIn("record", err)
         self.assertIn("available", err)
         self.assertNotIn("invalid choice", err)
 
@@ -4288,10 +3468,6 @@ class DefaultPathsTests(unittest.TestCase):
                 self.assertEqual(tokenstat.default_src("/tmp/fake-home"),
                                  "/tmp/fake-home/.local/share/opencode/opencode.db")
 
-    def test_unsloth_default_is_the_studio_location(self):
-        self.assertEqual(tokenstat.unsloth_db("/tmp/fake-home"),
-                         "/tmp/fake-home/.unsloth/studio/studio.db")
-
     def test_module_defaults_point_at_the_state_dir(self):
         # Pin the import-time bindings themselves: exec a second, isolated
         # copy of tokenstat.py under a fake HOME and check each global
@@ -4313,8 +3489,6 @@ class DefaultPathsTests(unittest.TestCase):
                          "/tmp/fake-home/.tokenstat/themes/config.json")
         self.assertEqual(fresh.DEFAULT_SRC,
                          "/tmp/fake-home/.local/share/opencode/opencode.db")
-        self.assertEqual(fresh.DEFAULT_UNSLOTH_DB,
-                         "/tmp/fake-home/.unsloth/studio/studio.db")
 
     def test_importing_creates_nothing(self):
         # Import purity, pinned instead of assumed: the migration is
@@ -4578,9 +3752,8 @@ class FreshMachineTests(unittest.TestCase):
             script = os.path.join(bin_dir, "tokenstat.py")
             shutil.copyfile(tokenstat.__file__, script)
             # OpenCode history but no tokenstat state: the dashboard needs a
-            # session to render, and the absent studio.db is what leaves the
-            # two "could not read" warnings on stderr (report mode snapshots
-            # events and runs, so it warns once per step).
+            # session to render. The OpenCode source is present, so report mode
+            # ingests it cleanly and leaves nothing on stderr.
             src_dir = os.path.join(home, ".local", "share", "opencode")
             os.makedirs(src_dir)
             make_file_db(os.path.join(src_dir, "opencode.db"),
@@ -4593,8 +3766,7 @@ class FreshMachineTests(unittest.TestCase):
             self.assertTrue(os.path.isfile(
                 os.path.join(home, ".tokenstat", "usage.db")))
             self.assertIn("tokenstat", proc.stdout)
-            self.assertEqual(proc.stderr.count("could not read"), 2)
-            self.assertIn(tokenstat.unsloth_db(home), proc.stderr)
+            self.assertEqual(proc.stderr.count("could not read"), 0)
             # Nothing was written next to the script it ran from.
             self.assertFalse(os.path.exists(os.path.join(bin_dir, "usage.db")))
 
@@ -4603,12 +3775,50 @@ class SchemaTests(unittest.TestCase):
     def test_ensure_schema_creates_filter_indexes(self):
         dest = make_dest()
         self.addCleanup(dest.close)
-        created = dest.execute(
-            "PRAGMA index_info(idx_unsloth_events_created)").fetchall()
         tcreated = dest.execute(
             "PRAGMA index_info(idx_usage_time_created)").fetchall()
-        self.assertEqual(len(created), 1)
         self.assertEqual(len(tcreated), 1)
+
+
+class LegacyStoreOpensTests(CliHarness):
+    """A store written while the tool still tracked Unsloth Studio still opens:
+    its unsloth_events / unsloth_runs tables are simply ignored now. This pins
+    the upgrade-in-place promise — the same ~/.tokenstat/usage.db an older build
+    created must never error on tables the current build no longer reads."""
+
+    def test_report_runs_against_a_store_with_legacy_tables(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "usage.db")
+            store = sqlite3.connect(db)
+            self.addCleanup(store.close)
+            ensure_schema(store)
+            # Hand-build the two tables the two-source tool created, with a row
+            # each, exactly as a store predating the Unsloth removal would hold.
+            store.execute(
+                """CREATE TABLE unsloth_events (
+                       event_id TEXT PRIMARY KEY, model TEXT,
+                       prompt_tokens INTEGER, completion_tokens INTEGER,
+                       total_tokens INTEGER, created_at INTEGER,
+                       last_seen INTEGER)""")
+            store.execute(
+                """CREATE TABLE unsloth_runs (
+                       run_id TEXT PRIMARY KEY, model TEXT,
+                       progress_tokens INTEGER, started_at INTEGER,
+                       completed_at INTEGER, status TEXT, last_seen INTEGER)""")
+            store.execute("INSERT INTO unsloth_events VALUES "
+                          "('e1','m',100,5,105,1,1)")
+            store.execute("INSERT INTO unsloth_runs VALUES "
+                          "('r1','m',100,1,2,'completed',1)")
+            store.commit()
+            store.close()
+
+            src = os.path.join(tmp, "src.db")
+            self.addCleanup(make_file_db(src, [src_row(sid="s1")]).close)
+            code, out, err = self.run_main(
+                ["--db", db, "--src", src, "--total"])
+            self.assertEqual(code, 0, err)
+            self.assertEqual(err, "")
+            self.assertIn("TOTAL", out)
 
 
 class StepsSchemaTests(unittest.TestCase):
@@ -4731,29 +3941,6 @@ class LikeEscapingTests(unittest.TestCase):
         rows = query_sessions(self.dest, model="a_b")
         self.assertEqual([r["model"] for r in rows], ["y/a_b"])
 
-    def test_event_percent_is_literal(self):
-        # The event filter has two LIKE clauses sharing one pattern param; if
-        # either lacked ESCAPE '\', the OR would let "gpt-50-mini" leak in.
-        src = make_unsloth_src([unsloth_event("e1", model="x/50%off"),
-                                unsloth_event("e2", model="gpt-50-mini")])
-        self.addCleanup(src.close)
-        import_unsloth(src, self.dest)
-        rows = query_events(self.dest, model="50%")
-        self.assertEqual([r["model"] for r in rows], ["x/50%off"])
-
-    def test_run_percent_is_literal(self):
-        # Run-path pin: _run_filters was already escaping when this test was
-        # added — regression guard, not a RED demonstration. "gpt-50-mini"
-        # gives it teeth: without ESCAPE the pattern %50%% matches it too.
-        src = make_runs_src([run_row("rp", model="x/50%off"),
-                             run_row("rd"),
-                             run_row("rg", model="gpt-50-mini")])
-        self.addCleanup(src.close)
-        import_unsloth_runs(src, self.dest)
-        rows = query_runs(self.dest, model="50%")
-        self.assertEqual([r["model"] for r in rows], ["x/50%off"])
-
-
 class NoResourceWarningTests(unittest.TestCase):
     """Regression pin: main() must close every sqlite connection it opens
     (our store plus each read-only source). An unclosed one surfaces on
@@ -4768,8 +3955,7 @@ class NoResourceWarningTests(unittest.TestCase):
                                   "tokenstat.py")
             proc = subprocess.run(
                 [sys.executable, "-W", "error::ResourceWarning", script,
-                 "--db", os.path.join(tmp, "usage.db"), "--src", src,
-                 "--unsloth-db", os.path.join(tmp, "no-studio.db")],
+                 "--db", os.path.join(tmp, "usage.db"), "--src", src],
                 capture_output=True, text=True)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertNotIn("ResourceWarning", proc.stderr)
@@ -4853,7 +4039,6 @@ class DefaultDashboardTests(CliHarness):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.db = os.path.join(self.tmp.name, "usage.db")
-        self.no_udb = os.path.join(self.tmp.name, "no-studio.db")
         other = '{"id":"m3","providerID":"prov3"}'
         # 7 sessions, 3 models, increasing time_created (s1 oldest).
         self.src = os.path.join(self.tmp.name, "src.db")
@@ -4871,8 +4056,7 @@ class DefaultDashboardTests(CliHarness):
         ]).close)
 
     def bare(self, extra=()):
-        return self.run_main(["--db", self.db, "--src", self.src,
-                              "--unsloth-db", self.no_udb] + list(extra))
+        return self.run_main(["--db", self.db, "--src", self.src] + list(extra))
 
     def test_bare_shows_both_panels_model_first(self):
         code, out, _ = self.bare()
@@ -4927,7 +4111,7 @@ class DefaultDashboardTests(CliHarness):
         self.addCleanup(make_file_db(six, rows).close)
         code, out, _ = self.run_main(
             ["--db", os.path.join(self.tmp.name, "u4.db"),
-             "--src", six, "--unsloth-db", self.no_udb])
+             "--src", six])
         self.assertEqual(code, 0)
         # mod0 has the smallest total (2000+200=2200 vs larger tin): dropped.
         self.assertNotIn("p/mod0", out)
@@ -4946,8 +4130,7 @@ class DefaultDashboardTests(CliHarness):
 
     def test_flagged_views_keep_full_tables(self):
         code, out, _ = self.run_main(
-            ["--db", self.db, "--src", self.src,
-             "--unsloth-db", self.no_udb, "--since", "2026-11-01"])
+            ["--db", self.db, "--src", self.src, "--since", "2026-11-01"])
         self.assertEqual(code, 0)
         self.assertNotIn("5 most recent", out)
         self.assertIn("t-s1", out)  # full (unfiltered-by-cap) table
@@ -4992,7 +4175,7 @@ class DefaultDashboardTests(CliHarness):
             src_row(sid="only", title="t-only")]).close)
         code, out, _ = self.run_main(
             ["--db", os.path.join(self.tmp.name, "u2.db"),
-             "--src", small, "--unsloth-db", self.no_udb])
+             "--src", small])
         self.assertEqual(code, 0)
         self.assertIn("t-only", out)
 
@@ -5001,14 +4184,14 @@ class DefaultDashboardTests(CliHarness):
         self.addCleanup(make_file_db(empty, []).close)
         code, out, _ = self.run_main(
             ["--db", os.path.join(self.tmp.name, "u3.db"),
-             "--src", empty, "--unsloth-db", self.no_udb])
+             "--src", empty])
         self.assertEqual(code, 0)
         self.assertEqual(out.strip(), "no sessions match")
 
 
 class HeroUnitTests(unittest.TestCase):
-    """Flagged-view heroes name their rows: days/sessions/models/
-    requests/runs (heroes only print on a tty, so _color_enabled is faked)."""
+    """Flagged-view heroes name their rows: days/sessions/models
+     (heroes only print on a tty, so _color_enabled is faked)."""
 
     def setUp(self):
         import tempfile
@@ -5020,13 +4203,6 @@ class HeroUnitTests(unittest.TestCase):
             src_row(sid="s1", created=ms(2026, 11, 1)),
             src_row(sid="s2", model=LEMONADE_JSON, created=ms(2026, 11, 2)),
         ]).close)
-        self.udb = os.path.join(self.tmp.name, "studio.db")
-        runs = [(f"r{i}", '{"model":"m"}', 500, ms(2026, 11, 1) + i * 1000,
-                 ms(2026, 11, 1) + i * 1000 + 500, "completed")
-                for i in (0, 1)]
-        self.addCleanup(make_file_runs_db(
-            self.udb, [unsloth_event("e1"), unsloth_event("e2"),
-                       unsloth_event("e3")], runs).close)
 
     def run_hero(self, *flags):
         out, err = io.StringIO(), io.StringIO()
@@ -5034,8 +4210,7 @@ class HeroUnitTests(unittest.TestCase):
                                  lambda *a: True), \
                 contextlib.redirect_stdout(out), \
                 contextlib.redirect_stderr(err):
-            code = main(["--db", self.db, "--src", self.src,
-                         "--unsloth-db", self.udb] + list(flags))
+            code = main(["--db", self.db, "--src", self.src] + list(flags))
         self.assertEqual(code, 0)
         return _ANSI_RE.sub("", out.getvalue())
 
@@ -5061,12 +4236,6 @@ class HeroUnitTests(unittest.TestCase):
     def test_per_model_totals_count_models(self):
         self.assertIn("2 models", self.run_hero("--total", "--model"))
 
-    def test_unsloth_events_count_requests(self):
-        self.assertIn("3 requests", self.run_hero("--from-unsloth"))
-
-    def test_runs_count_runs(self):
-        self.assertIn("2 runs", self.run_hero("--from-runs"))
-
 
 class CliSessionsTests(CliHarness):
     """--sessions[=N] scopes session views to the N most recent sessions."""
@@ -5076,7 +4245,6 @@ class CliSessionsTests(CliHarness):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.db = os.path.join(self.tmp.name, "usage.db")
-        self.no_udb = os.path.join(self.tmp.name, "no-studio.db")
         self.src = os.path.join(self.tmp.name, "src.db")
         # 26 sessions of distinct time_created, s00 oldest: --sessions
         # (default 20) must drop s00..s05 and keep s06..s25.
@@ -5088,12 +4256,12 @@ class CliSessionsTests(CliHarness):
 
     def sess(self, *extra):
         return self.run_main(
-            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb]
+            ["--db", self.db, "--src", self.src]
             + list(extra))
 
     def sess_colored(self, *extra):
         return self.colored_main(
-            ["--db", self.db, "--src", self.src, "--unsloth-db", self.no_udb]
+            ["--db", self.db, "--src", self.src]
             + list(extra))
 
     def plain(self, out):
@@ -5108,8 +4276,7 @@ class CliSessionsTests(CliHarness):
         with self.assertRaises(SystemExit) as cm, \
                 contextlib.redirect_stderr(err), \
                 contextlib.redirect_stdout(out):
-            main(["--db", self.db, "--src", self.src,
-                  "--unsloth-db", self.no_udb] + list(extra))
+            main(["--db", self.db, "--src", self.src] + list(extra))
         self.assertEqual(cm.exception.code, 2)
         self.assertIn("--sessions", err.getvalue())
         return err.getvalue(), out.getvalue()
@@ -5196,18 +4363,6 @@ class CliSessionsTests(CliHarness):
 
     def test_non_integer_exits_2(self):
         self.assert_exit_2("--sessions=abc")
-
-    def test_unsupported_with_from_unsloth(self):
-        err, _ = self.assert_exit_2("--from-unsloth", "--sessions")
-        self.assertIn("--from-unsloth", err)
-
-    def test_unsupported_with_from_runs(self):
-        err, _ = self.assert_exit_2("--from-runs", "--sessions")
-        self.assertIn("--from-runs", err)
-
-    def test_unsupported_with_reconcile(self):
-        err, _ = self.assert_exit_2("reconcile", "--sessions")
-        self.assertIn("reconcile", err)
 
     # -- aggregates under the cap --
 
@@ -5302,7 +4457,7 @@ class CliSessionsTests(CliHarness):
         ).close)
         db = os.path.join(self.tmp.name, "usage2.db")
         code, out, _ = self.colored_main(
-            ["--db", db, "--src", lemon, "--unsloth-db", self.no_udb,
+            ["--db", db, "--src", lemon,
              "--sessions=4", "--model", "lemonade"])
         self.assertEqual(code, 0)
         text = self.plain(out)
@@ -5375,9 +4530,6 @@ class ByteIdentityGoldenTests(CliHarness):
         ("model-filter", ("--total", "--model", "gpt-oss")),
         ("since", ("--since", "2026-11-05")),
         ("min-in", ("--total", "--model", "--min-in", "2000")),
-        ("unsloth-total", ("--from-unsloth", "--total")),
-        ("unsloth-json", ("--from-unsloth", "--json")),
-        ("runs-total-model", ("--from-runs", "--total", "--model")),
     )
     # The two views the overlay tests sweep every palette through: the dashboard
     # and the share table, i.e. panels and a painted table.
@@ -5418,15 +4570,7 @@ class ByteIdentityGoldenTests(CliHarness):
             src_row(sid="s4", tin=250, tout=60, title="delta",
                     created=ms(2026, 11, 7)),
         ]).close)
-        self.udb = os.path.join(self.tmp.name, "studio.db")
-        self.addCleanup(make_file_runs_db(
-            self.udb,
-            events=[unsloth_event("e1", prompt=3000, completion=400),
-                    unsloth_event("e2", prompt=800, completion=90,
-                                  created=ms(2026, 11, 6))],
-            runs=[run_row("r1"), run_row("r2", progress=40)]).close)
-        self.base = ["--db", self.db, "--src", self.src,
-                     "--unsloth-db", self.udb]
+        self.base = ["--db", self.db, "--src", self.src]
         self.themes = os.path.join(self.tmp.name, "themes")
         self.config = os.path.join(self.themes, "config.json")
         for name, value in (("THEMES_DIR", self.themes),
@@ -5543,10 +4687,9 @@ class HiddenOptionsTests(CliHarness):
     """`-h` shows what a person needs and nothing else: the internal plumbing
     options stay fully usable but unadvertised."""
 
-    HIDDEN = ("--min-in", "--min-out", "--db", "--src", "--unsloth-db",
-              "--from-unsloth")
+    HIDDEN = ("--min-in", "--min-out", "--db", "--src")
     VISIBLE = ("--model", "--since", "--until", "--daily", "--total",
-               "--sessions", "--json", "--from-runs", "--cost", "--real-cost",
+               "--sessions", "--json", "--cost", "--real-cost",
                "--cache", "--theme", "--theme-default")
 
     def setUp(self):
@@ -5554,7 +4697,6 @@ class HiddenOptionsTests(CliHarness):
         self.tmp = tempfile.TemporaryDirectory()
         self.db = os.path.join(self.tmp.name, "usage.db")
         self.src = os.path.join(self.tmp.name, "src.db")
-        self.udb = os.path.join(self.tmp.name, "studio.db")
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -5587,15 +4729,13 @@ class HiddenOptionsTests(CliHarness):
         # a flag -h does not document must not appear inside another option's
         # help, or the help points at something it never lists
         text = self.help_text()
-        self.assertNotIn("--from-unsloth", text.split("options:")[1])
+        self.assertNotIn("--src", text.split("options:")[1])
 
     def test_hidden_options_still_parse_and_run(self):
         # hidden from -h, not removed: each still parses and exits 0
         self.addCleanup(make_file_db(self.src, [src_row()]).close)
-        self.addCleanup(make_file_unsloth_db(
-            self.udb, [unsloth_event("e1")]).close)
-        base = ["--db", self.db, "--src", self.src, "--unsloth-db", self.udb]
-        for extra in (["--min-in", "5"], ["--from-unsloth"],
+        base = ["--db", self.db, "--src", self.src]
+        for extra in (["--min-in", "5"],
                       ["--min-out", "5", "--daily"]):
             with self.subTest(extra=extra):
                 code, _, _ = self.run_main(base + extra)
@@ -5614,21 +4754,14 @@ class ViewDispatchTests(CliHarness):
         self.addCleanup(self.tmp.cleanup)
         self.db = os.path.join(self.tmp.name, "usage.db")
         self.src = os.path.join(self.tmp.name, "src.db")
-        self.udb = os.path.join(self.tmp.name, "studio.db")
-        # One populated store for every leg: sessions of two models, Studio
-        # events, and a run, so each source family has rows to render.
+        # One populated store for every leg: sessions of two models, so each
+        # session-family view has rows to render.
         self.addCleanup(make_file_db(self.src, [
             src_row(sid="s1", title="alpha", created=ms(2026, 11, 4)),
             src_row(sid="s2", model=LEMONADE_JSON, title="beta",
                     created=ms(2026, 11, 5)),
         ]).close)
-        self.addCleanup(make_file_runs_db(
-            self.udb,
-            events=[unsloth_event("e1"),
-                    unsloth_event("e2", created=ms(2026, 11, 5))],
-            runs=[run_row("r1")]).close)
-        self.base = ["--db", self.db, "--src", self.src,
-                     "--unsloth-db", self.udb]
+        self.base = ["--db", self.db, "--src", self.src]
 
     def error_stderr(self, argv):
         """Run a rejection path: argparse raises SystemExit(2) after writing
@@ -5641,35 +4774,8 @@ class ViewDispatchTests(CliHarness):
         self.assertEqual(cm.exception.code, 2)
         return err.getvalue()
 
-    def test_reconcile_names_every_unsupported_flag(self):
-        # The guards used to pin exit 2 and nothing else; now that the reject
-        # list is data, the message is part of the contract too.
-        err = self.error_stderr(
-            self.base + ["reconcile", "--since", "2026-11-01", "--daily",
-                         "--total", "--cost", "--cache"])
-        self.assertIn("reconcile supports only --model; unsupported: --since, "
-                      "--daily, --total, --cost, --cache", err)
-        # ...and the full list, in the order the chain builds it. The two
-        # source flags get their own leg: --from-runs cannot ride on this one,
-        # an earlier guard rejects --from-runs x --min-in/--min-out/--cache/
-        # --real-cost/--sessions before reconcile's list is ever built.
-        err = self.error_stderr(
-            self.base + ["reconcile", "--since", "2026-11-01", "--until",
-                         "2026-11-02", "--min-in", "1", "--min-out", "1",
-                         "--daily", "--total", "--sessions=2", "--cost",
-                         "--real-cost", "--cache"])
-        self.assertIn("reconcile supports only --model; unsupported: --since, "
-                      "--until, --min-in, --min-out, --daily, --total, "
-                      "--sessions, --cost, --real-cost, --cache", err)
-        err = self.error_stderr(self.base + ["reconcile", "--from-unsloth",
-                                             "--from-runs", "--total"])
-        self.assertIn("reconcile supports only --model; unsupported: "
-                      "--from-unsloth, --from-runs, --total", err)
-
     def test_every_view_pair_still_renders(self):
-        for extra in ([], ["--total"], ["--daily"], ["--from-runs"],
-                      ["--from-runs", "--daily"], ["--from-unsloth"],
-                      ["--from-unsloth", "--daily"], ["--sessions=2"],
+        for extra in ([], ["--total"], ["--daily"], ["--sessions=2"],
                       # the plain session list: a filter keeps it off the
                       # bare-run dashboard
                       ["--model", "unsloth"]):

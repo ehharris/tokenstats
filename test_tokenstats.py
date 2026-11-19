@@ -4985,5 +4985,226 @@ class CliMainTests(unittest.TestCase):
             self.assertEqual(got, 0)
 
 
+class SourceUriTests(unittest.TestCase):
+    """`_connect_src` must survive hostile path names without ever opening
+    the source read-write (invariant 4). In the naive `file:{path}?mode=ro`
+    form a raw `#` truncates the URI filename and a raw `?` starts the
+    query: mode=ro silently falls away and SQLite CREATES a stray file at
+    the truncated path — a wrong, writable "source". The fix routes the path
+    through pathlib's as_uri(), which percent-encodes the offenders."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = os.path.join(self.tmp.name, "usage.db")
+
+    def run_report(self, src_path):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(["--db", self.db, "--src", src_path])
+        return code, out.getvalue(), err.getvalue()
+
+    def test_hostile_path_names_ingest_cleanly(self):
+        for name in ("we#ird.db", "q?m.db", "pct%20.db", "with space.db"):
+            with self.subTest(name=name):
+                path = os.path.join(self.tmp.name, name)
+                src = make_file_db(path, [src_row()])
+                src.close()
+                before = set(os.listdir(self.tmp.name))
+                code, out, err = self.run_report(path)
+                self.assertEqual(code, 0)
+                self.assertNotIn("warning:", err)
+                self.assertIn("unsloth-studio", out)
+                # nothing new besides the source and our own store: no stray
+                # file at the truncated path the unescaped URI would hit
+                self.assertEqual(set(os.listdir(self.tmp.name)),
+                                 before | {"usage.db"})
+
+    def test_source_opens_read_only(self):
+        path = os.path.join(self.tmp.name, "ro.db")
+        src = make_file_db(path, [src_row()])
+        src.close()
+        conn = tokenstats._connect_src(path)
+        self.addCleanup(conn.close)
+        with self.assertRaises(sqlite3.OperationalError) as cm:
+            conn.execute("UPDATE session_v2 SET title = 'x' WHERE id = 's1'")
+        self.assertIn("readonly", str(cm.exception))
+
+    def test_missing_source_still_warns_and_continues(self):
+        code, out, err = self.run_report(os.path.join(self.tmp.name,
+                                                      "nope#?.db"))
+        self.assertEqual(code, 0)
+        self.assertIn("warning:", err)
+        self.assertIn("no sessions match", out)
+
+
+class PoisonedSourceRowTests(CliHarness):
+    """A source row whose numeric fields are text is malformed and must be
+    isolated at INGEST (skipped), never stored: SQLite's column affinity
+    happily files 'oops' into an INTEGER column, and because the store never
+    shrinks (invariant 1) one stored poison row would crash every later
+    report forever — fromtimestamp(str) in every view, the cost formatter
+    under --real-cost."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = os.path.join(self.tmp.name, "usage.db")
+        self.src = os.path.join(self.tmp.name, "src.db")
+
+    def test_text_time_created_is_skipped_not_stored(self):
+        dest = make_dest()
+        self.addCleanup(dest.close)
+        src = make_src([src_row(sid="good"), src_row(sid="bad",
+                                                      created="oops")])
+        self.addCleanup(src.close)
+        counts = record(src, dest, now_ms=1)
+        self.assertEqual(counts["inserted"], 1)
+        self.assertEqual(counts["skipped"], 1)
+        self.assertEqual(
+            dest.execute("SELECT session_id FROM usage").fetchall(),
+            [("good",)])
+
+    def test_text_cost_is_skipped_not_stored(self):
+        dest = make_dest()
+        self.addCleanup(dest.close)
+        src = make_src([src_row(sid="bad", cost="free")])
+        self.addCleanup(src.close)
+        counts = record(src, dest, now_ms=1)
+        self.assertEqual(counts["inserted"], 0)
+        self.assertEqual(counts["skipped"], 1)
+        self.assertEqual(dest.execute("SELECT COUNT(*) FROM usage")
+                         .fetchone()[0], 0)
+
+    def test_numeric_strings_coerce_like_sqlite_affinity(self):
+        dest = make_dest()
+        self.addCleanup(dest.close)
+        src = make_src([src_row(sid="s", created="1764000000000",
+                                tin="500", cost="0.5")])
+        self.addCleanup(src.close)
+        counts = record(src, dest, now_ms=1)
+        self.assertEqual(counts["inserted"], 1)
+        self.assertEqual(
+            dest.execute("SELECT time_created, tokens_input, cost"
+                         " FROM usage").fetchone(),
+            (1764000000000, 500, 0.5))
+
+    def test_clean_run_carries_no_skipped_key(self):
+        dest = make_dest()
+        self.addCleanup(dest.close)
+        src = make_src([src_row()])
+        self.addCleanup(src.close)
+        self.assertNotIn("skipped", record(src, dest, now_ms=1))
+
+    def test_record_cli_reports_skipped_and_store_stays_usable(self):
+        src = make_file_db(self.src, [src_row(sid="good", title="good row"),
+                                      src_row(sid="bad", created="oops")])
+        self.addCleanup(src.close)
+        code, out, _ = self.run_main(["record", "--db", self.db,
+                                      "--src", self.src])
+        self.assertEqual(code, 0)
+        self.assertIn("skipped=1", out)
+        code, out, err = self.run_main(["--db", self.db, "--src", self.src,
+                                        "--real-cost"])
+        self.assertEqual(code, 0)
+        self.assertNotIn("warning:", err)
+        self.assertIn("good row", out)
+
+
+class ColorGateTests(unittest.TestCase):
+    def test_stream_without_isatty_is_plain(self):
+        # pythonw-style stdout=None must not crash the color gate.
+        self.assertFalse(tokenstats._color_enabled(None, {}))
+        self.assertFalse(tokenstats._color_enabled(io.StringIO(), {}))
+
+    def test_tty_gets_color_unless_no_color(self):
+        tty = unittest.mock.Mock()
+        tty.isatty.return_value = True
+        self.assertTrue(tokenstats._color_enabled(tty, {}))
+        self.assertFalse(tokenstats._color_enabled(tty, {"NO_COLOR": "1"}))
+
+
+class TitleGrammarTests(CliHarness):
+    """Panel titles read as English: one session is 'last 1 session', and an
+    empty --model= pattern is no pattern at all (the title then matches the
+    filter, which already treats '' as absent)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = os.path.join(self.tmp.name, "usage.db")
+        self.src = os.path.join(self.tmp.name, "src.db")
+        self.addCleanup(make_file_db(self.src, [
+            src_row(sid="s1", title="alpha", created=ms(2026, 11, 4)),
+            src_row(sid="s2", model=LEMONADE_JSON, title="beta",
+                    created=ms(2026, 11, 5)),
+        ]).close)
+        self.base = ["--db", self.db, "--src", self.src]
+
+    def test_last_one_session_is_singular(self):
+        code, out, _ = self.colored_main(self.base + ["--sessions=1",
+                                                      "--daily"])
+        self.assertEqual(code, 0)
+        self.assertIn("last 1 session", out)
+        self.assertNotIn("last 1 sessions", out)
+
+    def test_last_two_sessions_stay_plural(self):
+        code, out, _ = self.colored_main(self.base + ["--sessions=2",
+                                                      "--daily"])
+        self.assertIn("last 2 sessions", out)
+
+    def test_empty_model_pattern_is_no_pattern(self):
+        code, out, _ = self.run_main(self.base + ["--total", "--model="])
+        self.assertEqual(code, 0)
+        self.assertIn("(all)", out)          # grand-total row, not per-model
+        code, out, _ = self.colored_main(self.base + ["--total", "--model="])
+        # the title is painted as one span, so each phrase is contiguous
+        self.assertIn("totals", out)
+        self.assertNotIn("usage by model", out)
+
+    def test_bare_model_shortcut_still_means_all_models(self):
+        code, out, _ = self.run_main(self.base + ["--model", "--json"])
+        rows = json.loads(out)
+        self.assertEqual(sorted(r["model"] for r in rows),
+                         ["lemonade/gpt-oss-120b",
+                          "unsloth-studio/unsloth/Qwen3.8-Flash-Next-GGUF"])
+
+
+class TildePathTests(CliHarness):
+    """Windows cmd does not expand `~`, so main() does it for --db and --src
+    (POSIX shells expand before main() ever sees a tilde — a no-op there)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_tilde_src_is_expanded_in_the_warning(self):
+        with unittest.mock.patch.dict(os.environ, {"HOME": self.tmp.name}):
+            code, out, err = self.run_main(
+                ["--db", os.path.join(self.tmp.name, "usage.db"),
+                 "--src", "~/nope.db"])
+        self.assertEqual(code, 0)                       # warn-and-continue
+        self.assertIn(os.path.join(self.tmp.name, "nope.db"), err)
+        self.assertNotIn("~/nope.db", err)
+
+    def test_tilde_db_is_expanded_and_created(self):
+        with unittest.mock.patch.dict(os.environ, {"HOME": self.tmp.name}):
+            code, _, _ = self.run_main(
+                ["record", "--db", "~/t.db",
+                 "--src", os.path.join(self.tmp.name, "nope.db")])
+        self.assertEqual(code, 1)                       # source unreadable
+        self.assertTrue(os.path.exists(os.path.join(self.tmp.name, "t.db")))
+
+
+class CompactBoundaryTests(unittest.TestCase):
+    def test_k_form_never_renders_1000(self):
+        # 999_950..999_999 would round the k-form up to "1000.0k".
+        self.assertEqual(compact(999_999), "999.9k")
+        self.assertEqual(compact(999_950), "999.9k")
+        self.assertEqual(compact(999_949), "999.9k")
+        self.assertEqual(compact(1_000_000), "1.00M")
+        self.assertEqual(compact(12_340), "12.3k")
+
+
 if __name__ == "__main__":
     unittest.main()

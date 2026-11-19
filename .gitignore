@@ -10,3 +10,4 @@ record.log
 # script, which the first run migrates away. Same story for usage.db* and
 # record.log above: personal state, never committed.
 themes/*.json
+AGENTS.md

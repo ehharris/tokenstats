@@ -1,4 +1,4 @@
-# tokenstats — permanent AI token usage record for this machine
+# tokenstats - An AI token usage record keeper
 
 `tokenstats` snapshots OpenCode's session database (opened read-only) into its
 own SQLite store (`~/.tokenstats/usage.db`) and reports it filtered by model,
@@ -13,9 +13,9 @@ OpenCode's database automatically for your OS.
 ## Install
 
 ```bash
-pipx install .         # recommended: a `tokenstats` command on PATH
+pipx install tokenstats   # recommended: a `tokenstats` command on PATH
 # or
-pip install --user .   # the same command, into your user site
+pip install --user tokenstats   # the same command, into your user site
 ```
 
 Installing is optional — the script also runs straight from the file:
@@ -37,6 +37,7 @@ tokenstats --since 2026-11-01 --until 2026-11-13   # date window (both days incl
 tokenstats --daily                           # per-day totals
 tokenstats --total                           # one all-time grand-total row
 tokenstats --sessions=10                     # the 10 most recent sessions
+tokenstats --cost=claude                     # reference $ overlay — families: claude, codex, openai, deepseek, qwen
 tokenstats --json | jq '.[].total'           # machine-readable rows
 tokenstats record                            # snapshot OpenCode, no report
 ```

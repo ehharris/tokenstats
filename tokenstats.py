@@ -1996,11 +1996,18 @@ def main(argv):
         # Panel title, derived from the same flags that picked `columns`
         # (a daily share view cannot occur: --total rejects --daily).
         title, hero_unit = _view_title(args, share_view, limit)
+        # Hero cost tails mirror the dashboard: the estimate tail sums the
+        # reference estimate over the displayed rows, the real tail their
+        # stored cost. A single-row total view renders no hero at all.
+        hero_cost = None
         if args.cost:
             rows = annotate_cost(rows, cost_tier)
             columns = columns + [cost_column(cost_tier)]
+            hero_cost = sum(r["cost_est"] for r in rows)
+        hero_real = None
         if args.real_cost:
             columns = columns + [REAL_COST_COLUMN]
+            hero_real = sum(r["cost"] for r in rows)
         # Opt-in --cache overlay: combined cache classes as one informational
         # column after OUT; TOTAL stays IN + OUT. The hero gets the same
         # combined number as its own segment.
@@ -2022,7 +2029,9 @@ def main(argv):
             # output never renders the hero at all, so do not build it.
             head = ([] if not color or (want_total and len(rows) == 1)
                     else report_header(title, rows, theme, unit=hero_unit,
-                                       cache_total=hero_cache))
+                                       cache_total=hero_cache,
+                                       cost_est=hero_cost,
+                                       real_cost=hero_real))
             print(render_report(title, rows, columns, share_view, color, theme,
                                 head=head), end="")
         return 0

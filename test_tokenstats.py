@@ -1926,6 +1926,20 @@ class RealCostTests(CliHarness):
         self.assertLess(lines[0].index("COST"),
                         lines[0].index("REAL COST"))
 
+    def test_real_cost_hero_tail_on_sessions_view(self):
+        # the hero over a report table carries the real-cost tail too,
+        # summed over the displayed rows (2 sessions x $0.01).
+        code, out, _ = self.colored_main(
+            ["--db", self.db, "--src", self.src, "--sessions", "--real-cost"])
+        self.assertEqual(code, 0)
+        self.assertIn("\u00b7 $0.02", _ANSI_RE.sub("", out))
+
+    def test_cost_hero_tail_on_daily_view(self):
+        code, out, _ = self.colored_main(
+            ["--db", self.db, "--src", self.src, "--daily", "--cost"])
+        self.assertEqual(code, 0)
+        self.assertIn("~$", _ANSI_RE.sub("", out))
+
     def test_real_cost_json_shape_unchanged(self):  # review-focus pin
         base = ["--db", self.db, "--src", self.src, "--total"]
         _, plain, _ = self.run_main(base + ["--json"])

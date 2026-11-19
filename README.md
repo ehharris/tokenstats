@@ -13,9 +13,9 @@ OpenCode's database automatically for your OS.
 ## Install
 
 ```bash
-pipx install .         # recommended: a `tokenstats` command on PATH
+pipx install tokenstats   # recommended: a `tokenstats` command on PATH
 # or
-pip install --user .   # the same command, into your user site
+pip install --user tokenstats   # the same command, into your user site
 ```
 
 Installing is optional — the script also runs straight from the file:

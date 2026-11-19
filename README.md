@@ -54,7 +54,8 @@ column — percent plus a bar scaled to the biggest row:
 
 Opt-in overlays add columns without changing any number: `--cost[=TIER]` (a
 reference dollar estimate at one model's list prices), `--real-cost` (the real
-USD OpenCode stored), `--cache` (combined cache-read/write tokens). Color is
+USD OpenCode stored), `--cache` (combined cache-read/write tokens, as a column
+and a hero stat). Color is
 decoration only: piped output, `NO_COLOR`, and `--json` stay plain.
 
 ![daily totals with a cost overlay](docs/images/theme-tokyo-night.png)

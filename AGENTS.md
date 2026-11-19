@@ -75,17 +75,26 @@ the rate's own numerator; as a result the hero over any session-family table
 reproduces the pooled grand total to 0.1. Rows with no rate or no generated
 tokens drop out of BOTH sides of the average; a group with nothing left renders
 blank. Applies to `total_totals`/`daily_totals`, and the hero (`report_header`)
-computes the same weighted mean over the rows it summarizes and appends
-`· NNN.N tok/s` — omitted whole when no displayed row has a rate. Only hero
+computes the same weighted mean over the rows it summarizes and carries
+`NNN.N tok/s` as its second segment (right after the grand total) — omitted
+whole when no displayed row has a rate. Only hero
 NUMBERS are painted: every unit word stays in the terminal's own color. The
 table TOK/S and SESSIONS columns wear the accent/teal hues (`tok_s` and
 `sessions` joined `_PAINT_CELLS`, the rate formatted exactly as `render_table`
 would, so column widths never shift).
 
 **Cache column.** Opt-in `--cache` adds one combined `CACHE` column (read+write)
-between OUT and TOTAL in the session-family views only; informational — TOTAL
-stays IN+OUT, `--json` gains no field (both classes already carried);
-primitives `annotate_cache`/`with_cache`.
+after OUT in the session-family views only, plus a matching `· X cache` hero
+segment after the `out` stat (the dashboard hero sums ALL sessions, like the
+cost tails); informational — TOTAL stays IN+OUT, `--json` gains no field (both
+classes already carried); primitives `annotate_cache`/`with_cache`.
+
+**Stat order (human decision 2026-11-18).** Hero segments and table columns
+share one order: grand total, TOK/S, row count, IN, OUT — then opt-in CACHE
+(right after OUT), the SHARE pair, and cost columns last; row-label columns
+(DATE/MODEL/SESSION title) stay at the edges. `with_cache` inserts after the
+OUT entry; `report_header` takes `cache_total=` (an int precomputed by the
+caller, like `cost_est`) and omits the segment when it is None.
 
 **Default dashboard.** A bare run renders hero + top-5-by-share model panel +
 5 most-recent sessions (newest first); the trigger is a truly bare invocation

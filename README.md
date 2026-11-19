@@ -1,4 +1,4 @@
-# tokenstats — permanent AI token usage record for this machine
+# tokenstats - An AI token usage record keeper
 
 `tokenstats` snapshots OpenCode's session database (opened read-only) into its
 own SQLite store (`~/.tokenstats/usage.db`) and reports it filtered by model,

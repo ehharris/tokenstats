@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""tokenstat — permanent local record of AI token usage on this machine.
+"""tokenstats — permanent local record of AI token usage on this machine.
 
 Snapshots OpenCode's per-session totals (read-only) into our own SQLite store
 and reports them filtered by model, date, and token thresholds. Reporting
@@ -23,24 +23,24 @@ from collections import Counter
 
 
 def state_dir(home=None):
-    """The one directory tokenstat owns: <home>/.tokenstat (pure path math)."""
+    """The one directory tokenstats owns: <home>/.tokenstats (pure path math)."""
     if home is None:
         home = os.path.expanduser("~")
-    return os.path.join(home, ".tokenstat")
+    return os.path.join(home, ".tokenstats")
 
 
 def default_db(home=None):
-    """Our store: <home>/.tokenstat/usage.db."""
+    """Our store: <home>/.tokenstats/usage.db."""
     return os.path.join(state_dir(home), "usage.db")
 
 
 def themes_dir(home=None):
-    """User theme files and the saved default: <home>/.tokenstat/themes."""
+    """User theme files and the saved default: <home>/.tokenstats/themes."""
     return os.path.join(state_dir(home), "themes")
 
 
 def theme_config(home=None):
-    """The saved default theme file: <home>/.tokenstat/themes/config.json."""
+    """The saved default theme file: <home>/.tokenstats/themes/config.json."""
     return os.path.join(themes_dir(home), "config.json")
 
 
@@ -73,7 +73,7 @@ def default_store(state=None, legacy=None):
 
     The only function here that creates directories or moves files on its own
     (`write_default_theme` also writes, but only because `--theme-default`
-    asked it to), and main() is its only caller: importing tokenstat stays
+    asked it to), and main() is its only caller: importing tokenstats stays
     side-effect-free, and so is every run that names its own --db. `state` and
     `legacy` take their defaults from the module globals at CALL time (the
     same reason main() reads THEMES_DIR there) so a caller that repoints the
@@ -1293,8 +1293,8 @@ def _visible(cell):
 
 
 def panel(title, lines, theme=NEON, color=True):
-    """Rounded frame around `lines`, headed by a ` tokenstat · {title} ` strip;
-    an empty title renders the plain ` tokenstat ` strip (no separator).
+    """Rounded frame around `lines`, headed by a ` tokenstats · {title} ` strip;
+    an empty title renders the plain ` tokenstats ` strip (no separator).
     `color=False` emits the same frame characters with no escape bytes.
     Every returned line shares one visible width: the widest content line or
     the title strip, whichever is longer, plus the two border cells."""
@@ -1307,10 +1307,10 @@ def panel(title, lines, theme=NEON, color=True):
         return f"\x1b[{'1;' if bold else ''}38;2;{r};{g};{b}m{text}\x1b[0m"
 
     if title:
-        head = " tokenstat · "
+        head = " tokenstats · "
         strip = f"{head}{title} "
     else:
-        head = strip = " tokenstat "
+        head = strip = " tokenstats "
     widest = max((_visible(ln) for ln in lines), default=0)
     # one space inset either side, but never narrower than the title strip
     inner = max(len(strip), widest + 2)
@@ -1610,7 +1610,7 @@ def render_report(title, rows, columns, share_view, color, theme, head=()):
 
 def main(argv):
     parser = argparse.ArgumentParser(
-        prog="tokenstat",
+        prog="tokenstats",
         description="Record and report AI token usage from OpenCode into a "
                     "permanent local store.")
     parser.add_argument("command", nargs="?",
@@ -1679,7 +1679,7 @@ def main(argv):
     parser.add_argument("--theme-default", nargs="?", const=THEME_SAVE,
                         default=None, dest="theme_default", metavar="SLUG",
                         help="save SLUG as the default theme in"
-                             " ~/.tokenstat/themes/config.json (bare"
+                             " ~/.tokenstats/themes/config.json (bare"
                              " --theme-default saves this run's theme). Prefer"
                              " --theme-default=SLUG: the space form can"
                              " swallow a following command")
@@ -1716,7 +1716,7 @@ def main(argv):
                          " given — add --theme=SLUG, or save directly as"
                          " --theme-default=SLUG")
         # write_default_theme does not validate: resolve first, so a typo in
-        # the slug never lands in ~/.tokenstat/themes/config.json.
+        # the slug never lands in ~/.tokenstats/themes/config.json.
         try:
             resolve_theme(slug, THEMES_DIR)
         except ThemeError as exc:
@@ -1726,7 +1726,7 @@ def main(argv):
             write_default_theme(THEME_CONFIG, slug)
         except OSError as exc:
             # a read-only (or otherwise unwritable) themes/ is a CLI failure
-            # like every other one here: tokenstat: error: ..., never a
+            # like every other one here: tokenstats: error: ..., never a
             # traceback.
             parser.error(f"could not write {THEME_CONFIG}: {exc}")
         print(f"default theme: {slug} ({name})")
@@ -1749,7 +1749,7 @@ def main(argv):
                        f" '{default}' is not available; runs render in Neon"
                        f" Midnight until --theme-default=SLUG saves another")
         return 0
-    # Precedence: --theme=SLUG > ~/.tokenstat/themes/config.json > Neon
+    # Precedence: --theme=SLUG > ~/.tokenstats/themes/config.json > Neon
     # Midnight. The two sources fail differently on purpose: a slug typed for
     # this run is the user's own request, so an unknown one is a hard exit 2; a
     # *saved* default that cannot be resolved is a config that cannot be used —

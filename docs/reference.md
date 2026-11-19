@@ -75,6 +75,11 @@ optional-value flag: `--cost record` swallows the command and exits 2.
   the shortcut) for one row per model with SHARE columns.
 - `--total` and `--daily` cannot be combined (exit 2).
 
+Hero and tables share one stat order (human decision 2026-11-18): grand
+total, TOK/S, row count, IN, OUT — then the opt-in `CACHE` (right after OUT)
+and, last, the SHARE pair and cost columns. Row-label columns (`DATE`,
+`MODEL`, `SESSION` title) stay at the edges.
+
 ### Session scope (`--sessions`)
 
 `--sessions` lists the **20 most recent sessions**, newest first;
@@ -129,7 +134,8 @@ the weight matches the rate's own numerator, the hero over any session-family
 table reproduces the pooled grand total to 0.1. Rows with no rate, or no
 generated tokens, are left out of both sides of that average, and a group where
 none has one renders blank. The hero line carries the same token-weighted TOK/S
-over the rows it summarizes (`· 70.2 tok/s`), so hero and table always agree; it
+over the rows it summarizes (its second segment, right after the grand total:
+`· 70.2 tok/s ·`), so hero and table always agree; it
 is omitted when none of those rows has a rate. In `--json` the value is the
 float `tok_s` (null when blank); session-family rows also carry `rate_weight`,
 the sum of the generated tokens of the rows that contributed to their rate.
@@ -176,9 +182,10 @@ sessions record real cost. Free-tier traffic honestly renders `$0.00`.
 
 ### Cache tokens (`--cache`)
 
-`--cache` adds one `CACHE` column between `OUT` and `TOTAL` in the OpenCode
+`--cache` adds one `CACHE` column after `OUT` in the OpenCode
 session views (sessions, `--daily`, `--total`): the combined cache-read +
-cache-write tokens OpenCode records per session. It is **informational** —
+cache-write tokens OpenCode records per session, and a matching `· X cache`
+hero segment after the `out` stat. It is **informational** —
 `TOTAL` stays `IN + OUT`, so every existing number is unchanged — and it
 explains why `IN` alone undercounts an agentic session: those re-send their
 whole history every request, those re-sends land in `CACHE`, and `IN + CACHE`
